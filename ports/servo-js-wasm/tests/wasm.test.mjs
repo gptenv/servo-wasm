@@ -84,6 +84,23 @@ test('Date.now() reflects real wall-clock time, not just a positive number', () 
   assert.deepEqual(jsYear, { ok: true, value: realYear });
 });
 
+test('fresh globals prevent state leaking between evaluations', () => {
+  assert.deepEqual(evaluate('globalThis.workerOnly = 123; 1'), { ok: true, value: 1 });
+  assert.deepEqual(evaluate('typeof workerOnly === "undefined" ? 1 : 0'), { ok: true, value: 1 });
+});
+
+test('repeated evaluations remain within a Worker-sized heap', () => {
+  const initialBytes = instance.exports.memory.buffer.byteLength;
+  for (let i = 0; i < 100; i++) {
+    assert.deepEqual(evaluate(`${i} + 1`), { ok: true, value: i + 1 });
+  }
+  const finalBytes = instance.exports.memory.buffer.byteLength;
+  assert.ok(finalBytes <= 64 * 1024 * 1024,
+    `wasm heap grew beyond the Worker bundle memory budget: ${finalBytes} bytes`);
+  assert.ok(finalBytes <= initialBytes * 4,
+    `wasm heap grew unexpectedly from ${initialBytes} to ${finalBytes} bytes`);
+});
+
 test('JavaScript exception reports failure', () => {
   assert.deepEqual(evaluate('throw new Error("expected")'), { ok: false });
 });

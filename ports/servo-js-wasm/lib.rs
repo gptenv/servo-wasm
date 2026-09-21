@@ -1,9 +1,9 @@
 //! Executable SpiderMonkey probe for the Cloudflare Worker wasm target.
 
-use js::jsapi::OnNewGlobalHookOption;
+use js::jsapi::{GCReason, OnNewGlobalHookOption};
 use js::jsval::UndefinedValue;
 use js::rooted;
-use js::rust::wrappers2::JS_NewGlobalObject;
+use js::rust::wrappers2::{JS_GC, JS_NewGlobalObject};
 use js::rust::{evaluate_script, CompileOptionsWrapper, JSEngine, RealmOptions, Runtime};
 use js::rust::SIMPLE_GLOBAL_CLASS;
 use std::cell::RefCell;
@@ -66,37 +66,61 @@ pub extern "C" fn diplomat_throw_error_js(ptr: *const u8, len: usize) {
     std::process::abort();
 }
 
+struct WorkerJsState {
+    // Keep both objects alive for the lifetime of the Worker isolate. The
+    // runtime owns the JS context; the engine handle keeps SpiderMonkey's
+    // process-wide engine initialized while that runtime exists.
+    _engine: JSEngine,
+    runtime: Runtime,
+}
+
 thread_local! {
-    // SpiderMonkey initialization is process-wide and may only happen once.
-    // Keep the engine alive across Worker requests in the same isolate.
-    static ENGINE: RefCell<Option<JSEngine>> = const { RefCell::new(None) };
+    // A Worker isolate executes its wasm exports on one thread. Keeping one
+    // runtime here avoids paying SpiderMonkey runtime/self-hosted-code setup
+    // costs for every request while each evaluation still gets a fresh global
+    // object below, so script state cannot leak between requests.
+    static STATE: RefCell<Option<WorkerJsState>> = const { RefCell::new(None) };
 }
 
 /// Execute JavaScript and return its signed 32-bit result.
 pub fn evaluate_i32(source: &str) -> Result<i32, &'static str> {
-    ENGINE.with(|engine| {
-        let mut engine = engine.borrow_mut();
-        if engine.is_none() {
-            *engine = Some(JSEngine::init().map_err(|_| "SpiderMonkey initialization failed")?);
+    STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        if state.is_none() {
+            let engine = JSEngine::init().map_err(|_| "SpiderMonkey initialization failed")?;
+            let runtime = Runtime::new(engine.handle());
+            *state = Some(WorkerJsState {
+                _engine: engine,
+                runtime,
+            });
         }
-        let mut runtime = Runtime::new(engine.as_ref().expect("engine initialized").handle());
-        let options = RealmOptions::default();
-        let cx = runtime.cx();
-        rooted!(&in(cx) let global = unsafe {
-            JS_NewGlobalObject(cx, &SIMPLE_GLOBAL_CLASS, ptr::null_mut(),
-                               OnNewGlobalHookOption::FireOnNewGlobalHook, &*options)
-        });
-        if global.handle().is_null() {
-            return Err("global object creation failed");
-        }
-        rooted!(&in(cx) let mut result = UndefinedValue());
-        let options = CompileOptionsWrapper::new(cx, c"worker-eval.js".to_owned(), 1);
-        evaluate_script(cx, global.handle(), source, result.handle_mut(), options)
-            .map_err(|_| "JavaScript evaluation failed")?;
-        if !result.get().is_int32() {
-            return Err("JavaScript result is not an int32");
-        }
-        Ok(result.get().to_int32())
+        let runtime = &mut state.as_mut().expect("state initialized").runtime;
+        let result = (|| {
+            let options = RealmOptions::default();
+            let cx = runtime.cx();
+            rooted!(&in(cx) let global = unsafe {
+                JS_NewGlobalObject(cx, &SIMPLE_GLOBAL_CLASS, ptr::null_mut(),
+                                   OnNewGlobalHookOption::FireOnNewGlobalHook, &*options)
+            });
+            if global.handle().is_null() {
+                return Err("global object creation failed");
+            }
+            rooted!(&in(cx) let mut result = UndefinedValue());
+            let options = CompileOptionsWrapper::new(cx, c"worker-eval.js".to_owned(), 1);
+            evaluate_script(cx, global.handle(), source, result.handle_mut(), options)
+                .map_err(|_| "JavaScript evaluation failed")?;
+            if !result.get().is_int32() {
+                return Err("JavaScript result is not an int32");
+            }
+            Ok(result.get().to_int32())
+        })();
+
+        // Global objects are deliberately short-lived to isolate requests.
+        // Collect them after their rooted handles leave scope; otherwise a
+        // long-lived Worker runtime retains every request's realm until its
+        // heap threshold is reached, which is far beyond Worker memory.
+        unsafe { JS_GC(runtime.cx(), GCReason::API) };
+        result
     })
 }
 
