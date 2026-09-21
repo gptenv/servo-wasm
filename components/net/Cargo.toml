@@ -21,7 +21,6 @@ test-util = ["hyper-util/server-graceful", "dep:servo-default-resources", "net_t
 tracing = ["dep:tracing"]
 
 [dependencies]
-aws-lc-rs = { workspace = true }
 async-recursion = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
@@ -62,11 +61,11 @@ rand = { workspace = true }
 regex = { workspace = true }
 resvg = { workspace = true }
 rustc-hash = { workspace = true }
-rustls = { workspace = true, features = ["aws-lc-rs"] }
+rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
-rustls-platform-verifier = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
+sha2 = { workspace = true }
 servo-base = { workspace = true }
 servo-config = { workspace = true }
 servo-default-resources = { workspace = true, optional = true }
@@ -89,10 +88,13 @@ webpki-roots = { workspace = true }
 webrender_api = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+aws-lc-rs = { workspace = true }
 async-compression = { workspace = true, features = ["brotli", "gzip", "tokio", "zlib", "zstd"] }
 async-tungstenite = { workspace = true, features = ["tokio-rustls-webpki-roots"] }
 hyper-rustls = { workspace = true, features = ["http1", "http2", "logging", "tls12", "webpki-tokio"] }
 hyper-util = { workspace = true, features = ["client-legacy", "client-proxy", "http2", "tokio"] }
+rustls = { workspace = true, features = ["aws-lc-rs"] }
+rustls-platform-verifier = { workspace = true }
 tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-rustls = { workspace = true }
 

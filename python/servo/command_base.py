@@ -397,6 +397,13 @@ class CommandBase(object):
 
         env["RUSTFLAGS"] = env.get("RUSTFLAGS", "")
 
+        # Cargo's target-specific rustflags from .cargo/config.toml are not
+        # merged when mach exports RUSTFLAGS itself. The Worker target needs
+        # getrandom's explicit host-backed custom backend; keep this here so
+        # the documented ./mach build path and direct Cargo invocations agree.
+        if self.target.triple() == "wasm32-unknown-unknown":
+            env["RUSTFLAGS"] += ' --cfg getrandom_backend="custom"'
+
         if self.config["build"]["rustflags"]:
             env["RUSTFLAGS"] += " " + self.config["build"]["rustflags"]
 

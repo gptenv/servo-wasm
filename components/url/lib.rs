@@ -162,8 +162,14 @@ impl ServoUrl {
         self.0.password()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn to_file_path(&self) -> Result<::std::path::PathBuf, UrlError> {
         self.0.to_file_path().map_err(|_| UrlError::ToFilePath)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn to_file_path(&self) -> Result<::std::path::PathBuf, UrlError> {
+        Err(UrlError::ToFilePath)
     }
 
     pub fn host(&self) -> Option<url::Host<&str>> {
@@ -194,10 +200,16 @@ impl ServoUrl {
         self.0.query()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_file_path<P: AsRef<Path>>(path: P) -> Result<Self, UrlError> {
         Url::from_file_path(path)
             .map(Self::from_url)
             .map_err(|_| UrlError::FromFilePath)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn from_file_path<P: AsRef<Path>>(_path: P) -> Result<Self, UrlError> {
+        Err(UrlError::FromFilePath)
     }
 
     /// Return a non-standard shortened form of the URL. Mainly intended to be

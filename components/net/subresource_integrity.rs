@@ -6,11 +6,11 @@ use std::iter::Filter;
 use std::str::Split;
 use std::sync::LazyLock;
 
-use aws_lc_rs::digest::{self};
 use base64::Engine;
 use net_traits::response::{Response, ResponseBody, ResponseType};
 use parking_lot::MutexGuard;
 use regex::Regex;
+use sha2::{Digest, Sha256, Sha384, Sha512};
 
 type StaticCharVec = &'static [char];
 /// A "space character" according to:
@@ -140,12 +140,13 @@ pub fn get_strongest_metadata<'a>(integrity_metadata_list: Vec<SriEntry<'a>>) ->
 }
 
 /// <https://w3c.github.io/webappsec-subresource-integrity/#apply-algorithm-to-response>
-fn apply_algorithm_to_response(
-    body: MutexGuard<ResponseBody>,
-    algorithm: &'static digest::Algorithm,
-) -> String {
+fn apply_algorithm_to_response(body: MutexGuard<ResponseBody>, algorithm: Algorithm) -> String {
     if let ResponseBody::Done(ref vec) = *body {
-        let response_digest = digest::digest(algorithm, vec);
+        let response_digest = match algorithm {
+            Algorithm::Sha256 => Sha256::digest(vec),
+            Algorithm::Sha384 => Sha384::digest(vec),
+            Algorithm::Sha512 => Sha512::digest(vec),
+        };
         base64::engine::general_purpose::STANDARD.encode(response_digest)
     } else {
         unreachable!("Tried to calculate digest of incomplete response body")
@@ -181,9 +182,9 @@ pub fn is_response_integrity_valid(integrity_metadata: &str, response: &Response
         let digest = item.val;
 
         let hashed = match item.algorithm {
-            Algorithm::Sha256 => apply_algorithm_to_response(body, &digest::SHA256),
-            Algorithm::Sha384 => apply_algorithm_to_response(body, &digest::SHA384),
-            Algorithm::Sha512 => apply_algorithm_to_response(body, &digest::SHA512),
+            algorithm @ (Algorithm::Sha256 | Algorithm::Sha384 | Algorithm::Sha512) => {
+                apply_algorithm_to_response(body, algorithm)
+            },
         };
 
         if hashed == digest {

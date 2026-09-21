@@ -175,3 +175,17 @@ mod platform {
         )
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+#[allow(unsafe_code)]
+mod platform {
+    #[link(wasm_import_module = "env")]
+    unsafe extern "C" {
+        #[link_name = "worker_monotonic_now_ns"]
+        fn worker_monotonic_now_ns() -> u64;
+    }
+
+    pub(super) fn now() -> u64 {
+        unsafe { worker_monotonic_now_ns() }
+    }
+}

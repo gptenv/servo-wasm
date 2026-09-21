@@ -9122,6 +9122,7 @@ dependencies = [
  "servo-tracing",
  "servo-url",
  "servo_arc",
+ "sha2 0.11.0",
  "smallvec",
  "tempfile",
  "time",
