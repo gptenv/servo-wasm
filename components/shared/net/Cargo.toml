@@ -27,7 +27,6 @@ data-url = { workspace = true }
 embedder_traits = { workspace = true }
 headers = { workspace = true }
 http = { workspace = true }
-hyper-util = { workspace = true }
 hyper_serde = { workspace = true }
 ipc-channel = { workspace = true }
 log = { workspace = true }
@@ -57,6 +56,16 @@ tokio = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
 webrender_api = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+hyper-util = { workspace = true, features = ["client-legacy", "client-proxy", "http2", "tokio"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# `rand` pulls this in transitively but wasm32-unknown-unknown has no OS
+# RNG for getrandom's default backends. The "custom" backend is selected
+# via .cargo/config.toml's rustflags (getrandom_backend="custom"), not a
+# Cargo feature -- see the wasm_getrandom module in lib.rs for why.
+getrandom = { workspace = true }
 
 [dev-dependencies]
 servo-default-resources = { workspace = true }

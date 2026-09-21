@@ -9,6 +9,8 @@ rust-version.workspace = true
 repository.workspace = true
 description.workspace = true
 
+build = "build.rs"
+
 [lib]
 path = "lib.rs"
 

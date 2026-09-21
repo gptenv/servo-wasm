@@ -22,9 +22,7 @@ tracing = ["dep:tracing"]
 
 [dependencies]
 aws-lc-rs = { workspace = true }
-async-compression = { workspace = true, features = ["brotli", "gzip", "tokio", "zlib", "zstd"] }
 async-recursion = { workspace = true }
-async-tungstenite = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
@@ -43,8 +41,6 @@ headers = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["client", "http1", "http2"] }
-hyper-rustls = { workspace = true }
-hyper-util = { workspace = true }
 hyper_serde = { workspace = true }
 imsz = { workspace = true }
 ipc-channel = { workspace = true }
@@ -82,8 +78,6 @@ sea-query-rusqlite = { workspace = true }
 smallvec = { workspace = true }
 tempfile = { workspace = true }
 time = { workspace = true }
-tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "sync"] }
-tokio-rustls = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true, features = ["codec", "io"] }
 tower = { workspace = true }
@@ -93,6 +87,17 @@ url = { workspace = true }
 uuid = { workspace = true }
 webpki-roots = { workspace = true }
 webrender_api = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+async-compression = { workspace = true, features = ["brotli", "gzip", "tokio", "zlib", "zstd"] }
+async-tungstenite = { workspace = true, features = ["tokio-rustls-webpki-roots"] }
+hyper-rustls = { workspace = true, features = ["http1", "http2", "logging", "tls12", "webpki-tokio"] }
+hyper-util = { workspace = true, features = ["client-legacy", "client-proxy", "http2", "tokio"] }
+tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-rustls = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]
 flate2 = { workspace = true }

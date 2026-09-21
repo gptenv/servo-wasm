@@ -165,6 +165,12 @@ class MachCommands(CommandBase):
         status = self.run_cargo_build_like_command("rustc", opts, env=env, verbose=verbose, **kwargs)
 
         if status == 0:
+            # A custom manifest may build a library or a WebAssembly module
+            # instead of the servoshell executable expected by post-build tasks.
+            if "--manifest-path" in opts or any(arg.startswith("--manifest-path=") for arg in opts):
+                print(f"Succeeded in {datetime.timedelta(seconds=int(time() - build_start))}")
+                return 0
+
             if not no_package and self.target.needs_packaging():
                 return_value = Registrar.dispatch(
                     "package", context=self.context, build_type=build_type, flavor=flavor, sanitizer=sanitizer

@@ -63,7 +63,10 @@ pub static enclosing_size: Option<EnclosingSizeFn> = Some(crate::enclosing_size_
 #[cfg(not(feature = "allocation-tracking"))]
 pub static enclosing_size: Option<EnclosingSizeFn> = None;
 
-#[cfg(all(feature = "use-jemalloc", not(any(windows, target_env = "ohos"))))]
+#[cfg(all(
+    feature = "use-jemalloc",
+    not(any(windows, target_env = "ohos", target_arch = "wasm32"))
+))]
 mod platform {
     use std::ffi::CStr;
     use std::mem::size_of_val;
@@ -152,7 +155,11 @@ mod platform {
     }
 }
 
-#[cfg(all(not(windows), any(target_env = "ohos", not(feature = "use-jemalloc"))))]
+#[cfg(all(
+    not(windows),
+    not(target_arch = "wasm32"),
+    any(target_env = "ohos", not(feature = "use-jemalloc"))
+))]
 mod platform {
     pub use std::alloc::System as Allocator;
     use std::os::raw::c_void;
@@ -215,6 +222,69 @@ mod platform {
             crate::ALLOC.note_allocation(ptr, size);
             size
         }
+    }
+
+    pub fn heap_reports() -> Vec<crate::HeapReport> {
+        Vec::new()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+mod platform {
+    use std::alloc::{GlobalAlloc, Layout};
+    use std::ffi::c_void;
+    use std::os::raw::c_void as raw_c_void;
+    use std::{mem, ptr};
+
+    // wasm32-unknown-unknown has no libc at all: not even the stub that
+    // other targets get from the `libc` crate. Rust's own built-in
+    // `std::alloc::System` allocator for this target *would* work on its
+    // own, but this crate's whole job is being the *one* global allocator
+    // shared by everything linked into the final wasm module -- including
+    // mozjs-wasm's C++ (SpiderMonkey calls libc malloc/free directly, not
+    // through Rust's allocator hooks). If Rust's built-in allocator and a
+    // separate C allocator each independently assumed they owned memory
+    // starting at the linker's `__heap_base`, they would hand out
+    // overlapping addresses the first time both were used. So instead this
+    // links against wasi-sysroot's libc (see build.rs) purely for its
+    // malloc implementation, and routes *all* allocation -- Rust's and
+    // C++'s -- through those same symbols. This mirrors
+    // ports/servo-js-wasm/lib.rs's WorkerAllocator; once this crate and
+    // mozjs-wasm are actually linked into one binary, that copy becomes
+    // redundant and should be removed in favor of this one.
+    unsafe extern "C" {
+        fn posix_memalign(out: *mut *mut raw_c_void, align: usize, size: usize) -> i32;
+        fn free(ptr: *mut raw_c_void);
+    }
+
+    pub struct Allocator;
+
+    unsafe impl GlobalAlloc for Allocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let mut out = ptr::null_mut();
+            let align = layout.align().max(mem::size_of::<usize>());
+            if unsafe { posix_memalign(&mut out, align, layout.size().max(1)) } == 0 {
+                out.cast()
+            } else {
+                ptr::null_mut()
+            }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+            unsafe { free(ptr.cast()) };
+        }
+    }
+
+    /// There is no OS API on this target to query a heap block's usable
+    /// size the way `malloc_usable_size`/`HeapSize` do elsewhere, so this
+    /// can't report anything meaningful. Desktop platforms already have
+    /// precedent for this: `heap_reports` below returns an empty `Vec` on
+    /// Windows too, when no introspection API is readily available there.
+    ///
+    /// # Safety
+    /// No restrictions; the pointer is never dereferenced.
+    pub unsafe extern "C" fn usable_size(_ptr: *const c_void) -> usize {
+        0
     }
 
     pub fn heap_reports() -> Vec<crate::HeapReport> {

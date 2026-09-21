@@ -33,7 +33,7 @@ servo-url = { workspace = true }
 stylo_traits = { workspace = true }
 time = { workspace = true }
 uuid = { workspace = true }
-webdriver = { workspace = true }
+webdriver = { workspace = true, features = ["server"] }
 
 [lints]
 workspace = true

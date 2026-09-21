@@ -15,6 +15,7 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use headers::{ContentType, HeaderMapExt, ReferrerPolicy as ReferrerPolicyHeader};
 use http::{HeaderMap, HeaderValue, StatusCode, header};
 use hyper_serde::Serde;
+#[cfg(not(target_arch = "wasm32"))]
 use hyper_util::client::legacy::Error as HyperError;
 use ipc_channel::ipc::IpcSender;
 use malloc_size_of::malloc_size_of_is_0;
@@ -64,6 +65,45 @@ pub use resource_fetch_timing::{
     RedirectEndValue, RedirectStartValue, ResourceAttribute, ResourceFetchTiming,
     ResourceFetchTimingContainer, ResourceTimeValue, ResourceTimingType,
 };
+
+/// `rand` (used just below) pulls in `getrandom` transitively, but
+/// wasm32-unknown-unknown has no OS RNG for its default backends to fall
+/// back on. `getrandom`'s own "wasm_js" feature would work, but it requires
+/// `wasm-bindgen` -- which is not just a library, it's a required CLI
+/// post-processing step that rewrites the compiled `.wasm` and generates a
+/// JS shim that *assembles the import object itself*. That's incompatible
+/// with how this fork loads wasm: a raw compiled module instantiated
+/// directly via `WebAssembly.instantiate()` with a small hand-written
+/// import object (see ports/servo-js-wasm's worker_monotonic_now_ns /
+/// worker_log_error). So this registers getrandom's `custom` backend
+/// against a plain host import instead, in the same style.
+///
+/// Whichever host adapter loads the final wasm module (a Cloudflare Worker
+/// today, potentially another target later) must supply `worker_getrandom`,
+/// backed by real entropy -- e.g. a Worker's `crypto.getRandomValues()`.
+///
+/// This registration must exist exactly once in the final linked binary.
+/// It lives here because servo-net-traits is currently the only crate
+/// pulling in getrandom for wasm32; if that stops being true, move this
+/// somewhere more central instead of duplicating it.
+#[cfg(target_arch = "wasm32")]
+#[allow(unsafe_code)]
+mod wasm_getrandom {
+    #[link(wasm_import_module = "env")]
+    unsafe extern "C" {
+        #[link_name = "worker_getrandom"]
+        fn host_getrandom(ptr: *mut u8, len: usize);
+    }
+
+    #[unsafe(no_mangle)]
+    extern "Rust" fn __getrandom_v03_custom(
+        dest: *mut u8,
+        len: usize,
+    ) -> Result<(), getrandom::Error> {
+        unsafe { host_getrandom(dest, len) };
+        Ok(())
+    }
+}
 
 /// <https://fetch.spec.whatwg.org/#document-accept-header-value>
 pub const DOCUMENT_ACCEPT_HEADER_VALUE: HeaderValue =
@@ -1320,6 +1360,7 @@ impl NetworkError {
         )
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_hyper_error(error: &HyperError, certificate: Option<CertificateDer>) -> Self {
         let error_string = error.to_string();
         match certificate {

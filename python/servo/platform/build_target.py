@@ -60,6 +60,8 @@ class BuildTarget(object):
                 return AndroidTarget(target_triple)
             elif "ohos" in target_triple:
                 return OpenHarmonyTarget(target_triple)
+            elif target_triple == "wasm32-unknown-unknown":
+                return WasmTarget(target_triple)
             elif target_triple != host_triple:
                 raise Exception(f"Unknown build target {target_triple}")
         return BuildTarget(host_triple)
@@ -83,6 +85,13 @@ class BuildTarget(object):
 class CrossBuildTarget(BuildTarget):
     def is_cross_build(self) -> bool:
         return True
+
+
+class WasmTarget(CrossBuildTarget):
+    """Cloudflare Workers-compatible WebAssembly target."""
+
+    def binary_name(self) -> str:
+        return "servoshell.wasm"
 
 
 class AndroidTarget(CrossBuildTarget):

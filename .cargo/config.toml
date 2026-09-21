@@ -28,6 +28,14 @@ linker = "lld-link.exe"
 [target.aarch64-uwp-windows-msvc]
 linker = "lld-link.exe"
 
+[target.wasm32-unknown-unknown]
+# getrandom 0.3+ selects its backend via this --cfg rather than a Cargo
+# feature (Cargo features are additive/unified across the whole dependency
+# graph, which doesn't work for something as host-specific as "how do I get
+# entropy"). See the wasm_getrandom module in components/shared/net/lib.rs
+# for the actual host-import implementation this activates.
+rustflags = ["--cfg", "getrandom_backend=\"custom\""]
+
 [env]
 MACOSX_DEPLOYMENT_TARGET = "13.0"
 RUSTC_BOOTSTRAP = "crown,script,script_webgpu,script_bindings,style_tests,mozjs,mozjs_sys"

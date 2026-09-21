@@ -1,0 +1,18 @@
+[package]
+name = "servo-font-wasm-check"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lib]
+path = "lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+webrender_api = { workspace = true }
+wr_glyph_rasterizer = "0.70"
+
+[lints]
+workspace = true
