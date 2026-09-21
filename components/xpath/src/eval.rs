@@ -48,32 +48,32 @@ impl Expression {
                 let value = match binary_operator {
                     BinaryOperator::Equal => (left_value.partial_eq(cx, &right_value)).into(),
                     BinaryOperator::NotEqual => (!left_value.partial_eq(cx, &right_value)).into(),
-                    BinaryOperator::LessThan => (left_value.convert_to_number(cx) <
-                        right_value.convert_to_number(cx))
+                    BinaryOperator::LessThan => (left_value.convert_to_number(cx)
+                        < right_value.convert_to_number(cx))
                     .into(),
-                    BinaryOperator::GreaterThan => (left_value.convert_to_number(cx) >
-                        right_value.convert_to_number(cx))
+                    BinaryOperator::GreaterThan => (left_value.convert_to_number(cx)
+                        > right_value.convert_to_number(cx))
                     .into(),
-                    BinaryOperator::LessThanOrEqual => (left_value.convert_to_number(cx) <=
-                        right_value.convert_to_number(cx))
+                    BinaryOperator::LessThanOrEqual => (left_value.convert_to_number(cx)
+                        <= right_value.convert_to_number(cx))
                     .into(),
-                    BinaryOperator::GreaterThanOrEqual => (left_value.convert_to_number(cx) >=
-                        right_value.convert_to_number(cx))
+                    BinaryOperator::GreaterThanOrEqual => (left_value.convert_to_number(cx)
+                        >= right_value.convert_to_number(cx))
                     .into(),
-                    BinaryOperator::Add => (left_value.convert_to_number(cx) +
-                        right_value.convert_to_number(cx))
+                    BinaryOperator::Add => (left_value.convert_to_number(cx)
+                        + right_value.convert_to_number(cx))
                     .into(),
-                    BinaryOperator::Subtract => (left_value.convert_to_number(cx) -
-                        right_value.convert_to_number(cx))
+                    BinaryOperator::Subtract => (left_value.convert_to_number(cx)
+                        - right_value.convert_to_number(cx))
                     .into(),
-                    BinaryOperator::Multiply => (left_value.convert_to_number(cx) *
-                        right_value.convert_to_number(cx))
+                    BinaryOperator::Multiply => (left_value.convert_to_number(cx)
+                        * right_value.convert_to_number(cx))
                     .into(),
-                    BinaryOperator::Divide => (left_value.convert_to_number(cx) /
-                        right_value.convert_to_number(cx))
+                    BinaryOperator::Divide => (left_value.convert_to_number(cx)
+                        / right_value.convert_to_number(cx))
                     .into(),
-                    BinaryOperator::Modulo => (left_value.convert_to_number(cx) %
-                        right_value.convert_to_number(cx))
+                    BinaryOperator::Modulo => (left_value.convert_to_number(cx)
+                        % right_value.convert_to_number(cx))
                     .into(),
                     BinaryOperator::Union => {
                         let as_nodes = |cx: &mut D::Context, e: &Expression| {
@@ -305,14 +305,14 @@ impl LocationStepExpression {
         // Enforce tree order between nodes in the list
         if matches!(
             self.axis,
-            Axis::Child |
-                Axis::Descendant |
-                Axis::Parent |
-                Axis::Following |
-                Axis::FollowingSibling |
-                Axis::Attribute |
-                Axis::Self_ |
-                Axis::DescendantOrSelf
+            Axis::Child
+                | Axis::Descendant
+                | Axis::Parent
+                | Axis::Following
+                | Axis::FollowingSibling
+                | Axis::Attribute
+                | Axis::Self_
+                | Axis::DescendantOrSelf
         ) {
             // The elements on these axis values are already in tree order
             filtered_nodes.assume_sorted(cx);

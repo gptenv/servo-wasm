@@ -121,8 +121,8 @@ impl LayerManagerAPI<SurfmanGL> for SurfmanLayerManager {
         self.layers.retain(|&ids| ids != (context_id, layer_id));
         let _ = self.swap_chains.destroy(layer_id, &device, context);
 
-        if let Some(surface_texture) = self.surface_textures.remove(&layer_id) &&
-            let Ok(mut surface) = device.destroy_surface_texture(context, surface_texture)
+        if let Some(surface_texture) = self.surface_textures.remove(&layer_id)
+            && let Ok(mut surface) = device.destroy_surface_texture(context, surface_texture)
         {
             let _ = device.destroy_surface(context, &mut surface);
         }

@@ -138,16 +138,16 @@ impl Render for RenderAndroid {
 
         let info = gstreamer_video::VideoInfo::from_caps(caps).ok()?;
 
-        if self.gst_context.lock().unwrap().is_some() &&
-            let Some(sync_meta) = buffer.meta::<gstreamer_gl::GLSyncMeta>()
+        if self.gst_context.lock().unwrap().is_some()
+            && let Some(sync_meta) = buffer.meta::<gstreamer_gl::GLSyncMeta>()
         {
             sync_meta.set_sync_point(self.gst_context.lock().unwrap().as_ref().unwrap());
         }
 
         let frame = gstreamer_gl::GLVideoFrame::from_buffer_readable(buffer, &info).ok()?;
 
-        if self.gst_context.lock().unwrap().is_some() &&
-            let Some(sync_meta) = frame.buffer().meta::<gstreamer_gl::GLSyncMeta>()
+        if self.gst_context.lock().unwrap().is_some()
+            && let Some(sync_meta) = frame.buffer().meta::<gstreamer_gl::GLSyncMeta>()
         {
             // This should possibly be
             // sync_meta.wait(&self.app_context);
@@ -203,8 +203,8 @@ impl Render for RenderAndroid {
         let display_ = self.display.clone();
         let context_ = self.app_context.clone();
         bus.set_sync_handler(move |_, msg| {
-            if let gstreamer::MessageView::NeedContext(ctxt) = msg.view() &&
-                let Some(el) = msg
+            if let gstreamer::MessageView::NeedContext(ctxt) = msg.view()
+                && let Some(el) = msg
                     .src()
                     .map(|s| s.clone().downcast::<gstreamer::Element>().unwrap())
             {

@@ -237,9 +237,9 @@ impl TextRunSegment {
             return false;
         }
 
-        !script_is_specific(self.info.script) ||
-            !script_is_specific(new_script) ||
-            self.info.script == new_script
+        !script_is_specific(self.info.script)
+            || !script_is_specific(new_script)
+            || self.info.script == new_script
     }
 
     /// Update this segment to end at the given byte and character index. The update will only ever
@@ -540,8 +540,8 @@ impl TextRun {
         let mut next_byte_index = self.text_range.start;
         for (relative_character_index, (character, next_character)) in char_iterator.enumerate() {
             // The current character index within the entire inline formatting context's text.
-            let current_character_index = self.run_data.character_range_in_ifc_text.start +
-                Utf32CodeUnits(relative_character_index as u32);
+            let current_character_index = self.run_data.character_range_in_ifc_text.start
+                + Utf32CodeUnits(relative_character_index as u32);
 
             let current_byte_index = next_byte_index;
             next_byte_index += Utf8CodeUnits::length_of_char(character);
@@ -589,8 +589,8 @@ impl TextRun {
             };
 
             // If the existing segment is compatible with the character, just merge the character into it.
-            if let Some(current) = current.as_mut() &&
-                current.is_compatible(&font, script, bidi_level)
+            if let Some(current) = current.as_mut()
+                && current.is_compatible(&font, script, bidi_level)
             {
                 current.update(
                     next_byte_index,
@@ -706,8 +706,8 @@ impl TextRun {
             .current_inline_container_state()
             .style
             .get_inherited_text()
-            .white_space_collapse ==
-            WhiteSpaceCollapse::BreakSpaces
+            .white_space_collapse
+            == WhiteSpaceCollapse::BreakSpaces
         {
             ifc_layout.process_soft_wrap_opportunity();
         }
@@ -721,13 +721,13 @@ impl TextRun {
 fn is_cursive_script(script: Script) -> bool {
     matches!(
         script,
-        Script::Arabic |
-            Script::Hanifi_Rohingya |
-            Script::Mandaic |
-            Script::Mongolian |
-            Script::Nko |
-            Script::Phags_Pa |
-            Script::Syriac
+        Script::Arabic
+            | Script::Hanifi_Rohingya
+            | Script::Mandaic
+            | Script::Mongolian
+            | Script::Nko
+            | Script::Phags_Pa
+            | Script::Syriac
     )
 }
 
@@ -747,11 +747,11 @@ fn character_cannot_change_font(character: char) -> bool {
 
     matches!(
         LineBreak::for_char(character),
-        LineBreak::CombiningMark |
-            LineBreak::Glue |
-            LineBreak::ZWSpace |
-            LineBreak::WordJoiner |
-            LineBreak::ZWJ
+        LineBreak::CombiningMark
+            | LineBreak::Glue
+            | LineBreak::ZWSpace
+            | LineBreak::WordJoiner
+            | LineBreak::ZWJ
     )
 }
 

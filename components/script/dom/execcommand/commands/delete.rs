@@ -55,10 +55,10 @@ pub(crate) fn execute_delete_command(
     loop {
         // Step 4.1. If offset is zero and node's previousSibling is an editable invisible node,
         // remove node's previousSibling from its parent.
-        if offset == 0 &&
-            let Some(sibling) = node.GetPreviousSibling() &&
-            sibling.is_editable() &&
-            sibling.is_invisible(cx.no_gc())
+        if offset == 0
+            && let Some(sibling) = node.GetPreviousSibling()
+            && sibling.is_editable()
+            && sibling.is_invisible(cx.no_gc())
         {
             sibling.remove_self(cx);
             continue;
@@ -70,9 +70,9 @@ pub(crate) fn execute_delete_command(
                 .children_unrooted(cx.no_gc())
                 .nth(offset as usize - 1)
                 .map(|node| node.as_rooted());
-            if let Some(child) = child &&
-                child.is_editable() &&
-                child.is_invisible(cx.no_gc())
+            if let Some(child) = child
+                && child.is_editable()
+                && child.is_invisible(cx.no_gc())
             {
                 child.remove_self(cx);
                 offset -= 1;
@@ -100,9 +100,9 @@ pub(crate) fn execute_delete_command(
                 }
                 // Step 4.5. Otherwise, if node has a child with index offset − 1 and that child is not a block node or a br or an img,
                 // set node to that child, then set offset to the length of node.
-                if !(child.is_block_node() ||
-                    child.is::<HTMLBRElement>() ||
-                    child.is::<HTMLImageElement>())
+                if !(child.is_block_node()
+                    || child.is::<HTMLBRElement>()
+                    || child.is::<HTMLImageElement>())
                 {
                     node = child;
                     offset = node.len();
@@ -116,15 +116,16 @@ pub(crate) fn execute_delete_command(
 
     // Step 5. If node is a Text node and offset is not zero, or if node is
     // a block node that has a child with index offset − 1 and that child is a br or hr or img:
-    if (node.is::<Text>() && offset != 0) ||
-        (offset > 0 &&
-            node.is_block_node() &&
-            node.children_unrooted(cx.no_gc())
+    if (node.is::<Text>() && offset != 0)
+        || (offset > 0
+            && node.is_block_node()
+            && node
+                .children_unrooted(cx.no_gc())
                 .nth(offset as usize - 1)
                 .is_some_and(|child| {
-                    child.is::<HTMLBRElement>() ||
-                        child.is::<HTMLHRElement>() ||
-                        child.is::<HTMLImageElement>()
+                    child.is::<HTMLBRElement>()
+                        || child.is::<HTMLHRElement>()
+                        || child.is::<HTMLImageElement>()
                 }))
     {
         // Step 5.1. Call collapse(node, offset) on the context object's selection.
@@ -155,8 +156,8 @@ pub(crate) fn execute_delete_command(
     ) && node
         .GetParentNode()
         .and_then(|parent| parent.children_unrooted(cx.no_gc()).next())
-        .is_some_and(|first| **first == *node) &&
-        offset == 0
+        .is_some_and(|first| **first == *node)
+        && offset == 0
     {
         // Step 7.1. Let items be a list of all lis that are ancestors of node.
         // TODO
@@ -172,8 +173,8 @@ pub(crate) fn execute_delete_command(
         // any of its ancestors in the same editing host,
         // set the tag name of node to the default single-line container name
         // and let node be the result.
-        if node_matches_local_name!(node, local_name!("dd") | local_name!("dt")) &&
-            node.is_no_allowed_child_in_same_editing_host(cx.no_gc())
+        if node_matches_local_name!(node, local_name!("dd") | local_name!("dt"))
+            && node.is_no_allowed_child_in_same_editing_host(cx.no_gc())
         {
             node = node
                 .downcast::<Element>()
@@ -216,9 +217,9 @@ pub(crate) fn execute_delete_command(
             .children_unrooted(cx.no_gc())
             .nth(start_offset as usize - 1)
             .map(|node| node.as_rooted());
-        if let Some(child) = child &&
-            child.is_editable() &&
-            child.is_invisible(cx.no_gc())
+        if let Some(child) = child
+            && child.is_editable()
+            && child.is_invisible(cx.no_gc())
         {
             child.remove_self(cx);
             start_offset -= 1;
@@ -241,8 +242,8 @@ pub(crate) fn execute_delete_command(
     }
 
     // Step 12. If start node has a child with index start offset − 1, and that child is a table:
-    if start_offset > 0 &&
-        start_node
+    if start_offset > 0
+        && start_node
             .children_unrooted(cx.no_gc())
             .nth((start_offset - 1) as usize)
             .is_some_and(|child| child.is::<HTMLTableElement>())
@@ -259,15 +260,15 @@ pub(crate) fn execute_delete_command(
 
     // Step 13. If offset is zero; and either the child of start node with index start offset
     // minus one is an hr, or the child is a br whose previousSibling is either a br or not an inline node:
-    if offset == 0 &&
-        (start_offset > 0 &&
-            start_node
+    if offset == 0
+        && (start_offset > 0
+            && start_node
                 .children_unrooted(cx.no_gc())
                 .nth(start_offset as usize - 1)
                 .is_some_and(|child| {
-                    child.is::<HTMLHRElement>() ||
-                        (child.is::<HTMLBRElement>() &&
-                            child.GetPreviousSibling().is_some_and(|previous| {
+                    child.is::<HTMLHRElement>()
+                        || (child.is::<HTMLBRElement>()
+                            && child.GetPreviousSibling().is_some_and(|previous| {
                                 previous.is::<HTMLBRElement>() || !previous.is_inline_node()
                             }))
                 }))

@@ -154,8 +154,8 @@ impl StorageManagerMethods<crate::DomTypeHolder> for StorageManager {
         if global
             .storage_threads()
             .persisted(global.origin().immutable().clone(), callback.clone())
-            .is_err() &&
-            let Err(error) = callback.send(Err("Failed to queue storage task".to_owned()))
+            .is_err()
+            && let Err(error) = callback.send(Err("Failed to queue storage task".to_owned()))
         {
             error!("Failed to deliver StorageManager persisted error: {error}");
         }
@@ -210,8 +210,8 @@ impl StorageManagerMethods<crate::DomTypeHolder> for StorageManager {
                 permission == PermissionState::Granted,
                 callback.clone(),
             )
-            .is_err() &&
-            let Err(error) = callback.send(Err("Failed to queue storage task".to_owned()))
+            .is_err()
+            && let Err(error) = callback.send(Err("Failed to queue storage task".to_owned()))
         {
             error!("Failed to deliver StorageManager persist error: {error}");
         }
@@ -258,8 +258,8 @@ impl StorageManagerMethods<crate::DomTypeHolder> for StorageManager {
         if global
             .storage_threads()
             .estimate(global.origin().immutable().clone(), callback.clone())
-            .is_err() &&
-            let Err(error) = callback.send(Err("Failed to queue storage task".to_owned()))
+            .is_err()
+            && let Err(error) = callback.send(Err("Failed to queue storage task".to_owned()))
         {
             error!("Failed to deliver StorageManager estimate error: {error}");
         }

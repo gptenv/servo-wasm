@@ -1010,10 +1010,10 @@ fn assert_rect_eq(actual: Rect, expected: Rect) {
     // Bounds are converted from `Au`, which has a resolution of 1/60th of a CSS pixel.
     const EPSILON: f64 = 0.05;
     assert!(
-        (actual.x0 - expected.x0).abs() < EPSILON &&
-            (actual.y0 - expected.y0).abs() < EPSILON &&
-            (actual.x1 - expected.x1).abs() < EPSILON &&
-            (actual.y1 - expected.y1).abs() < EPSILON,
+        (actual.x0 - expected.x0).abs() < EPSILON
+            && (actual.y0 - expected.y0).abs() < EPSILON
+            && (actual.x1 - expected.x1).abs() < EPSILON
+            && (actual.y1 - expected.y1).abs() < EPSILON,
         "expected bounds {expected:?} but got {actual:?}"
     );
 }

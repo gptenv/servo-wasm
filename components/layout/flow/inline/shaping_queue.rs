@@ -97,9 +97,9 @@ impl BatchSlicer<'_> {
         let mut break_at_start = false;
 
         let text_style = parent_style.get_inherited_text();
-        let can_break_anywhere = text_style.word_break == WordBreak::BreakAll ||
-            text_style.overflow_wrap == OverflowWrap::Anywhere ||
-            text_style.overflow_wrap == OverflowWrap::BreakWord;
+        let can_break_anywhere = text_style.word_break == WordBreak::BreakAll
+            || text_style.overflow_wrap == OverflowWrap::Anywhere
+            || text_style.overflow_wrap == OverflowWrap::BreakWord;
 
         let mut last_slice = segment.byte_range.start..segment.byte_range.start;
         let mut current_character_offset =
@@ -140,8 +140,8 @@ impl BatchSlicer<'_> {
                 // but not before. This means that we should not split off the first whitespace.
                 //
                 // An exception to this is if the style tells us that we can break in the middle of words.
-                if text_style.white_space_collapse == WhiteSpaceCollapse::BreakSpaces &&
-                    !can_break_anywhere
+                if text_style.white_space_collapse == WhiteSpaceCollapse::BreakSpaces
+                    && !can_break_anywhere
                 {
                     whitespace.start += Utf8CodeUnits::length_of_char(first_white_space_character);
                     slice_type = ShapedTextSliceType::WordAndWhiteSpace;
@@ -152,10 +152,10 @@ impl BatchSlicer<'_> {
 
             // If there's no whitespace and `word-break` is set to `keep-all`, try increasing the slice.
             // TODO: This should only happen for CJK text.
-            if !ends_with_whitespace &&
-                *break_index != segment.byte_range.end &&
-                text_style.word_break == WordBreak::KeepAll &&
-                !can_break_anywhere
+            if !ends_with_whitespace
+                && *break_index != segment.byte_range.end
+                && text_style.word_break == WordBreak::KeepAll
+                && !can_break_anywhere
             {
                 continue;
             }
@@ -330,23 +330,24 @@ impl<'a> ShapingQueue<'a> {
 
         // The new text is only compatible with the current batch if their character and
         // text byte boundaries are contiguous.
-        if last.character_range.end != text.character_range.start ||
-            last.byte_range.end != text.byte_range.start
+        if last.character_range.end != text.character_range.start
+            || last.byte_range.end != text.byte_range.start
         {
             return false;
         }
 
         // The `FontInfo`s of the batch and the new text need to match exactly to shape
         // together.
-        if !Arc::ptr_eq(&last.info.font_info, &text.info.font_info) &&
-            *last.info.font_info != *text.info.font_info
+        if !Arc::ptr_eq(&last.info.font_info, &text.info.font_info)
+            && *last.info.font_info != *text.info.font_info
         {
             return false;
         }
 
         // Any resolved `Script` has to be compatible with any new specific `Script`.
-        !script_is_specific(text.info.script) ||
-            self.resolved_script
+        !script_is_specific(text.info.script)
+            || self
+                .resolved_script
                 .is_none_or(|resolved_script| resolved_script == text.info.script)
     }
 

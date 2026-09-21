@@ -358,8 +358,8 @@ impl VirtualMethods for HTMLMetaElement {
         let affects_color_scheme = if *attr.local_name() == local_name!("name") {
             mutation.old_value(attr).is_color_scheme() || mutation.new_value(attr).is_color_scheme()
         } else {
-            self.upcast::<Element>().get_name().is_color_scheme() &&
-                *attr.local_name() == local_name!("content")
+            self.upcast::<Element>().get_name().is_color_scheme()
+                && *attr.local_name() == local_name!("content")
         };
 
         if affects_color_scheme {

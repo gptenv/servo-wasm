@@ -121,6 +121,8 @@ pub use crate::webview_delegate::{
     InputMethodControl, NavigationRequest, PermissionRequest, PromptDialog, SelectElement,
     SimpleDialog, WebResourceLoad, WebViewDelegate,
 };
+#[cfg(target_arch = "wasm32")]
+pub use net::resource_thread::{WorkerFetchHandler, pump_worker_fetches, set_worker_fetch_handler};
 
 #[cfg(feature = "webxr")]
 pub mod webxr {
@@ -134,6 +136,7 @@ pub mod webxr {
 }
 
 // TODO: The protocol handler interface needs to be cleaned and simplified.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod protocol_handler {
     pub use net::fetch::methods::{DoneChannel, FetchContext};
     pub use net::filemanager_thread::FILE_CHUNK_SIZE;

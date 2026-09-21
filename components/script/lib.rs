@@ -8,6 +8,25 @@
 // Register the linter `crown`, which is the Servo-specific linter for the script crate.
 #![cfg_attr(crown, register_tool(crown))]
 
+// A small compatibility surface for the libc spellings used by shared DOM
+// code. The actual libc APIs are only compiled on native targets; the Worker
+// build needs these C-layout scalar types for SpiderMonkey/DOM signatures.
+#[cfg(target_arch = "wasm32")]
+extern crate self as libc;
+
+#[cfg(target_arch = "wasm32")]
+#[allow(non_camel_case_types)]
+pub type c_char = i8;
+#[cfg(target_arch = "wasm32")]
+#[allow(non_camel_case_types)]
+pub type c_uint = u32;
+#[cfg(target_arch = "wasm32")]
+#[allow(non_camel_case_types)]
+pub type uintptr_t = usize;
+#[cfg(target_arch = "wasm32")]
+#[allow(non_camel_case_types)]
+pub type c_void = core::ffi::c_void;
+
 // These are used a lot so let's keep them for now
 #[macro_use]
 extern crate js;

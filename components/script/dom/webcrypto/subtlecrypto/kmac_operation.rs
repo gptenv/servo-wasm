@@ -291,15 +291,15 @@ pub(crate) fn import_key(
             // If the name member of normalizedAlgorithm is a case-sensitive string match for
             // "KMAC256":
             //     If the alg field of jwk is present and is not "K256", then throw a DataError.
-            if normalized_algorithm.name == CryptoAlgorithm::Kmac128 &&
-                jwk.alg.as_ref().is_some_and(|alg| alg != "K128")
+            if normalized_algorithm.name == CryptoAlgorithm::Kmac128
+                && jwk.alg.as_ref().is_some_and(|alg| alg != "K128")
             {
                 return Err(Error::Data(Some(
                     "The alg field of jwk is present and is not \"K128\"".into(),
                 )));
             }
-            if normalized_algorithm.name == CryptoAlgorithm::Kmac256 &&
-                jwk.alg.as_ref().is_some_and(|alg| alg != "K256")
+            if normalized_algorithm.name == CryptoAlgorithm::Kmac256
+                && jwk.alg.as_ref().is_some_and(|alg| alg != "K256")
             {
                 return Err(Error::Data(Some(
                     "The alg field of jwk is present and is not \"K256\"".into(),

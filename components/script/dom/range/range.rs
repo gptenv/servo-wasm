@@ -164,8 +164,8 @@ impl Range {
     pub(crate) fn contains(&self, no_gc: &NoGC, node: &Node) -> bool {
         // > A node node is contained in a live range range if node’s root is range’s root,
         // > and (node, 0) is after range’s start, and (node, node’s length) is before range’s end.
-        node.GetRootNode(&Default::default()) == self.root() &&
-            matches!(
+        node.GetRootNode(&Default::default()) == self.root()
+            && matches!(
                 (
                     bp_position(no_gc, node, 0, &self.start_container(), self.start_offset()),
                     bp_position(
@@ -186,8 +186,9 @@ impl Range {
         // > of the live range’s start node but not its end node, or vice versa.
         self.start_container()
             .inclusive_ancestors(ShadowIncluding::No)
-            .any(|n| &*n == node) !=
-            self.end_container()
+            .any(|n| &*n == node)
+            != self
+                .end_container()
                 .inclusive_ancestors(ShadowIncluding::No)
                 .any(|n| &*n == node)
     }
@@ -428,8 +429,8 @@ impl Range {
             StartOrEnd::Start => {
                 // Step 4.1. If range’s root is not equal to node’s root, or if bp is after
                 // the range’s end, set range’s end to bp.
-                if self.root() != node.GetRootNode(&Default::default()) ||
-                    bp_position(
+                if self.root() != node.GetRootNode(&Default::default())
+                    || bp_position(
                         no_gc,
                         node,
                         offset,
@@ -450,8 +451,8 @@ impl Range {
             StartOrEnd::End => {
                 // Step 4.1. If range’s root is not equal to node’s root, or if bp is
                 // before the range’s start, set range’s start to bp.
-                if self.root() != node.GetRootNode(&Default::default()) ||
-                    bp_position(
+                if self.root() != node.GetRootNode(&Default::default())
+                    || bp_position(
                         no_gc,
                         node,
                         offset,
@@ -499,8 +500,8 @@ impl Range {
     }
 
     pub(crate) fn start_and_end_are_in_document_tree(&self) -> bool {
-        self.start_container().is_in_a_document_tree() &&
-            self.end_container().is_in_a_document_tree()
+        self.start_container().is_in_a_document_tree()
+            && self.end_container().is_in_a_document_tree()
     }
 }
 
@@ -715,10 +716,10 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
         // start, then return true.
         // Step 6. Return false.
         let start_node = self.start_container();
-        Ordering::Greater ==
-            bp_position(no_gc, &parent, offset + 1, &start_node, self.start_offset()) &&
-            Ordering::Less ==
-                bp_position(
+        Ordering::Greater
+            == bp_position(no_gc, &parent, offset + 1, &start_node, self.start_offset())
+            && Ordering::Less
+                == bp_position(
                     no_gc,
                     &parent,
                     offset,
@@ -744,8 +745,8 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
             return Ok(fragment);
         }
 
-        if end_node == start_node &&
-            let Some(cdata) = start_node.downcast::<CharacterData>()
+        if end_node == start_node
+            && let Some(cdata) = start_node.downcast::<CharacterData>()
         {
             // Steps 4.1-2.
             let data = cdata
@@ -849,8 +850,8 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
             return Ok(fragment);
         }
 
-        if end_node == start_node &&
-            let Some(end_data) = end_node.downcast::<CharacterData>()
+        if end_node == start_node
+            && let Some(end_data) = end_node.downcast::<CharacterData>()
         {
             // Step 4.1.
             let clone = end_node.CloneNode(cx, /* deep */ true)?;
@@ -1054,8 +1055,8 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
             .map_or(parent.len(), |node| node.index());
 
         // Step 11
-        let new_offset = new_offset +
-            if let NodeTypeId::DocumentFragment(_) = node.type_id() {
+        let new_offset = new_offset
+            + if let NodeTypeId::DocumentFragment(_) = node.type_id() {
                 node.len()
             } else {
                 1
@@ -1087,8 +1088,8 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
         let end_offset = self.end_offset();
 
         // Step 3. If originalStartNode is originalEndNode and it is a CharacterData node:
-        if start_node == end_node &&
-            let Some(text) = start_node.downcast::<CharacterData>()
+        if start_node == end_node
+            && let Some(text) = start_node.downcast::<CharacterData>()
         {
             // Step 3.1. Replace data of originalStartNode with originalStartOffset,
             // originalEndOffset − originalStartOffset, and the empty string.
@@ -1183,8 +1184,9 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
 
         if start
             .inclusive_ancestors(ShadowIncluding::No)
-            .any(|n| !n.is_inclusive_ancestor_of(&end) && !n.is::<Text>()) ||
-            end.inclusive_ancestors(ShadowIncluding::No)
+            .any(|n| !n.is_inclusive_ancestor_of(&end) && !n.is::<Text>())
+            || end
+                .inclusive_ancestors(ShadowIncluding::No)
                 .any(|n| !n.is_inclusive_ancestor_of(&start) && !n.is::<Text>())
         {
             return Err(Error::InvalidState(None));
@@ -1192,9 +1194,9 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
 
         // Step 2.
         match new_parent.type_id() {
-            NodeTypeId::Document(_) |
-            NodeTypeId::DocumentType |
-            NodeTypeId::DocumentFragment(_) => {
+            NodeTypeId::Document(_)
+            | NodeTypeId::DocumentType
+            | NodeTypeId::DocumentFragment(_) => {
                 return Err(Error::InvalidNodeType(None));
             },
             _ => (),
@@ -1302,8 +1304,8 @@ impl RangeMethods<crate::DomTypeHolder> for Range {
         // Step 5. Otherwise, if node implements Text or Comment, set element to node's parent element.
         let element = match node.type_id() {
             NodeTypeId::Element(_) => Some(DomRoot::downcast::<Element>(node).unwrap()),
-            NodeTypeId::CharacterData(CharacterDataTypeId::Comment) |
-            NodeTypeId::CharacterData(CharacterDataTypeId::Text(_)) => node.GetParentElement(),
+            NodeTypeId::CharacterData(CharacterDataTypeId::Comment)
+            | NodeTypeId::CharacterData(CharacterDataTypeId::Text(_)) => node.GetParentElement(),
             _ => None,
         };
 
@@ -1497,15 +1499,15 @@ impl Document {
 
             // Step 6: For each live range whose start node is parent and start offset is
             // greater than index, decrease its start offset by 1.
-            if &*range.start_container() == parent_of_removed_node &&
-                range.start_offset() > index_of_removed_node()
+            if &*range.start_container() == parent_of_removed_node
+                && range.start_offset() > index_of_removed_node()
             {
                 range.set_start_without_reporting(parent_of_removed_node, range.start_offset() - 1);
             }
             // Step 7: For each live range whose end node is parent and end offset is greater than
             // index, decrease its end offset by 1.
-            if &*range.end_container() == parent_of_removed_node &&
-                range.end_offset() > index_of_removed_node()
+            if &*range.end_container() == parent_of_removed_node
+                && range.end_offset() > index_of_removed_node()
             {
                 range.set_end_without_reporting(parent_of_removed_node, range.end_offset() - 1);
             }
@@ -1581,9 +1583,9 @@ impl Document {
             // offset to offset.
             let start_container = range.start_container();
             let start_offset = range.start_offset();
-            if &*start_container == node &&
-                start_offset > offset &&
-                start_offset <= offset + removed_code_units
+            if &*start_container == node
+                && start_offset > offset
+                && start_offset <= offset + removed_code_units
             {
                 range.set_start_without_reporting(node, offset);
             }
@@ -1592,9 +1594,9 @@ impl Document {
             // offset to offset.
             let end_container = range.end_container();
             let end_offset = range.end_offset();
-            if &*end_container == node &&
-                end_offset > offset &&
-                end_offset <= offset + removed_code_units
+            if &*end_container == node
+                && end_offset > offset
+                && end_offset <= offset + removed_code_units
             {
                 range.set_end_without_reporting(node, offset);
             }

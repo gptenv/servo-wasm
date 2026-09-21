@@ -64,9 +64,9 @@ impl FontTemplateDescriptor {
     }
 
     pub fn is_variation_font(&self) -> bool {
-        self.weight.0 != self.weight.1 ||
-            self.width.0 != self.width.1 ||
-            self.style.0 != self.style.1
+        self.weight.0 != self.weight.1
+            || self.width.0 != self.width.1
+            || self.style.0 != self.style.1
     }
 
     /// Returns a score indicating how far apart visually the two font descriptors are. This is
@@ -99,18 +99,18 @@ impl FontTemplateDescriptor {
         const STYLE_FACTOR: f32 = 1.0e4;
         const WEIGHT_FACTOR: f32 = 1.0e0;
 
-        width_distance * WIDTH_FACTOR +
-            style_distance * STYLE_FACTOR +
-            weight_distance * WEIGHT_FACTOR
+        width_distance * WIDTH_FACTOR
+            + style_distance * STYLE_FACTOR
+            + weight_distance * WEIGHT_FACTOR
     }
 
     fn matches(&self, descriptor_to_match: &FontDescriptor) -> bool {
-        self.weight.0 <= descriptor_to_match.weight &&
-            self.weight.1 >= descriptor_to_match.weight &&
-            self.style.0 <= descriptor_to_match.style &&
-            self.style.1 >= descriptor_to_match.style &&
-            self.width.0 <= descriptor_to_match.width &&
-            self.width.1 >= descriptor_to_match.width
+        self.weight.0 <= descriptor_to_match.weight
+            && self.weight.1 >= descriptor_to_match.weight
+            && self.style.0 <= descriptor_to_match.style
+            && self.style.1 >= descriptor_to_match.style
+            && self.width.0 <= descriptor_to_match.width
+            && self.width.1 >= descriptor_to_match.width
     }
 
     pub fn override_values_with_css_font_template_descriptors(

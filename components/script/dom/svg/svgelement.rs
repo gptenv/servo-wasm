@@ -118,30 +118,30 @@ impl VirtualMethods for SVGElement {
     fn attribute_affects_presentational_hints(&self, attr: AttrRef<'_>) -> bool {
         matches!(
             attr.local_name(),
-            &local_name!("fill") |
-                &local_name!("fill-opacity") |
-                &local_name!("fill-rule") |
-                &local_name!("stroke") |
-                &local_name!("stroke-width") |
-                &local_name!("stroke-linecap") |
-                &local_name!("stroke-linejoin") |
-                &local_name!("stroke-dasharray") |
-                &local_name!("stroke-dashoffset") |
-                &local_name!("stroke-miterlimit") |
-                &local_name!("stroke-opacity") |
-                &local_name!("display") |
-                &local_name!("visibility") |
-                &local_name!("opacity") |
-                &local_name!("cx") |
-                &local_name!("cy") |
-                &local_name!("r") |
-                &local_name!("rx") |
-                &local_name!("ry") |
-                &local_name!("x") |
-                &local_name!("y") |
-                &local_name!("width") |
-                &local_name!("height") |
-                &local_name!("d")
+            &local_name!("fill")
+                | &local_name!("fill-opacity")
+                | &local_name!("fill-rule")
+                | &local_name!("stroke")
+                | &local_name!("stroke-width")
+                | &local_name!("stroke-linecap")
+                | &local_name!("stroke-linejoin")
+                | &local_name!("stroke-dasharray")
+                | &local_name!("stroke-dashoffset")
+                | &local_name!("stroke-miterlimit")
+                | &local_name!("stroke-opacity")
+                | &local_name!("display")
+                | &local_name!("visibility")
+                | &local_name!("opacity")
+                | &local_name!("cx")
+                | &local_name!("cy")
+                | &local_name!("r")
+                | &local_name!("rx")
+                | &local_name!("ry")
+                | &local_name!("x")
+                | &local_name!("y")
+                | &local_name!("width")
+                | &local_name!("height")
+                | &local_name!("d")
         ) || self
             .super_type()
             .unwrap()

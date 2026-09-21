@@ -39,6 +39,7 @@ impl AnimationTimeline {
         self.current_time.set(duration);
     }
 
+    #[cfg(feature = "testbinding")]
     pub(crate) fn advance_specific(&self, by: Duration) {
         self.current_time.set(self.current_time.get() + by);
     }

@@ -1,44 +1,362 @@
 //! Executable SpiderMonkey probe for the Cloudflare Worker wasm target.
 
+use bytes::Bytes;
+use dpi::PhysicalSize;
 use js::jsapi::{GCReason, OnNewGlobalHookOption};
 use js::jsval::UndefinedValue;
 use js::rooted;
-use js::rust::wrappers2::{JS_GC, JS_NewGlobalObject};
-use js::rust::{evaluate_script, CompileOptionsWrapper, JSEngine, RealmOptions, Runtime};
 use js::rust::SIMPLE_GLOBAL_CLASS;
+use js::rust::wrappers2::{JS_GC, JS_NewGlobalObject};
+use js::rust::{CompileOptionsWrapper, JSEngine, RealmOptions, Runtime, evaluate_script};
+use net_traits::http_status::HttpStatus;
+use net_traits::request::RequestId;
+use net_traits::{
+    FetchMetadata, FetchResponseMsg, Metadata, NetworkError, ResourceFetchTiming,
+    ResourceTimingType,
+};
+use servo::{
+    RenderingContext, Servo, ServoBuilder, SoftwareRenderingContext, WebView, WebViewBuilder,
+};
+use servo::{WorkerFetchHandler, pump_worker_fetches, set_worker_fetch_handler};
+use servo_url::ServoUrl;
 use std::cell::RefCell;
-use std::alloc::{GlobalAlloc, Layout};
-use std::ffi::c_void;
+use std::collections::HashMap;
 use std::mem;
 use std::ptr;
+use std::rc::Rc;
+use std::str::FromStr;
+use url::Url;
+use uuid::Uuid;
 
-// SpiderMonkey and libc++ allocate through the linked C runtime. Rust must
-// use that same allocator; dlmalloc and C malloc cannot independently manage
-// one wasm linear memory without eventually overlapping allocations.
-struct WorkerAllocator;
+use servo_base::generic_channel::GenericCallback;
 
-#[global_allocator]
-static ALLOCATOR: WorkerAllocator = WorkerAllocator;
-
-unsafe extern "C" {
-    fn posix_memalign(out: *mut *mut c_void, align: usize, size: usize) -> i32;
-    fn free(ptr: *mut c_void);
+thread_local! {
+    static FETCH_CALLBACKS: RefCell<HashMap<RequestId, GenericCallback<FetchResponseMsg>>> =
+        RefCell::new(HashMap::new());
+    static BROWSER: RefCell<Option<WorkerBrowser>> = const { RefCell::new(None) };
+    static LAST_PAGE_RESULT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
-unsafe impl GlobalAlloc for WorkerAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let mut ptr = ptr::null_mut();
-        let align = layout.align().max(mem::size_of::<usize>());
-        if unsafe { posix_memalign(&mut ptr, align, layout.size().max(1)) } == 0 {
-            ptr.cast()
-        } else {
-            ptr::null_mut()
+struct WorkerBrowser {
+    servo: Servo,
+    webview: WebView,
+    _rendering_context: Rc<dyn RenderingContext>,
+}
+
+/// Create the single-threaded Servo instance used by a Worker isolate.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_bootstrap(
+    width: u32,
+    height: u32,
+    url_ptr: *const u8,
+    url_len: usize,
+) -> i32 {
+    if width == 0 || height == 0 || url_ptr.is_null() || url_len == 0 || url_len > 16 * 1024 {
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(url_ptr, url_len) };
+    let Ok(url_string) = std::str::from_utf8(bytes) else {
+        return 0;
+    };
+    let Ok(url) = Url::parse(url_string) else {
+        return 0;
+    };
+    let rendering_context = match SoftwareRenderingContext::new(PhysicalSize { width, height }) {
+        Ok(context) => Rc::new(context) as Rc<dyn RenderingContext>,
+        Err(_) => return 0,
+    };
+    let servo = ServoBuilder::default().build();
+    let webview = WebViewBuilder::new(&servo, rendering_context.clone())
+        .url(url)
+        .build();
+    BROWSER.with(|browser| {
+        *browser.borrow_mut() = Some(WorkerBrowser {
+            servo,
+            webview,
+            _rendering_context: rendering_context,
+        });
+    });
+    1
+}
+
+/// Load another page in the existing Worker webview.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_load_page(url_ptr: *const u8, url_len: usize) -> i32 {
+    if url_ptr.is_null() || url_len == 0 || url_len > 16 * 1024 {
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(url_ptr, url_len) };
+    let Ok(url_string) = std::str::from_utf8(bytes) else {
+        return 0;
+    };
+    let Ok(url) = Url::parse(url_string) else {
+        return 0;
+    };
+    BROWSER.with(|browser| {
+        let binding = browser.borrow();
+        let Some(browser) = binding.as_ref() else {
+            return 0;
+        };
+        browser.webview.load(url);
+        1
+    })
+}
+
+/// Queue JavaScript for evaluation in the current Servo document.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_evaluate_page(ptr: *const u8, len: usize) -> i32 {
+    if ptr.is_null() || len == 0 || len > 4 * 1024 * 1024 {
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let Ok(script) = std::str::from_utf8(bytes) else {
+        return 0;
+    };
+    LAST_PAGE_RESULT.with(|slot| slot.borrow_mut().clear());
+    BROWSER.with(|browser| {
+        let binding = browser.borrow();
+        let Some(browser) = binding.as_ref() else {
+            return 0;
+        };
+        browser.webview.evaluate_javascript(script, |result| {
+            if let Ok(value) = serde_json::to_vec(&result) {
+                LAST_PAGE_RESULT.with(|slot| *slot.borrow_mut() = value);
+            }
+        });
+        1
+    })
+}
+
+/// Advance Servo and the Worker fetch queue. Returns the number of network
+/// messages handed to the host during this turn.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_pump() -> usize {
+    // A Servo event-loop turn can enqueue a fetch, so pump once before and
+    // once after it. The second pass is what makes a newly scheduled request
+    // visible to the host without requiring an extra no-op turn.
+    let mut requests = pump_worker_fetches();
+    BROWSER.with(|browser| {
+        if let Some(browser) = browser.borrow().as_ref() {
+            browser.servo.spin_event_loop();
         }
+    });
+    requests += pump_worker_fetches();
+    requests
+}
+
+/// Return the pending page-evaluation result as a borrowed JSON buffer.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_page_result_ptr() -> *const u8 {
+    LAST_PAGE_RESULT.with(|result| result.borrow().as_ptr())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_page_result_len() -> usize {
+    LAST_PAGE_RESULT.with(|result| result.borrow().len())
+}
+
+#[link(wasm_import_module = "env")]
+unsafe extern "C" {
+    /// Host entry point receiving a JSON-encoded Servo RequestBuilder.
+    #[link_name = "worker_fetch_request"]
+    fn host_fetch_request(ptr: *const u8, len: usize);
+}
+
+fn install_fetch_adapter() {
+    let handler: WorkerFetchHandler = Box::new(|request, _redirect, channels| {
+        let net_traits::FetchChannels::ResponseMsg(callback) = channels else {
+            return;
+        };
+        let request_id = request.id;
+        let Ok(payload) = serde_json::to_vec(&request) else {
+            return;
+        };
+        FETCH_CALLBACKS.with(|callbacks| {
+            callbacks.borrow_mut().insert(request_id, callback);
+        });
+        unsafe { host_fetch_request(payload.as_ptr(), payload.len()) };
+    });
+    set_worker_fetch_handler(handler);
+}
+
+/// Install the callback bridge used by the Cloudflare Worker host.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_install_fetch_adapter() {
+    install_fetch_adapter();
+}
+
+/// Pump queued Servo fetch requests into the host callback.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_pump_fetches() -> usize {
+    pump_worker_fetches()
+}
+
+/// Deliver one JSON-encoded [`FetchResponseMsg`] from the host to Servo.
+/// Returns 1 when a matching pending request was found, otherwise 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_deliver_fetch_response(ptr: *const u8, len: usize) -> i32 {
+    if ptr.is_null() || len == 0 || len > 16 * 1024 * 1024 {
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let Ok(message) = serde_json::from_slice::<FetchResponseMsg>(bytes) else {
+        return 0;
+    };
+    let request_id = message.request_id();
+    let is_finished = matches!(message, FetchResponseMsg::ProcessResponseEOF(..));
+    let delivered = FETCH_CALLBACKS.with(|callbacks| {
+        let mut callbacks = callbacks.borrow_mut();
+        let Some(callback) = callbacks.get_mut(&request_id) else {
+            return false;
+        };
+        callback.send(message).is_ok()
+    });
+    if is_finished {
+        FETCH_CALLBACKS.with(|callbacks| {
+            callbacks.borrow_mut().remove(&request_id);
+        });
+    }
+    i32::from(delivered)
+}
+
+/// Deliver a successful HTTP response through a compact host-facing ABI.
+///
+/// The Worker host should call this once for headers/body completion. Keeping
+/// the conversion here avoids making JavaScript know about Servo's private
+/// URL, header-map, and timing serialization formats.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_deliver_http_response(
+    request_id_ptr: *const u8,
+    request_id_len: usize,
+    url_ptr: *const u8,
+    url_len: usize,
+    status: u16,
+    content_type_ptr: *const u8,
+    content_type_len: usize,
+    body_ptr: *const u8,
+    body_len: usize,
+) -> i32 {
+    if request_id_ptr.is_null()
+        || url_ptr.is_null()
+        || content_type_ptr.is_null() && content_type_len != 0
+        || body_ptr.is_null() && body_len != 0
+        || request_id_len == 0
+        || url_len == 0
+        || body_len > 64 * 1024 * 1024
+    {
+        return 0;
+    }
+    let request_id_bytes = unsafe { std::slice::from_raw_parts(request_id_ptr, request_id_len) };
+    let url_bytes = unsafe { std::slice::from_raw_parts(url_ptr, url_len) };
+    let content_type_bytes = if content_type_len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(content_type_ptr, content_type_len) }
+    };
+    let Ok(request_id_text) = std::str::from_utf8(request_id_bytes) else {
+        return 0;
+    };
+    let Ok(request_uuid) = Uuid::parse_str(request_id_text) else {
+        return 0;
+    };
+    let Ok(url_text) = std::str::from_utf8(url_bytes) else {
+        return 0;
+    };
+    let Ok(url) = ServoUrl::parse(url_text) else {
+        return 0;
+    };
+    let content_type = std::str::from_utf8(content_type_bytes)
+        .ok()
+        .and_then(|value| mime::Mime::from_str(value).ok());
+    if !(100..=599).contains(&status) {
+        return 0;
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        unsafe { free(ptr.cast()) };
+    let request_id = RequestId(request_uuid);
+    let metadata = FetchMetadata::Unfiltered({
+        let mut metadata = Metadata::default(url.clone());
+        metadata.status = HttpStatus::new_raw(status, Vec::new());
+        metadata.set_content_type(content_type.as_ref());
+        metadata
+    });
+    let body = if body_len == 0 {
+        Bytes::new()
+    } else {
+        Bytes::copy_from_slice(unsafe { std::slice::from_raw_parts(body_ptr, body_len) })
+    };
+    let response = [
+        FetchResponseMsg::ProcessResponse(request_id, Ok(metadata)),
+        FetchResponseMsg::ProcessResponseChunk(request_id, body),
+        FetchResponseMsg::ProcessResponseEOF(
+            request_id,
+            Ok(()),
+            ResourceFetchTiming::new(ResourceTimingType::Resource),
+        ),
+    ];
+    let delivered = FETCH_CALLBACKS.with(|callbacks| {
+        let mut callbacks = callbacks.borrow_mut();
+        let Some(callback) = callbacks.get_mut(&request_id) else {
+            return false;
+        };
+        for message in response {
+            if callback.send(message).is_err() {
+                return false;
+            }
+        }
+        true
+    });
+    FETCH_CALLBACKS.with(|callbacks| {
+        callbacks.borrow_mut().remove(&request_id);
+    });
+    i32::from(delivered)
+}
+
+/// Complete a failed host fetch so Servo does not leave a request pending.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_deliver_http_error(
+    request_id_ptr: *const u8,
+    request_id_len: usize,
+    message_ptr: *const u8,
+    message_len: usize,
+) -> i32 {
+    if request_id_ptr.is_null() || message_ptr.is_null() || request_id_len == 0 {
+        return 0;
     }
+    let request_id_bytes = unsafe { std::slice::from_raw_parts(request_id_ptr, request_id_len) };
+    let message_bytes = unsafe { std::slice::from_raw_parts(message_ptr, message_len) };
+    let Ok(request_id_text) = std::str::from_utf8(request_id_bytes) else {
+        return 0;
+    };
+    let Ok(request_uuid) = Uuid::parse_str(request_id_text) else {
+        return 0;
+    };
+    let error =
+        NetworkError::ResourceLoadError(String::from_utf8_lossy(message_bytes).into_owned());
+    let request_id = RequestId(request_uuid);
+    let delivered = FETCH_CALLBACKS.with(|callbacks| {
+        let mut callbacks = callbacks.borrow_mut();
+        let Some(callback) = callbacks.get_mut(&request_id) else {
+            return false;
+        };
+        let response_ok = callback
+            .send(FetchResponseMsg::ProcessResponse(
+                request_id,
+                Err(error.clone()),
+            ))
+            .is_ok();
+        let eof_ok = callback
+            .send(FetchResponseMsg::ProcessResponseEOF(
+                request_id,
+                Err(error),
+                ResourceFetchTiming::new(ResourceTimingType::Resource),
+            ))
+            .is_ok();
+        response_ok && eof_ok
+    });
+    FETCH_CALLBACKS.with(|callbacks| {
+        callbacks.borrow_mut().remove(&request_id);
+    });
+    i32::from(delivered)
 }
 
 #[link(wasm_import_module = "env")]

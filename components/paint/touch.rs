@@ -385,9 +385,9 @@ impl TouchHandler {
 
     // try to remove touch sequence, if touch sequence end and not has pending action.
     pub(crate) fn try_remove_touch_sequence(&mut self, sequence_id: TouchSequenceId) {
-        if let Some(sequence) = self.touch_sequence_map.get(&sequence_id) &&
-            sequence.pending_touch_move_actions.is_empty() &&
-            sequence.state == Finished
+        if let Some(sequence) = self.touch_sequence_map.get(&sequence_id)
+            && sequence.pending_touch_move_actions.is_empty()
+            && sequence.state == Finished
         {
             self.touch_sequence_map.remove(&sequence_id);
         }
@@ -429,8 +429,9 @@ impl TouchHandler {
         // if the current sequence ID does not exist in the map, then it was already handled
         if !self
             .touch_sequence_map
-            .contains_key(&self.current_sequence_id) ||
-            self.get_touch_sequence(self.current_sequence_id)
+            .contains_key(&self.current_sequence_id)
+            || self
+                .get_touch_sequence(self.current_sequence_id)
                 .is_finished()
         {
             self.current_sequence_id.next();
@@ -567,8 +568,8 @@ impl TouchHandler {
                             }))
                         },
                     }
-                } else if delta.x.abs() > TOUCH_PAN_MIN_SCREEN_PX * scale ||
-                    delta.y.abs() > TOUCH_PAN_MIN_SCREEN_PX * scale
+                } else if delta.x.abs() > TOUCH_PAN_MIN_SCREEN_PX * scale
+                    || delta.y.abs() > TOUCH_PAN_MIN_SCREEN_PX * scale
                 {
                     let _span = profile_traits::info_span!(
                         "TouchHandler::ScrollBegin",
@@ -617,9 +618,9 @@ impl TouchHandler {
                 }
             },
             2 => {
-                if touch_sequence.state == Pinching ||
-                    delta.x.abs() > TOUCH_PAN_MIN_SCREEN_PX * scale ||
-                    delta.y.abs() > TOUCH_PAN_MIN_SCREEN_PX * scale
+                if touch_sequence.state == Pinching
+                    || delta.x.abs() > TOUCH_PAN_MIN_SCREEN_PX * scale
+                    || delta.y.abs() > TOUCH_PAN_MIN_SCREEN_PX * scale
                 {
                     touch_sequence.state = Pinching;
                     let (d0, _) = touch_sequence.pinch_distance_and_center();
@@ -642,8 +643,8 @@ impl TouchHandler {
             },
         };
         // If the first move has not been processed yet, buffer the action.
-        if let Some(action) = action &&
-            touch_sequence.prevent_move == TouchMoveAllowed::Pending
+        if let Some(action) = action
+            && touch_sequence.prevent_move == TouchMoveAllowed::Pending
         {
             touch_sequence.add_pending_touch_move_action(action);
         }
@@ -777,8 +778,8 @@ impl TouchHandler {
         value: PaintHitTestResult,
         device_pixels_per_page: Scale<f32, CSSPixel, DevicePixel>,
     ) {
-        if let Some(sequence) = self.touch_sequence_map.get_mut(&self.current_sequence_id) &&
-            sequence.hit_test_result_cache.is_none()
+        if let Some(sequence) = self.touch_sequence_map.get_mut(&self.current_sequence_id)
+            && sequence.hit_test_result_cache.is_none()
         {
             sequence.hit_test_result_cache = Some(HitTestResultCache {
                 value,

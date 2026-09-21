@@ -184,8 +184,8 @@ fn least_common_ancestor_children<'a, Traversal: NoGcTraversal>(
     let mut inclusive_ancestor_of_a = Traversal::parent(no_gc, &candidate_child_a);
     let mut inclusive_ancestor_of_b = Traversal::parent(no_gc, &candidate_child_b);
 
-    while let Some(ancestor_of_a) = inclusive_ancestor_of_a &&
-        let Some(ancestor_of_b) = inclusive_ancestor_of_b
+    while let Some(ancestor_of_a) = inclusive_ancestor_of_a
+        && let Some(ancestor_of_b) = inclusive_ancestor_of_b
     {
         if ancestor_of_a == ancestor_of_b {
             return Some((candidate_child_a, candidate_child_b));

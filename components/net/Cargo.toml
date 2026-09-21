@@ -41,7 +41,6 @@ http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["client", "http1", "http2"] }
 hyper_serde = { workspace = true }
-imsz = { workspace = true }
 ipc-channel = { workspace = true }
 itertools = { workspace = true }
 log = { workspace = true }
@@ -88,6 +87,7 @@ webpki-roots = { workspace = true }
 webrender_api = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+imsz = { workspace = true }
 aws-lc-rs = { workspace = true }
 async-compression = { workspace = true, features = ["brotli", "gzip", "tokio", "zlib", "zstd"] }
 async-tungstenite = { workspace = true, features = ["tokio-rustls-webpki-roots"] }

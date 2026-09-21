@@ -47,10 +47,10 @@ pub(crate) fn execute_insert_paragraph_command(
     }
     // Step 4. If node is a Text node, and offset is neither 0 nor the length of node,
     // call splitText(offset) on node.
-    if offset != 0 &&
-        offset != node.len() &&
-        let Some(text_node) = node.downcast::<Text>() &&
-        text_node.SplitText(cx, offset).is_err()
+    if offset != 0
+        && offset != node.len()
+        && let Some(text_node) = node.downcast::<Text>()
+        && text_node.SplitText(cx, offset).is_err()
     {
         unreachable!("Must always be able to split");
     }
@@ -73,19 +73,19 @@ pub(crate) fn execute_insert_paragraph_command(
     // Step 9. While container is not a single-line container,
     // and container's parent is editable and in the same editing host as node,
     // set container to its parent.
-    while !container.is_single_line_container() &&
-        let Some(parent) = container.GetParentNode() &&
-        parent.is_editable() &&
-        parent.same_editing_host(&node)
+    while !container.is_single_line_container()
+        && let Some(parent) = container.GetParentNode()
+        && parent.is_editable()
+        && parent.same_editing_host(&node)
     {
         container = parent;
     }
     // Step 10. If container is an editable single-line container in the same editing host as node,
     // and its local name is "p" or "div":
-    if container.is_editable() &&
-        container.is_single_line_container() &&
-        container.same_editing_host(&node) &&
-        node_matches_local_name!(container, local_name!("p") | local_name!("div"))
+    if container.is_editable()
+        && container.is_single_line_container()
+        && container.same_editing_host(&node)
+        && node_matches_local_name!(container, local_name!("p") | local_name!("div"))
     {
         // Step 10.1. Let outer container equal container.
         let mut outer_container = container.clone();
@@ -94,8 +94,8 @@ pub(crate) fn execute_insert_paragraph_command(
         while !node_matches_local_name!(
             outer_container,
             local_name!("dd") | local_name!("dt") | local_name!("li")
-        ) && let Some(parent) = outer_container.GetParentNode() &&
-            parent.is_editable()
+        ) && let Some(parent) = outer_container.GetParentNode()
+            && parent.is_editable()
         {
             outer_container = parent;
         }
@@ -108,9 +108,9 @@ pub(crate) fn execute_insert_paragraph_command(
         }
     }
     // Step 11. If container is not editable or not in the same editing host as node or is not a single-line container:
-    if !container.is_editable() ||
-        !container.same_editing_host(&node) ||
-        !container.is_single_line_container()
+    if !container.is_editable()
+        || !container.same_editing_host(&node)
+        || !container.is_single_line_container()
     {
         // Step 11.1. Let tag be the default single-line container name.
         let tag = document.default_single_line_container_name();
@@ -235,9 +235,9 @@ pub(crate) fn execute_insert_paragraph_command(
     if node_matches_local_name!(
         container,
         local_name!("li") | local_name!("dt") | local_name!("dd")
-    ) && (container.children_count() == 0 ||
-        (container.children_count() == 1 &&
-            container
+    ) && (container.children_count() == 0
+        || (container.children_count() == 1
+            && container
                 .children()
                 .next()
                 .expect("has one child")
@@ -256,8 +256,8 @@ pub(crate) fn execute_insert_paragraph_command(
         // Step 13.3. If container is a dd or dt,
         // and it is not an allowed child of any of its ancestors in the same editing host,
         // set the tag name of container to the default single-line container name and let container be the result.
-        if node_matches_local_name!(container, local_name!("dd") | local_name!("dt")) &&
-            container.is_no_allowed_child_in_same_editing_host(cx.no_gc())
+        if node_matches_local_name!(container, local_name!("dd") | local_name!("dt"))
+            && container.is_no_allowed_child_in_same_editing_host(cx.no_gc())
         {
             container = container
                 .downcast::<Element>()
@@ -278,8 +278,8 @@ pub(crate) fn execute_insert_paragraph_command(
     // Step 15. While new line range's start offset is zero and its start node
     // is not a prohibited paragraph child,
     // set its start to (parent of start node, index of start node).
-    while new_line_range.start_offset() == 0 &&
-        !new_line_range
+    while new_line_range.start_offset() == 0
+        && !new_line_range
             .start_container()
             .is_prohibited_paragraph_child()
     {
@@ -293,8 +293,8 @@ pub(crate) fn execute_insert_paragraph_command(
     // Step 16. While new line range's start offset is the length of its start node
     // and its start node is not a prohibited paragraph child,
     // set its start to (parent of start node, 1 + index of start node).
-    while new_line_range.start_offset() == new_line_range.start_container().len() &&
-        !new_line_range
+    while new_line_range.start_offset() == new_line_range.start_container().len()
+        && !new_line_range
             .start_container()
             .is_prohibited_paragraph_child()
     {
@@ -311,9 +311,9 @@ pub(crate) fn execute_insert_paragraph_command(
             .contained_children(cx.no_gc())
             .is_ok_and(|contained_children| {
                 let contained_children = contained_children.contained_children;
-                contained_children.is_empty() ||
-                    (contained_children.len() == 1 &&
-                        contained_children[0].is::<HTMLBRElement>())
+                contained_children.is_empty()
+                    || (contained_children.len() == 1
+                        && contained_children[0].is::<HTMLBRElement>())
             });
     // Step 18. If the local name of container is "h1", "h2", "h3", "h4", "h5", or "h6",
     // and end of line is true, let new container name be the default single-line container name.
@@ -321,15 +321,15 @@ pub(crate) fn execute_insert_paragraph_command(
         .downcast::<Element>()
         .expect("Must always be an element");
     let container_name = container_as_element.local_name();
-    let new_container_name = if end_of_line &&
-        matches!(
+    let new_container_name = if end_of_line
+        && matches!(
             *container_name,
-            local_name!("h1") |
-                local_name!("h2") |
-                local_name!("h3") |
-                local_name!("h4") |
-                local_name!("h5") |
-                local_name!("h6")
+            local_name!("h1")
+                | local_name!("h2")
+                | local_name!("h3")
+                | local_name!("h4")
+                | local_name!("h5")
+                | local_name!("h6")
         ) {
         document
             .default_single_line_container_name()
@@ -380,8 +380,8 @@ pub(crate) fn execute_insert_paragraph_command(
     // Step 28. Unset the id attribute (if any) of each Element descendant of frag
     // that is not in contained nodes.
     for descendant in frag_as_node.traverse_preorder(ShadowIncluding::No) {
-        if !contained_nodes.contains(&descendant) &&
-            let Some(descendant) = descendant.downcast::<Element>()
+        if !contained_nodes.contains(&descendant)
+            && let Some(descendant) = descendant.downcast::<Element>()
         {
             descendant.remove_attribute_by_name(cx, &local_name!("id"));
         }

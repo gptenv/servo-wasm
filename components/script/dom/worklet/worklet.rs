@@ -277,6 +277,7 @@ pub trait WorkletThreadPool: JSTraceable {
     /// Queue a [`WorkletTask`] for execution on this [`WorkletThreadPool`].
     /// The task will be executed in the context of the [`WorkletGlobalScope`]
     /// represented by the [`WorketId`].
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn perform_a_worklet_task(&self, worklet_id: WorkletId, worklet_task: WorkletTask);
 }
 
@@ -657,8 +658,8 @@ impl WorkletThread {
                 }
 
                 self.gc(cx);
-            } else if self.control_buffer.is_none() &&
-                let Ok(control) = self.control_receiver.try_recv()
+            } else if self.control_buffer.is_none()
+                && let Ok(control) = self.control_receiver.try_recv()
             {
                 self.control_buffer = Some(control);
                 let msg = WorkletData::StartSwapRoles(self.role.sender.clone());

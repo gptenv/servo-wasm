@@ -114,8 +114,8 @@ impl DiskCache {
         // For private browsing we currently do not want to store any disk cache.
         let disk_cache_path = storage_dir();
 
-        if let Some(disk_cache_path) = disk_cache_path &&
-            cache_assignment == HttpCacheAssignment::Public
+        if let Some(disk_cache_path) = disk_cache_path
+            && cache_assignment == HttpCacheAssignment::Public
         {
             let Ok(max_disk_cache_size) = pref!(network_http_disk_cache_size).try_into() else {
                 return (None, MemoryCacheLifecycle::empty());

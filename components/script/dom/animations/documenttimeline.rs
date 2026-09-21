@@ -77,6 +77,7 @@ impl DocumentTimeline {
 
     /// Increments the current value of the timeline by a specific number of seconds.
     /// This is used for testing.
+    #[cfg(feature = "testbinding")]
     pub(crate) fn advance_specific(&self, by: Duration) {
         self.animation_timeline.advance_specific(by);
     }

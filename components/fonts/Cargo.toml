@@ -31,9 +31,7 @@ content-security-policy = { workspace = true }
 euclid = { workspace = true }
 font-types = { workspace = true }
 fonts_traits = { workspace = true }
-fontsan = { workspace = true }
 # FIXME (#34517): macOS only needs this when building servo without `--features media-gstreamer`
-harfbuzz-sys = { workspace = true, default-features = false, features = ["bundled"] }
 icu_locale_core = { workspace = true }
 icu_properties = { workspace = true, features = ["compiled_data"] }
 itertools = { workspace = true }
@@ -67,6 +65,10 @@ unicode-script = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 webrender_api = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+fontsan = { workspace = true }
+harfbuzz-sys = { workspace = true, default-features = false, features = ["bundled"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 byteorder = { workspace = true }

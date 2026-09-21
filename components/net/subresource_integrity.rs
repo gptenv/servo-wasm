@@ -128,8 +128,8 @@ pub fn get_strongest_metadata<'a>(integrity_metadata_list: Vec<SriEntry<'a>>) ->
 
         if prioritized_hash.is_none() {
             result.push(integrity_metadata);
-        } else if let Some(algorithm) = prioritized_hash &&
-            algorithm != current_algorithm
+        } else if let Some(algorithm) = prioritized_hash
+            && algorithm != current_algorithm
         {
             result = vec![integrity_metadata];
             current_algorithm = algorithm;
@@ -142,10 +142,10 @@ pub fn get_strongest_metadata<'a>(integrity_metadata_list: Vec<SriEntry<'a>>) ->
 /// <https://w3c.github.io/webappsec-subresource-integrity/#apply-algorithm-to-response>
 fn apply_algorithm_to_response(body: MutexGuard<ResponseBody>, algorithm: Algorithm) -> String {
     if let ResponseBody::Done(ref vec) = *body {
-        let response_digest = match algorithm {
-            Algorithm::Sha256 => Sha256::digest(vec),
-            Algorithm::Sha384 => Sha384::digest(vec),
-            Algorithm::Sha512 => Sha512::digest(vec),
+        let response_digest: Vec<u8> = match algorithm {
+            Algorithm::Sha256 => Sha256::digest(vec).to_vec(),
+            Algorithm::Sha384 => Sha384::digest(vec).to_vec(),
+            Algorithm::Sha512 => Sha512::digest(vec).to_vec(),
         };
         base64::engine::general_purpose::STANDARD.encode(response_digest)
     } else {

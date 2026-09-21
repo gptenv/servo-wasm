@@ -204,8 +204,8 @@ impl Actor for ObjectActor {
             "enumEntries" => {
                 let mut entries = Vec::new();
                 let preview = self.data.borrow().preview.clone();
-                if let Some(preview) = preview &&
-                    let Some(map_entries) = preview.entries
+                if let Some(preview) = preview
+                    && let Some(map_entries) = preview.entries
                 {
                     for (key, value) in map_entries {
                         entries.push(PropertyIteratorEntry::MapEntry(key, value));

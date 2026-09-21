@@ -569,8 +569,8 @@ impl Element {
 
         // " - body’s parent element’s computed value of the overflow-x or
         //     overflow-y properties is neither visible nor clip."
-        if let Some(parent) = node.GetParentElement() &&
-            let Some(style) = parent.style()
+        if let Some(parent) = node.GetParentElement()
+            && let Some(style) = parent.style()
         {
             let mut overflow_x = style.get_box().clone_overflow_x();
             let mut overflow_y = style.get_box().clone_overflow_y();
@@ -593,9 +593,9 @@ impl Element {
 
         // " - body’s computed value of the overflow-x or overflow-y properties
         //     is neither visible nor clip."
-        if let Some(style) = self.style() &&
-            !style.get_box().clone_overflow_x().is_scrollable() &&
-            !style.get_box().clone_overflow_y().is_scrollable()
+        if let Some(style) = self.style()
+            && !style.get_box().clone_overflow_x().is_scrollable()
+            && !style.get_box().clone_overflow_y().is_scrollable()
         {
             return false;
         };
@@ -620,8 +620,8 @@ impl Element {
     }
 
     pub(crate) fn has_overflow(&self, no_gc: &NoGC) -> bool {
-        self.ScrollHeight() > self.ClientHeight(no_gc) ||
-            self.ScrollWidth() > self.ClientWidth(no_gc)
+        self.ScrollHeight() > self.ClientHeight(no_gc)
+            || self.ScrollWidth() > self.ClientWidth(no_gc)
     }
 
     /// Whether or not this element has a scrolling box according to
@@ -715,8 +715,8 @@ impl Element {
             // Step 4.2. If currentShadowRoot’s declarative is false
             // or currentShadowRoot’s mode is not mode
             // then throw a "NotSupportedError" DOMException.
-            if !current_shadow_root.is_declarative() ||
-                current_shadow_root.shadow_root_mode() != mode
+            if !current_shadow_root.is_declarative()
+                || current_shadow_root.shadow_root_mode() != mode
             {
                 return Err(Error::NotSupported(Some(
                     "Cannot attach a second shadow root to the same element".into(),
@@ -759,8 +759,8 @@ impl Element {
         if node.is_connected() {
             document.remove_style_and_layout_data_from_subtree(cx.no_gc(), node);
         }
-        if let Some(selection) = self.owner_document().selection() &&
-            node.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION)
+        if let Some(selection) = self.owner_document().selection()
+            && node.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION)
         {
             selection.set_visible_selection_dirty();
         }
@@ -845,8 +845,8 @@ impl Element {
                 _ => {},
             }
         }
-        if let Some(parent) = self.upcast::<Node>().GetParentNode() &&
-            let Some(elem) = parent.downcast::<Element>()
+        if let Some(parent) = self.upcast::<Node>().GetParentNode()
+            && let Some(elem) = parent.downcast::<Element>()
         {
             return elem.is_translate_enabled();
         }
@@ -1146,24 +1146,24 @@ pub(crate) fn is_valid_shadow_host_name(name: &LocalName) -> bool {
     // >   "h4", "h5", "h6", "header", "main", "nav", "p", "section", or "span"
     matches!(
         name,
-        &local_name!("article") |
-            &local_name!("aside") |
-            &local_name!("blockquote") |
-            &local_name!("body") |
-            &local_name!("div") |
-            &local_name!("footer") |
-            &local_name!("h1") |
-            &local_name!("h2") |
-            &local_name!("h3") |
-            &local_name!("h4") |
-            &local_name!("h5") |
-            &local_name!("h6") |
-            &local_name!("header") |
-            &local_name!("main") |
-            &local_name!("nav") |
-            &local_name!("p") |
-            &local_name!("section") |
-            &local_name!("span")
+        &local_name!("article")
+            | &local_name!("aside")
+            | &local_name!("blockquote")
+            | &local_name!("body")
+            | &local_name!("div")
+            | &local_name!("footer")
+            | &local_name!("h1")
+            | &local_name!("h2")
+            | &local_name!("h3")
+            | &local_name!("h4")
+            | &local_name!("h5")
+            | &local_name!("h6")
+            | &local_name!("header")
+            | &local_name!("main")
+            | &local_name!("nav")
+            | &local_name!("p")
+            | &local_name!("section")
+            | &local_name!("span")
     )
 }
 
@@ -1368,9 +1368,9 @@ impl<'dom> LayoutDom<'dom, Element> {
             .and_then(|input_element| {
                 // FIXME(pcwalton): More use of atoms, please!
                 match self.get_attr_val_for_layout(&ns!(), &local_name!("type")) {
-                    Some("hidden") | Some("range") | Some("color") | Some("checkbox") |
-                    Some("radio") | Some("file") | Some("submit") | Some("image") |
-                    Some("reset") | Some("button") => None,
+                    Some("hidden") | Some("range") | Some("color") | Some("checkbox")
+                    | Some("radio") | Some("file") | Some("submit") | Some("image")
+                    | Some("reset") | Some("button") => None,
                     // Others
                     _ => match input_element.size_for_layout() {
                         0 => None,
@@ -1472,9 +1472,9 @@ impl<'dom> LayoutDom<'dom, Element> {
 
         // Aspect ratio when providing both width and height.
         // https://html.spec.whatwg.org/multipage/#attributes-for-embedded-content-and-images
-        if (self.is::<HTMLImageElement>() || self.is::<HTMLVideoElement>()) &&
-            let LengthOrPercentageOrAuto::Length(width) = width &&
-            let LengthOrPercentageOrAuto::Length(height) = height
+        if (self.is::<HTMLImageElement>() || self.is::<HTMLVideoElement>())
+            && let LengthOrPercentageOrAuto::Length(width) = width
+            && let LengthOrPercentageOrAuto::Length(height) = height
         {
             let width_value = NonNegative(specified::Number::new(width.to_f32_px()));
             let height_value = NonNegative(specified::Number::new(height.to_f32_px()));
@@ -1868,8 +1868,8 @@ impl Element {
         // Step 6. Return the result of running locate a namespace on its parent element using prefix.
         for element in inclusive_ancestor_elements {
             // Step 3. If its namespace is non-null and its namespace prefix is prefix, then return namespace.
-            if element.namespace() != &ns!() &&
-                element.prefix().as_ref().map(|p| &**p) == prefix.as_deref()
+            if element.namespace() != &ns!()
+                && element.prefix().as_ref().map(|p| &**p) == prefix.as_deref()
             {
                 return element.namespace().clone();
             }
@@ -1934,24 +1934,24 @@ impl Element {
         match self.local_name {
             /* List of void elements from
             https://html.spec.whatwg.org/multipage/#html-fragment-serialisation-algorithm */
-            local_name!("area") |
-            local_name!("base") |
-            local_name!("basefont") |
-            local_name!("bgsound") |
-            local_name!("br") |
-            local_name!("col") |
-            local_name!("embed") |
-            local_name!("frame") |
-            local_name!("hr") |
-            local_name!("img") |
-            local_name!("input") |
-            local_name!("keygen") |
-            local_name!("link") |
-            local_name!("meta") |
-            local_name!("param") |
-            local_name!("source") |
-            local_name!("track") |
-            local_name!("wbr") => true,
+            local_name!("area")
+            | local_name!("base")
+            | local_name!("basefont")
+            | local_name!("bgsound")
+            | local_name!("br")
+            | local_name!("col")
+            | local_name!("embed")
+            | local_name!("frame")
+            | local_name!("hr")
+            | local_name!("img")
+            | local_name!("input")
+            | local_name!("keygen")
+            | local_name!("link")
+            | local_name!("meta")
+            | local_name!("param")
+            | local_name!("source")
+            | local_name!("track")
+            | local_name!("wbr") => true,
             _ => false,
         }
     }
@@ -1979,16 +1979,16 @@ impl Element {
         {
             let element = node.downcast::<Element>()?;
             // Step 1.
-            if *element.namespace() == namespace &&
-                let Some(prefix) = element.GetPrefix()
+            if *element.namespace() == namespace
+                && let Some(prefix) = element.GetPrefix()
             {
                 return Some(prefix);
             }
 
             // Step 2.
             for attr in element.attrs.borrow().iter() {
-                if attr.prefix() == Some(&namespace_prefix!("xmlns")) &&
-                    **attr.value() == *namespace
+                if attr.prefix() == Some(&namespace_prefix!("xmlns"))
+                    && **attr.value() == *namespace
                 {
                     return Some(DOMString::from(&**attr.local_name()));
                 }
@@ -2020,24 +2020,24 @@ impl Element {
         match node.type_id() {
             NodeTypeId::Element(ElementTypeId::HTMLElement(
                 HTMLElementTypeId::HTMLButtonElement,
-            )) |
-            NodeTypeId::Element(ElementTypeId::HTMLElement(
+            ))
+            | NodeTypeId::Element(ElementTypeId::HTMLElement(
                 HTMLElementTypeId::HTMLInputElement,
-            )) |
-            NodeTypeId::Element(ElementTypeId::HTMLElement(
+            ))
+            | NodeTypeId::Element(ElementTypeId::HTMLElement(
                 HTMLElementTypeId::HTMLSelectElement,
-            )) |
-            NodeTypeId::Element(ElementTypeId::HTMLElement(
+            ))
+            | NodeTypeId::Element(ElementTypeId::HTMLElement(
                 HTMLElementTypeId::HTMLTextAreaElement,
-            )) |
-            NodeTypeId::Element(ElementTypeId::HTMLElement(
+            ))
+            | NodeTypeId::Element(ElementTypeId::HTMLElement(
                 HTMLElementTypeId::HTMLOptionElement,
             )) => self.disabled_state(),
             NodeTypeId::Element(ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLElement)) => {
                 self.downcast::<HTMLElement>()
                     .unwrap()
-                    .is_form_associated_custom_element() &&
-                    self.disabled_state()
+                    .is_form_associated_custom_element()
+                    && self.disabled_state()
             },
             // TODO:
             // an optgroup element that has a disabled attribute
@@ -2504,8 +2504,8 @@ impl Element {
 
         // Step 2. If attr’s element is neither null nor element,
         // throw an "InUseAttributeError" DOMException.
-        if let Some(owner) = attr.GetOwnerElement() &&
-            &*owner != self
+        if let Some(owner) = attr.GetOwnerElement()
+            && &*owner != self
         {
             return Err(Error::InUseAttribute(None));
         }
@@ -2603,8 +2603,8 @@ impl Element {
         };
         // Step 2: If CSP list contains a header-delivered Content Security Policy,
         // and element has a nonce content attribute whose value is not the empty string, then:
-        if !csp_list.contains_a_header_delivered_content_security_policy() ||
-            self.get_string_attribute(&local_name!("nonce")).is_empty()
+        if !csp_list.contains_a_header_delivered_content_security_policy()
+            || self.get_string_attribute(&local_name!("nonce")).is_empty()
         {
             return;
         }
@@ -2718,9 +2718,9 @@ impl Element {
         }
 
         // Step 9
-        if doc.GetBody().as_deref() == self.downcast::<HTMLElement>() &&
-            doc.quirks_mode() == QuirksMode::Quirks &&
-            !self.is_potentially_scrollable_body()
+        if doc.GetBody().as_deref() == self.downcast::<HTMLElement>()
+            && doc.quirks_mode() == QuirksMode::Quirks
+            && !self.is_potentially_scrollable_body()
         {
             win.scroll(cx, x, y, behavior);
             return;
@@ -2861,15 +2861,15 @@ impl Element {
         if matches!(
             self.upcast::<Node>().type_id(),
             NodeTypeId::Element(ElementTypeId::HTMLElement(
-                HTMLElementTypeId::HTMLAnchorElement |
-                    HTMLElementTypeId::HTMLAreaElement |
-                    HTMLElementTypeId::HTMLButtonElement |
-                    HTMLElementTypeId::HTMLFrameElement |
-                    HTMLElementTypeId::HTMLIFrameElement |
-                    HTMLElementTypeId::HTMLInputElement |
-                    HTMLElementTypeId::HTMLObjectElement |
-                    HTMLElementTypeId::HTMLSelectElement |
-                    HTMLElementTypeId::HTMLTextAreaElement
+                HTMLElementTypeId::HTMLAnchorElement
+                    | HTMLElementTypeId::HTMLAreaElement
+                    | HTMLElementTypeId::HTMLButtonElement
+                    | HTMLElementTypeId::HTMLFrameElement
+                    | HTMLElementTypeId::HTMLIFrameElement
+                    | HTMLElementTypeId::HTMLInputElement
+                    | HTMLElementTypeId::HTMLObjectElement
+                    | HTMLElementTypeId::HTMLSelectElement
+                    | HTMLElementTypeId::HTMLTextAreaElement
             ))
         ) {
             return 0;
@@ -2906,8 +2906,9 @@ impl Element {
         // be a bit smarter. For instance, maybe only returning true if any mutation
         // observer is installed on an inclusive ancestor and only if it has an observer
         // with the attribute filter set to include `style`.
-        self.owner_window().get_exists_mut_observer() ||
-            self.get_custom_element_definition()
+        self.owner_window().get_exists_mut_observer()
+            || self
+                .get_custom_element_definition()
                 .is_some_and(|custom_element_definition| {
                     custom_element_definition.has_attribute_changed_callback()
                 })
@@ -3411,9 +3412,9 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
         }
 
         // Step 7
-        if doc.GetBody().as_deref() == self.downcast::<HTMLElement>() &&
-            doc.quirks_mode() == QuirksMode::Quirks &&
-            !self.is_potentially_scrollable_body()
+        if doc.GetBody().as_deref() == self.downcast::<HTMLElement>()
+            && doc.quirks_mode() == QuirksMode::Quirks
+            && !self.is_potentially_scrollable_body()
         {
             return win.ScrollY() as f64;
         }
@@ -3462,9 +3463,9 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
         }
 
         // Step 9
-        if doc.GetBody().as_deref() == self.downcast::<HTMLElement>() &&
-            doc.quirks_mode() == QuirksMode::Quirks &&
-            !self.is_potentially_scrollable_body()
+        if doc.GetBody().as_deref() == self.downcast::<HTMLElement>()
+            && doc.quirks_mode() == QuirksMode::Quirks
+            && !self.is_potentially_scrollable_body()
         {
             win.scroll(cx, win.ScrollX() as f32, y, behavior);
             return;
@@ -3508,9 +3509,9 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
         }
 
         // Step 7
-        if doc.GetBody().as_deref() == self.downcast::<HTMLElement>() &&
-            doc.quirks_mode() == QuirksMode::Quirks &&
-            !self.is_potentially_scrollable_body()
+        if doc.GetBody().as_deref() == self.downcast::<HTMLElement>()
+            && doc.quirks_mode() == QuirksMode::Quirks
+            && !self.is_potentially_scrollable_body()
         {
             return win.ScrollX() as f64;
         }
@@ -3559,9 +3560,9 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
         }
 
         // Step 9
-        if doc.GetBody().as_deref() == self.downcast::<HTMLElement>() &&
-            doc.quirks_mode() == QuirksMode::Quirks &&
-            !self.is_potentially_scrollable_body()
+        if doc.GetBody().as_deref() == self.downcast::<HTMLElement>()
+            && doc.quirks_mode() == QuirksMode::Quirks
+            && !self.is_potentially_scrollable_body()
         {
             win.scroll(cx, x, win.ScrollY() as f32, behavior);
             return;
@@ -3772,9 +3773,9 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
 
         // Fast path for when the value is small, doesn't contain any markup and doesn't require
         // extra work to set innerHTML.
-        if !self.node.has_weird_parser_insertion_mode() &&
-            value.len_utf8_or_latin1() < 100 &&
-            !value
+        if !self.node.has_weird_parser_insertion_mode()
+            && value.len_utf8_or_latin1() < 100
+            && !value
                 .as_bytes()
                 .iter()
                 .any(|c| matches!(*c, b'&' | b'\0' | b'<' | b'\r'))
@@ -4951,8 +4952,8 @@ impl VirtualMethods for Element {
             // All children of this node need to be restyled when any child changes.
             self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
         } else {
-            if flags.intersects(ElementSelectorFlags::HAS_SLOW_SELECTOR_LATER_SIBLINGS) &&
-                let Some(next_child) = mutation.next_child()
+            if flags.intersects(ElementSelectorFlags::HAS_SLOW_SELECTOR_LATER_SIBLINGS)
+                && let Some(next_child) = mutation.next_child()
             {
                 for child in next_child.inclusively_following_siblings_unrooted(cx.no_gc()) {
                     if child.is::<Element>() {
@@ -4960,8 +4961,8 @@ impl VirtualMethods for Element {
                     }
                 }
             }
-            if flags.intersects(ElementSelectorFlags::HAS_EDGE_CHILD_SELECTOR) &&
-                let Some(child) = mutation.modified_edge_element(cx.no_gc())
+            if flags.intersects(ElementSelectorFlags::HAS_EDGE_CHILD_SELECTOR)
+                && let Some(child) = mutation.modified_edge_element(cx.no_gc())
             {
                 child.dirty(cx.no_gc(), NodeDamage::Other);
             }
@@ -5009,8 +5010,8 @@ impl Element {
             .rare_data()
             .as_ref()
             .and_then(|data| data.client_rect.as_ref())
-            .and_then(|rect| rect.get().ok()) &&
-            doc.restyle_reason(no_gc).is_empty()
+            .and_then(|rect| rect.get().ok())
+            && doc.restyle_reason(no_gc).is_empty()
         {
             return rect;
         }
@@ -5018,8 +5019,8 @@ impl Element {
         let mut rect = self.upcast::<Node>().client_rect();
         let in_quirks_mode = doc.quirks_mode() == QuirksMode::Quirks;
 
-        if (in_quirks_mode && doc.GetBody().as_deref() == self.downcast::<HTMLElement>()) ||
-            (!in_quirks_mode && self.is_document_element())
+        if (in_quirks_mode && doc.GetBody().as_deref() == self.downcast::<HTMLElement>())
+            || (!in_quirks_mode && self.is_document_element())
         {
             rect.size = doc.window().viewport_details().size.round().to_i32();
         }
@@ -5326,9 +5327,9 @@ impl Element {
             return;
         }
         let node = self.upcast::<Node>();
-        if let Some(ref parent) = node.GetParentNode() &&
-            parent.is::<HTMLOptGroupElement>() &&
-            parent.downcast::<Element>().unwrap().disabled_state()
+        if let Some(ref parent) = node.GetParentNode()
+            && parent.is::<HTMLOptGroupElement>()
+            && parent.downcast::<Element>().unwrap().disabled_state()
         {
             self.set_disabled_state(true);
             self.set_enabled_state(false);
@@ -5511,17 +5512,17 @@ pub(crate) fn is_element_affected_by_legacy_background_presentational_hint(
     namespace: &Namespace,
     local_name: &LocalName,
 ) -> bool {
-    *namespace == ns!(html) &&
-        matches!(
+    *namespace == ns!(html)
+        && matches!(
             *local_name,
-            local_name!("body") |
-                local_name!("table") |
-                local_name!("thead") |
-                local_name!("tbody") |
-                local_name!("tfoot") |
-                local_name!("tr") |
-                local_name!("td") |
-                local_name!("th")
+            local_name!("body")
+                | local_name!("table")
+                | local_name!("thead")
+                | local_name!("tbody")
+                | local_name!("tfoot")
+                | local_name!("tr")
+                | local_name!("td")
+                | local_name!("th")
         )
 }
 

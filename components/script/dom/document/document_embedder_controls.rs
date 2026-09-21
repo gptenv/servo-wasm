@@ -143,10 +143,10 @@ impl DocumentEmbedderControls {
         rect: DeviceIntRect,
     ) {
         match request {
-            EmbedderControlRequest::SelectElement(..) |
-            EmbedderControlRequest::ColorPicker(..) |
-            EmbedderControlRequest::InputMethod(..) |
-            EmbedderControlRequest::ContextMenu(..) => self
+            EmbedderControlRequest::SelectElement(..)
+            | EmbedderControlRequest::ColorPicker(..)
+            | EmbedderControlRequest::InputMethod(..)
+            | EmbedderControlRequest::ContextMenu(..) => self
                 .window
                 .send_to_embedder(EmbedderMsg::ShowEmbedderControl(id, rect, request)),
             EmbedderControlRequest::FilePicker(file_picker_request) => {
@@ -272,15 +272,15 @@ impl DocumentEmbedderControls {
             .node
             .inclusive_ancestors(ShadowIncluding::Yes)
         {
-            if anchor_element.is_none() &&
-                let Some(candidate_anchor_element) = node.downcast::<HTMLAnchorElement>() &&
-                candidate_anchor_element.is_instance_activatable()
+            if anchor_element.is_none()
+                && let Some(candidate_anchor_element) = node.downcast::<HTMLAnchorElement>()
+                && candidate_anchor_element.is_instance_activatable()
             {
                 anchor_element = Some(DomRoot::from_ref(candidate_anchor_element));
             }
 
-            if image_element.is_none() &&
-                let Some(candidate_image_element) = node.downcast::<HTMLImageElement>()
+            if image_element.is_none()
+                && let Some(candidate_image_element) = node.downcast::<HTMLImageElement>()
             {
                 image_element = Some(DomRoot::from_ref(candidate_image_element))
             }

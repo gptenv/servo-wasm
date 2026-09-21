@@ -263,8 +263,8 @@ impl DocumentOrShadowRoot {
 
         // Step 4: If the document has a root element, and the last item in sequence is
         // not the root element, append the root element to sequence.
-        if let Some(root_element) = document_element &&
-            elements.last() != Some(&root_element)
+        if let Some(root_element) = document_element
+            && elements.last() != Some(&root_element)
         {
             elements.push(root_element);
         }

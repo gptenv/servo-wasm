@@ -503,8 +503,8 @@ impl LineItemLayout<'_, '_> {
                 .flags
                 .contains(LineLayoutInlineContainerFlags::HAD_INLINE_END_PBM);
 
-            if containing_block_writing_mode.is_bidi_ltr() !=
-                inline_box.base.style.writing_mode.is_bidi_ltr()
+            if containing_block_writing_mode.is_bidi_ltr()
+                != inline_box.base.style.writing_mode.is_bidi_ltr()
             {
                 std::mem::swap(&mut had_start, &mut had_end)
             }
@@ -646,8 +646,8 @@ impl LineItemLayout<'_, '_> {
                 self.line_metrics.block_size - line_height + half_leading
             },
             _ => {
-                self.line_metrics.baseline_block_offset + inline_box_state.base.baseline_offset -
-                    space_above_baseline
+                self.line_metrics.baseline_block_offset + inline_box_state.base.baseline_offset
+                    - space_above_baseline
             },
         }
     }
@@ -679,9 +679,9 @@ impl LineItemLayout<'_, '_> {
         let font_metrics = text_item.info.font_info.font.metrics();
         let start_corner = LogicalVec2 {
             inline: self.current_state.inline_advance,
-            block: self.current_state.baseline_offset -
-                font_metrics.ascent -
-                self.current_state.parent_offset.block,
+            block: self.current_state.baseline_offset
+                - font_metrics.ascent
+                - self.current_state.parent_offset.block,
         };
         let content_rect = LogicalRect {
             start_corner,
@@ -729,10 +729,10 @@ impl LineItemLayout<'_, '_> {
                 .to_logical(ifc_writing_mode);
 
             let mut atomic_offset = LogicalVec2 {
-                inline: self.current_state.inline_advance +
-                    padding_border_margin_sides.inline_start,
-                block: block_start - self.current_state.parent_offset.block +
-                    padding_border_margin_sides.block_start,
+                inline: self.current_state.inline_advance
+                    + padding_border_margin_sides.inline_start,
+                block: block_start - self.current_state.parent_offset.block
+                    + padding_border_margin_sides.block_start,
             };
 
             let style = atomic_fragment.style();
@@ -788,8 +788,8 @@ impl LineItemLayout<'_, '_> {
         // absolutely positioned element. If it's `inline` it would be placed inline
         // at the top of the line, but if it's block it would be placed in a new
         // block position after the linebox established by this line.
-        let block_position = self.layout.placement_state.current_margin.solve() -
-            self.current_state.parent_offset.block;
+        let block_position = self.layout.placement_state.current_margin.solve()
+            - self.current_state.parent_offset.block;
         let initial_start_corner =
             if style.get_box().original_display.outside() == DisplayOutside::Inline {
                 // Top of the line at the current inline position.

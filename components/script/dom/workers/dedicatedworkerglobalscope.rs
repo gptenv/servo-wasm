@@ -740,8 +740,8 @@ impl DedicatedWorkerGlobalScope {
     }
 
     fn has_animation_frame_callbacks(&self) -> bool {
-        !self.animation_frame_list.borrow().is_empty() ||
-            !self.current_animation_frame_list.borrow().is_empty()
+        !self.animation_frame_list.borrow().is_empty()
+            || !self.current_animation_frame_list.borrow().is_empty()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-animationframeprovider-requestanimationframe>
@@ -801,8 +801,8 @@ impl DedicatedWorkerGlobalScope {
 
     /// <https://html.spec.whatwg.org/multipage/#run-the-animation-frame-callbacks>
     pub(crate) fn run_the_animation_frame_callbacks(&self, cx: &mut JSContext) {
-        if !self.animation_frame_provider_supported() ||
-            self.upcast::<WorkerGlobalScope>().is_closing()
+        if !self.animation_frame_provider_supported()
+            || self.upcast::<WorkerGlobalScope>().is_closing()
         {
             return;
         }

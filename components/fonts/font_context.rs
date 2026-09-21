@@ -74,6 +74,19 @@ pub(crate) struct FontParameters {
 
 pub type FontGroupRef = Arc<FontGroup>;
 
+#[cfg(not(target_arch = "wasm32"))]
+fn sanitize_font_data(data: &[u8]) -> Option<Vec<u8>> {
+    fontsan::process(data).ok()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn sanitize_font_data(data: &[u8]) -> Option<Vec<u8>> {
+    // fontsan currently embeds a native C lz4 build. Worker fonts are already
+    // decoded by the wasm font backend, so preserve the bytes until a pure-Rust
+    // sanitizer is available for this target.
+    Some(data.to_vec())
+}
+
 /// The FontContext represents the per-thread/thread state necessary for
 /// working with fonts. It is the public API used by the layout and
 /// paint code. It talks directly to the system font service where
@@ -464,10 +477,10 @@ impl FontContext {
         if matches!(
             format_hint,
             FontFaceSourceFormat::Keyword(
-                FontFaceSourceFormatKeyword::Truetype |
-                    FontFaceSourceFormatKeyword::Opentype |
-                    FontFaceSourceFormatKeyword::Woff |
-                    FontFaceSourceFormatKeyword::Woff2
+                FontFaceSourceFormatKeyword::Truetype
+                    | FontFaceSourceFormatKeyword::Opentype
+                    | FontFaceSourceFormatKeyword::Woff
+                    | FontFaceSourceFormatKeyword::Woff2
             )
         ) {
             return true;
@@ -479,11 +492,11 @@ impl FontContext {
                 return true;
             }
 
-            return pref!(layout_variable_fonts_enabled) &&
-                (string == "truetype-variations" ||
-                    string == "opentype-variations" ||
-                    string == "woff-variations" ||
-                    string == "woff2-variations");
+            return pref!(layout_variable_fonts_enabled)
+                && (string == "truetype-variations"
+                    || string == "opentype-variations"
+                    || string == "woff-variations"
+                    || string == "woff2-variations");
         }
 
         false
@@ -646,8 +659,8 @@ impl WebFontDownloadState {
                     if self
                         .font_context
                         .number_of_loading_web_fonts
-                        .fetch_sub(1, Ordering::SeqCst) ==
-                        1
+                        .fetch_sub(1, Ordering::SeqCst)
+                        == 1
                     {
                         // This was the last loading font - we must inform the script thread that the load
                         // has finished because this an opportunity to resolve document.fonts.ready.
@@ -683,8 +696,8 @@ impl WebFontDownloadState {
                 if self
                     .font_context
                     .number_of_loading_web_fonts
-                    .fetch_sub(1, Ordering::SeqCst) ==
-                    1
+                    .fetch_sub(1, Ordering::SeqCst)
+                    == 1
                 {
                     // This was the last loading font - we must inform the script thread that the load
                     // has finished because this an opportunity to resolve document.fonts.ready.
@@ -818,14 +831,14 @@ impl FontContextWebFontMethods for Arc<FontContext> {
 
         for subscriber in subscribers {
             // See if the font load was cancelled in the meantime
-            if let WebFontLoadInitiator::Stylesheet(stylesheet_initiator) = &subscriber.initiator &&
-                !self.is_font_active(&stylesheet_initiator.font_face_rule)
+            if let WebFontLoadInitiator::Stylesheet(stylesheet_initiator) = &subscriber.initiator
+                && !self.is_font_active(&stylesheet_initiator.font_face_rule)
             {
                 // This font load was cancelled.
                 if self
                     .number_of_loading_web_fonts
-                    .fetch_sub(1, Ordering::SeqCst) ==
-                    1
+                    .fetch_sub(1, Ordering::SeqCst)
+                    == 1
                 {
                     // This was the last loading font - we must inform the script thread that the load
                     // has finished because this an opportunity to resolve document.fonts.ready.
@@ -951,14 +964,7 @@ impl FontContext {
         data: &[u8],
         descriptors: CSSFontFaceDescriptors,
     ) -> Option<(LowercaseFontFamilyName, FontTemplate)> {
-        let mut bytes = fontsan::process(data)
-            .inspect_err(|error| {
-                debug!(
-                    "Sanitiser rejected FontFace font: family={} with {error:?}",
-                    descriptors.family_name,
-                );
-            })
-            .ok()?;
+        let mut bytes = sanitize_font_data(data)?;
         bytes.shrink_to_fit();
         let font_data = FontData::from_vec(bytes);
 
@@ -1349,13 +1355,10 @@ impl RemoteWebFontDownloader {
             font_data.len()
         );
 
-        let font_data = match fontsan::process(&font_data) {
-            Ok(bytes) => FontData::from_vec(bytes),
-            Err(error) => {
-                debug!(
-                    "Sanitiser rejected web font url={:?} with {error:?}",
-                    self.url.as_str(),
-                );
+        let font_data = match sanitize_font_data(&font_data) {
+            Some(bytes) => FontData::from_vec(bytes),
+            None => {
+                debug!("Sanitiser rejected web font url={:?}", self.url.as_str());
                 return self
                     .font_context
                     .handle_web_font_request_failed(self.url.clone().into());
@@ -1642,8 +1645,8 @@ fn font_face_rules_conflict(
     first_rule: &FontFaceRuleDescriptors,
     second_rule: &FontFaceRuleDescriptors,
 ) -> bool {
-    first_rule.font_width == second_rule.font_width &&
-        first_rule.font_style == second_rule.font_style &&
-        first_rule.font_weight == second_rule.font_weight &&
-        first_rule.unicode_range == second_rule.unicode_range
+    first_rule.font_width == second_rule.font_width
+        && first_rule.font_style == second_rule.font_style
+        && first_rule.font_weight == second_rule.font_weight
+        && first_rule.unicode_range == second_rule.unicode_range
 }

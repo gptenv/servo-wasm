@@ -11,11 +11,14 @@ use app_units::Au;
 use euclid::default::Point2D;
 use euclid::num::Zero;
 use itertools::Either;
+#[cfg(not(target_arch = "wasm32"))]
 use log::{debug, error};
 use malloc_size_of_derive::MallocSizeOf;
 use servo_base::text::Utf32CodeUnits;
 
-use crate::{GlyphShapingResult, ShapedGlyph, ShapingOptions};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::GlyphShapingResult;
+use crate::{ShapedGlyph, ShapingOptions};
 
 /// GlyphEntry is a port of Gecko's CompressedGlyph scheme for storing glyph data compactly.
 ///
@@ -261,6 +264,7 @@ impl ShapedText {
     /// characters left-to-right or right-to-left. Each character can produce
     /// multiple glyphs and multiple characters can produce one glyph. HarfBuzz just
     /// guarantees that the resulting character offsets are in monotone order.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_shaped_glyph_data(
         text: &str,
         options: &ShapingOptions,
@@ -292,8 +296,8 @@ impl ShapedText {
             // this glyph corresponds to. More than one glyph can share a cluster.
             let glyph_cluster = shaped_glyph.string_byte_offset;
 
-            if let Some(previous_character_offset) = previous_character_offset &&
-                previous_character_offset == glyph_cluster
+            if let Some(previous_character_offset) = previous_character_offset
+                && previous_character_offset == glyph_cluster
             {
                 glyph_store.add_glyph_for_current_character(&shaped_glyph, options);
                 continue;
@@ -396,6 +400,7 @@ impl ShapedText {
             .push(GlyphEntry::complex(self.detailed_glyphs.len() - 1));
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn extend_previous_glyph_by_character(&mut self) {
         let detailed_glyph_index = self.ensure_last_glyph_is_detailed();
         let detailed_glyph = self
@@ -406,6 +411,7 @@ impl ShapedText {
         self.character_count += Utf32CodeUnits(1);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn add_glyph_for_current_character(
         &mut self,
         shaped_glyph: &ShapedGlyph,
@@ -429,6 +435,7 @@ impl ShapedText {
     /// If the last glyph added to this [`ShapedText`] was a simple glyph, convert it to a
     /// detailed one. In either case, return the index into [`Self::detailed_glyphs`] for
     /// the most recently added glyph.
+    #[cfg(not(target_arch = "wasm32"))]
     fn ensure_last_glyph_is_detailed(&mut self) -> usize {
         let last_glyph = self
             .glyphs
@@ -471,9 +478,10 @@ impl ShapedText {
 
 impl ShapedGlyph {
     fn can_be_simple_glyph(&self) -> bool {
-        is_simple_glyph_id(self.glyph_id) &&
-            is_simple_advance(self.advance) &&
-            self.offset
+        is_simple_glyph_id(self.glyph_id)
+            && is_simple_advance(self.advance)
+            && self
+                .offset
                 .is_none_or(|offset| offset == Default::default())
     }
 
@@ -685,8 +693,8 @@ impl ShapedTextSlicer {
         for glyph in iterator {
             // When glyphs span two character slices, prioritize the first slice and also
             // ensure that glyphs that span zero characters are also included there.
-            if self.current_character_offset >= desired_character_offset &&
-                glyph.character_count().0 > 0
+            if self.current_character_offset >= desired_character_offset
+                && glyph.character_count().0 > 0
             {
                 break;
             }

@@ -111,8 +111,8 @@ impl Document {
                     event.mark_as_handled();
                 },
                 ClipboardEventType::Cut => {
-                    if let Some(selection) = editing_context.selection_content(cx) &&
-                        editing_context.cutting_and_pasting_enabled()
+                    if let Some(selection) = editing_context.selection_content(cx)
+                        && editing_context.cutting_and_pasting_enabled()
                     {
                         // Step 3.1. If there is a selection in an editable context where
                         // cutting is enabled, then
@@ -141,9 +141,9 @@ impl Document {
                     }
                 },
                 ClipboardEventType::Paste => {
-                    if editing_context.has_selection_or_cursor() &&
-                        editing_context.cutting_and_pasting_enabled() &&
-                        let Some(text_content) = clipboard_event.text_content()
+                    if editing_context.has_selection_or_cursor()
+                        && editing_context.cutting_and_pasting_enabled()
+                        && let Some(text_content) = clipboard_event.text_content()
                     {
                         // Step 3.1. If there is a selection or cursor in an editable context
                         // where pasting is enabled, then
@@ -412,8 +412,8 @@ impl TryFrom<&Node> for EditingContext {
                 TextControlElementEditingContext::TextArea(DomRoot::from_ref(text_area)),
             ));
         }
-        if let Some(input) = node.downcast::<HTMLInputElement>() &&
-            input.is_textual_or_password()
+        if let Some(input) = node.downcast::<HTMLInputElement>()
+            && input.is_textual_or_password()
         {
             return Ok(EditingContext::TextControl(
                 TextControlElementEditingContext::Input(DomRoot::from_ref(input)),

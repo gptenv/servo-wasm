@@ -213,8 +213,8 @@ impl FetchResponseListener for ImageContext {
         });
 
         // Step 14.5 of https://html.spec.whatwg.org/multipage/#img-environment-changes
-        if let Some(metadata) = metadata.as_ref() &&
-            let Some(ref content_type) = metadata.content_type
+        if let Some(metadata) = metadata.as_ref()
+            && let Some(ref content_type) = metadata.content_type
         {
             let mime: Mime = content_type.clone().into_inner().into();
             if mime.type_() == mime::MULTIPART && mime.subtype().as_str() == "x-mixed-replace" {
@@ -1023,8 +1023,9 @@ impl HTMLImageElement {
         // There are missing steps for the element's last selected source in specification so let's
         // check the current request's current URL as well.
         // <https://github.com/whatwg/html/issues/5060>
-        same_selected_source = same_selected_source ||
-            self.current_request
+        same_selected_source = same_selected_source
+            || self
+                .current_request
                 .borrow()
                 .source_url
                 .as_ref()
@@ -1107,8 +1108,8 @@ impl HTMLImageElement {
         // Step 2.2. If any of the following are true: this's node document is not fully active; or
         // this's current request's state is broken, then reject promise with an "EncodingError"
         // DOMException.
-        if !self.owner_document().is_fully_active() ||
-            matches!(self.current_request.borrow().state, State::Broken)
+        if !self.owner_document().is_fully_active()
+            || matches!(self.current_request.borrow().state, State::Broken)
         {
             promise.reject_error(cx, Error::Encoding(Some("Image element's owner document is not fully active or image element's request is broken".into())));
         } else if matches!(
@@ -1117,8 +1118,8 @@ impl HTMLImageElement {
         ) {
             // this doesn't follow the spec, but it's been discussed in <https://github.com/whatwg/html/issues/4217>
             promise.resolve_native(cx, &());
-        } else if matches!(self.current_request.borrow().state, State::Unavailable) &&
-            self.current_request.borrow().source_url.is_none()
+        } else if matches!(self.current_request.borrow().state, State::Unavailable)
+            && self.current_request.borrow().source_url.is_none()
         {
             // Note: Despite being not explicitly stated in the specification but if current
             // request's state is unavailable and current URL is empty string (<img> without "src"
@@ -1402,9 +1403,9 @@ pub(crate) enum ImageElementMicrotask {
 impl MicrotaskRunnable for ImageElementMicrotask {
     fn handler(&self, cx: &mut js::context::JSContext) {
         let mut realm = match self {
-            &ImageElementMicrotask::UpdateImageData { ref elem, .. } |
-            &ImageElementMicrotask::EnvironmentChanges { ref elem, .. } |
-            &ImageElementMicrotask::Decode { ref elem, .. } => enter_auto_realm(cx, &**elem),
+            &ImageElementMicrotask::UpdateImageData { ref elem, .. }
+            | &ImageElementMicrotask::EnvironmentChanges { ref elem, .. }
+            | &ImageElementMicrotask::Decode { ref elem, .. } => enter_auto_realm(cx, &**elem),
         };
         let cx = &mut realm;
         match *self {
@@ -1639,8 +1640,8 @@ impl HTMLImageElementMethods<crate::DomTypeHolder> for HTMLImageElement {
         // the img element's current request's state is completely available and its pending request
         // is null; or the img element's current request's state is broken and its pending request
         // is null, then return true.
-        if matches!(self.image_request.get(), ImageRequestPhase::Current) &&
-            matches!(
+        if matches!(self.image_request.get(), ImageRequestPhase::Current)
+            && matches!(
                 self.current_request.borrow().state,
                 State::CompletelyAvailable | State::Broken
             )
@@ -1750,10 +1751,10 @@ impl VirtualMethods for HTMLImageElement {
             .unwrap()
             .attribute_mutated(cx, attr, mutation);
         match attr.local_name() {
-            &local_name!("src") |
-            &local_name!("srcset") |
-            &local_name!("width") |
-            &local_name!("sizes") => {
+            &local_name!("src")
+            | &local_name!("srcset")
+            | &local_name!("width")
+            | &local_name!("sizes") => {
                 // <https://html.spec.whatwg.org/multipage/#reacting-to-dom-mutations>
                 // The element's src, srcset, width, or sizes attributes are set, changed, or
                 // removed.
@@ -1897,8 +1898,8 @@ impl VirtualMethods for HTMLImageElement {
         }
 
         // Step 1. If oldParent is a picture element, then, count this as a relevant mutation for movedNode.
-        if let Some(old_parent) = context.old_parent &&
-            old_parent.is::<HTMLPictureElement>()
+        if let Some(old_parent) = context.old_parent
+            && old_parent.is::<HTMLPictureElement>()
         {
             self.update_the_image_data(cx);
         }

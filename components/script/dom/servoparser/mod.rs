@@ -514,8 +514,8 @@ impl ServoParser {
         // Store the whole input for the devtools Sources panel, if the devtools server is running
         // and we are parsing for a document load (not just things like innerHTML).
         // TODO: check if a devtools client is actually connected and/or wants the sources?
-        let content_for_devtools = (document.global().devtools_chan().is_some() &&
-            document.has_browsing_context())
+        let content_for_devtools = (document.global().devtools_chan().is_some()
+            && document.has_browsing_context())
         .then_some(DomRefCell::new(String::new()));
 
         ServoParser {
@@ -1519,11 +1519,11 @@ impl ParserContext {
                     let page = page.replace("${bytes}", encoded_bytes.as_str());
                     page.replace("${secret}", &net_traits::PRIVILEGED_SECRET.to_string())
                 },
-                NetworkError::BlobURLStoreError(reason) |
-                NetworkError::WebsocketConnectionFailure(reason) |
-                NetworkError::HttpError(reason) |
-                NetworkError::ResourceLoadError(reason) |
-                NetworkError::MimeType(reason) => {
+                NetworkError::BlobURLStoreError(reason)
+                | NetworkError::WebsocketConnectionFailure(reason)
+                | NetworkError::HttpError(reason)
+                | NetworkError::ResourceLoadError(reason)
+                | NetworkError::MimeType(reason) => {
                     let page = resources::read_string(Resource::NetErrorHTML);
                     page.replace("${reason}", &reason)
                 },
@@ -1531,30 +1531,30 @@ impl ParserContext {
                     let page = resources::read_string(Resource::CrashHTML);
                     page.replace("${details}", &details)
                 },
-                NetworkError::UnsupportedScheme |
-                NetworkError::CorsGeneral |
-                NetworkError::CrossOriginResponse |
-                NetworkError::CorsCredentials |
-                NetworkError::CorsAllowMethods |
-                NetworkError::CorsAllowHeaders |
-                NetworkError::CorsMethod |
-                NetworkError::CorsAuthorization |
-                NetworkError::CorsHeaders |
-                NetworkError::ConnectionFailure |
-                NetworkError::RedirectError |
-                NetworkError::TooManyRedirects |
-                NetworkError::TooManyInFlightKeepAliveRequests |
-                NetworkError::InvalidMethod |
-                NetworkError::ContentSecurityPolicy |
-                NetworkError::Nosniff |
-                NetworkError::SubresourceIntegrity |
-                NetworkError::MixedContent |
-                NetworkError::CacheError |
-                NetworkError::InvalidPort |
-                NetworkError::LocalDirectoryError |
-                NetworkError::PartialResponseToNonRangeRequestError |
-                NetworkError::ProtocolHandlerSubstitutionError |
-                NetworkError::DecompressionError => {
+                NetworkError::UnsupportedScheme
+                | NetworkError::CorsGeneral
+                | NetworkError::CrossOriginResponse
+                | NetworkError::CorsCredentials
+                | NetworkError::CorsAllowMethods
+                | NetworkError::CorsAllowHeaders
+                | NetworkError::CorsMethod
+                | NetworkError::CorsAuthorization
+                | NetworkError::CorsHeaders
+                | NetworkError::ConnectionFailure
+                | NetworkError::RedirectError
+                | NetworkError::TooManyRedirects
+                | NetworkError::TooManyInFlightKeepAliveRequests
+                | NetworkError::InvalidMethod
+                | NetworkError::ContentSecurityPolicy
+                | NetworkError::Nosniff
+                | NetworkError::SubresourceIntegrity
+                | NetworkError::MixedContent
+                | NetworkError::CacheError
+                | NetworkError::InvalidPort
+                | NetworkError::LocalDirectoryError
+                | NetworkError::PartialResponseToNonRangeRequestError
+                | NetworkError::ProtocolHandlerSubstitutionError
+                | NetworkError::DecompressionError => {
                     let page = resources::read_string(Resource::NetErrorHTML);
                     page.replace("${reason}", &format!("{:?}", error))
                 },
@@ -1607,8 +1607,8 @@ impl ParserContext {
         timing: ResourceFetchTiming,
     ) {
         let parser = self.parser.as_ref().map(|parser| parser.root());
-        if parser.as_ref().is_some_and(|parser| parser.aborted.get()) ||
-            self.is_synthesized_document
+        if parser.as_ref().is_some_and(|parser| parser.aborted.get())
+            || self.is_synthesized_document
         {
             return;
         }
@@ -2070,8 +2070,8 @@ impl TreeSink for Sink {
         let elem = handle.downcast::<Element>().unwrap();
         elem.get_attribute_string_value(&local_name!("encoding"))
             .is_some_and(|value| {
-                value.eq_ignore_ascii_case("text/html") ||
-                    value.eq_ignore_ascii_case("application/xhtml+xml")
+                value.eq_ignore_ascii_case("text/html")
+                    || value.eq_ignore_ascii_case("application/xhtml+xml")
             })
     }
 
@@ -2236,9 +2236,9 @@ fn create_element_for_token(
     // Step 14. If element is a resettable element and not a form-associated custom
     // element, then invoke its reset algorithm. (This initializes the element's value and
     // checkedness based on the element's attributes.)
-    if let Some(html_element) = element.downcast::<HTMLElement>() &&
-        element.is_resettable() &&
-        !html_element.is_form_associated_custom_element()
+    if let Some(html_element) = element.downcast::<HTMLElement>()
+        && element.is_resettable()
+        && !html_element.is_form_associated_custom_element()
     {
         element.reset(cx);
     }

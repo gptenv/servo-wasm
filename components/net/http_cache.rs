@@ -270,8 +270,9 @@ impl MallocSizeOf for HttpCache {
         self.entries
             .iter()
             .map(|(_key, entry)| entry.blocking_read().size_of(ops))
-            .sum::<usize>() +
-            self.disk_cache
+            .sum::<usize>()
+            + self
+                .disk_cache
                 .as_ref()
                 .map(|data| data.size_of(ops))
                 .unwrap_or(0)
@@ -358,9 +359,9 @@ fn response_is_cacheable(metadata: &Metadata) -> bool {
     // 2. check for absence of the Authorization header field.
     let mut is_cacheable = false;
     let headers = metadata.headers.as_ref().unwrap();
-    if headers.contains_key(header::EXPIRES) ||
-        headers.contains_key(header::LAST_MODIFIED) ||
-        headers.contains_key(header::ETAG)
+    if headers.contains_key(header::EXPIRES)
+        || headers.contains_key(header::LAST_MODIFIED)
+        || headers.contains_key(header::ETAG)
     {
         is_cacheable = true;
     }
@@ -368,17 +369,17 @@ fn response_is_cacheable(metadata: &Metadata) -> bool {
         if directive.no_store() {
             return false;
         }
-        if directive.public() ||
-            directive.s_max_age().is_some() ||
-            directive.max_age().is_some() ||
-            directive.no_cache()
+        if directive.public()
+            || directive.s_max_age().is_some()
+            || directive.max_age().is_some()
+            || directive.no_cache()
         {
             // If cache-control is understood, we can use it and ignore pragma.
             return true;
         }
     }
-    if let Some(pragma) = headers.typed_get::<Pragma>() &&
-        pragma.is_no_cache()
+    if let Some(pragma) = headers.typed_get::<Pragma>()
+        && pragma.is_no_cache()
     {
         return false;
     }
@@ -463,8 +464,8 @@ fn get_response_expiry(response: &Response) -> ApproxDuration {
             return heuristic_freshness;
         }
         // Other status codes can only use heuristic freshness if the public cache directive is present.
-        if let Some(ref directives) = response.headers.typed_get::<CacheControl>() &&
-            directives.public()
+        if let Some(ref directives) = response.headers.typed_get::<CacheControl>()
+            && directives.public()
         {
             return heuristic_freshness;
         }
@@ -613,9 +614,9 @@ fn create_cached_response(
         ValidationStatus::Valid
     } else {
         ValidationStatus::Stale {
-            revalidate_in_background: within_stale_while_revalidate_window &&
-                !cached_resource.stale_while_revalidate.is_zero() &&
-                !request_demands_revalidation(request),
+            revalidate_in_background: within_stale_while_revalidate_window
+                && !cached_resource.stale_while_revalidate.is_zero()
+                && !request_demands_revalidation(request),
         }
     };
 
@@ -1198,8 +1199,8 @@ impl<'a> CachedResourcesOrGuard<'a> {
             Ok(FetchMetadata::Filtered {
                 filtered: _,
                 unsafe_: metadata,
-            }) |
-            Ok(FetchMetadata::Unfiltered(metadata)) => metadata,
+            })
+            | Ok(FetchMetadata::Unfiltered(metadata)) => metadata,
             _ => return,
         };
         if !response_is_cacheable(&metadata) {

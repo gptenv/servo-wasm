@@ -115,8 +115,8 @@ fn detect_hos_font_style(font: &FontRef, file_path: &str) -> Option<String> {
         .unwrap_or_else(|_| {
             panic!("Failed to read {:?}'s postscript table!", file_path);
         })
-        .italic_angle() !=
-        (0_i32).into()
+        .italic_angle()
+        != (0_i32).into()
     {
         Some("italic".to_string())
     } else {
@@ -416,8 +416,8 @@ where
         return;
     }
 
-    if let Some(alias) = FONT_LIST.find_alias(family_name) &&
-        let Some(family) = FONT_LIST.find_family(&alias.to)
+    if let Some(alias) = FONT_LIST.find_alias(family_name)
+        && let Some(family) = FONT_LIST.find_family(&alias.to)
     {
         for font in &family.fonts {
             match (alias.weight, font.weight) {
@@ -472,19 +472,19 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
             UnicodeBlock::Ethiopic | UnicodeBlock::EthiopicSupplement => {
                 families.push("Noto Sans Ethiopic");
             },
-            UnicodeBlock::HangulCompatibilityJamo |
-            UnicodeBlock::HangulJamo |
-            UnicodeBlock::HangulJamoExtendedA |
-            UnicodeBlock::HangulJamoExtendedB |
-            UnicodeBlock::HangulSyllables => {
+            UnicodeBlock::HangulCompatibilityJamo
+            | UnicodeBlock::HangulJamo
+            | UnicodeBlock::HangulJamoExtendedA
+            | UnicodeBlock::HangulJamoExtendedB
+            | UnicodeBlock::HangulSyllables => {
                 families.push("Noto Sans CJK KR");
                 families.push("Noto Sans Mono CJK KR");
                 families.push("Noto Serif CJK KR");
                 families.push("Noto Sans KR");
             },
-            UnicodeBlock::Hiragana |
-            UnicodeBlock::Katakana |
-            UnicodeBlock::KatakanaPhoneticExtensions => {
+            UnicodeBlock::Hiragana
+            | UnicodeBlock::Katakana
+            | UnicodeBlock::KatakanaPhoneticExtensions => {
                 families.push("Noto Sans CJK JP");
                 families.push("Noto Sans Mono CJK JP");
                 families.push("Noto Serif CJK JP");
@@ -499,11 +499,11 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
             // neither HarmonyOS Sans SC nor TC cover the entire range of these blocks.
             // Whereas the CJKUnifiedIdeographs and its extensions are not included because they contain regular characters and
             // have been covered in the previous if block, at least for Chinese characters.
-            UnicodeBlock::CJKCompatibility |
-            UnicodeBlock::CJKCompatibilityForms |
-            UnicodeBlock::CJKCompatibilityIdeographs |
-            UnicodeBlock::CJKStrokes |
-            UnicodeBlock::CJKSymbolsandPunctuation => {
+            UnicodeBlock::CJKCompatibility
+            | UnicodeBlock::CJKCompatibilityForms
+            | UnicodeBlock::CJKCompatibilityIdeographs
+            | UnicodeBlock::CJKStrokes
+            | UnicodeBlock::CJKSymbolsandPunctuation => {
                 families.push("HarmonyOS Sans SC");
                 families.push("HarmonyOS Sans TC");
             },

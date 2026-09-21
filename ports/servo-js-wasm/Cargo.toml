@@ -11,7 +11,17 @@ path = "lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+bytes = { workspace = true }
+dpi = { workspace = true }
 js = { workspace = true, default-features = false, features = ["libz-rs"] }
+mime = { workspace = true }
+net_traits = { workspace = true }
+serde_json = { workspace = true }
+servo-base = { workspace = true }
+servo-url = { workspace = true }
+uuid = { workspace = true }
+servo = { path = "../../components/servo", default-features = false }
+url = { workspace = true }
 
 [lints]
 workspace = true

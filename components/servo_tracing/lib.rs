@@ -245,8 +245,8 @@ pub fn instrument_all(attr: TokenStream, item: TokenStream) -> TokenStream {
     match parsed_item {
         Item::Impl(mut impl_block) => {
             for item in impl_block.items.iter_mut() {
-                if let ImplItem::Fn(method) = item &&
-                    should_apply_instrument_method(method)
+                if let ImplItem::Fn(method) = item
+                    && should_apply_instrument_method(method)
                 {
                     let transformed = instrument_internal(attr.clone(), method.to_token_stream())
                         .unwrap()

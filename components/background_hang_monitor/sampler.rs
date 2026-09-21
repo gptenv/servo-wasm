@@ -22,6 +22,7 @@ impl Sampler for DummySampler {
     }
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub struct NativeStack {
     instruction_ptrs: [*mut std::ffi::c_void; MAX_NATIVE_FRAMES],
     stack_ptrs: [*mut std::ffi::c_void; MAX_NATIVE_FRAMES],
@@ -38,6 +39,7 @@ impl Default for NativeStack {
     }
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl NativeStack {
     #[cfg_attr(
         any(

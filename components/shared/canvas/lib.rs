@@ -13,6 +13,14 @@ use profile_traits::mem::ReportsChan;
 use crate::canvas::CanvasId;
 
 pub mod canvas;
+// Cloudflare Workers never expose a WebGL context, and `glow` -- which
+// this module depends on for its GL type conversions -- unconditionally
+// pulls in `wasm-bindgen`/`web_sys` for any wasm32 target regardless of
+// which of its own features are enabled. Every consumer of this module
+// elsewhere in the tree is already gated behind the `webgl` Cargo feature,
+// which the Worker build disables, so excluding the module itself here is
+// safe.
+#[cfg(not(target_arch = "wasm32"))]
 #[macro_use]
 pub mod webgl;
 

@@ -103,8 +103,8 @@ impl LayoutBoxBase {
         let mut cache = self.cached_inline_content_size.borrow_mut();
         if let Some(cached_inline_content_size) = cache.as_ref() {
             let (previous_cb_block_size, result) = **cached_inline_content_size;
-            if !result.depends_on_block_constraints ||
-                previous_cb_block_size == constraint_space.block_size
+            if !result.depends_on_block_constraints
+                || previous_cb_block_size == constraint_space.block_size
             {
                 return result;
             }
@@ -162,8 +162,8 @@ impl LayoutBoxBase {
     pub(crate) fn invalidate_caches(&self, damage_set: &ElementDamageSet) -> bool {
         self.cached_layout_result_dirty
             .store(true, Ordering::Relaxed);
-        if !damage_set.on_element.is_empty() ||
-            damage_set
+        if !damage_set.on_element.is_empty()
+            || damage_set
                 .from_children
                 .contains(LayoutDamage::RecomputeInlineContentSizes)
         {
@@ -180,8 +180,9 @@ impl LayoutBoxBase {
         // clear the cached intrinsic sizes of the parent. But if the contributions are
         // purely extrinsic, then the intrinsic sizes of the ancestors won't be affected,
         // and we can keep the cache.
-        !self.base_fragment_info.is_anonymous() &&
-            self.outer_inline_content_sizes_depend_on_content
+        !self.base_fragment_info.is_anonymous()
+            && self
+                .outer_inline_content_sizes_depend_on_content
                 .load(Ordering::Relaxed)
     }
 
@@ -214,14 +215,14 @@ impl LayoutBoxBase {
         };
 
         let cache = &**cache;
-        if cache.containing_block_for_children_size.inline !=
-            containing_block_for_children.size.inline
+        if cache.containing_block_for_children_size.inline
+            != containing_block_for_children.size.inline
         {
             return None;
         }
-        if cache.containing_block_for_children_size.block !=
-            containing_block_for_children.size.block &&
-            cache.result.depends_on_block_constraints
+        if cache.containing_block_for_children_size.block
+            != containing_block_for_children.size.block
+            && cache.result.depends_on_block_constraints
         {
             return None;
         }
@@ -266,13 +267,13 @@ impl LayoutBoxBase {
             return None;
         };
 
-        if result.containing_block_size != containing_block.size ||
-            result.containing_block_writing_mode != containing_block.style.writing_mode ||
-            result.containing_block_justify_items !=
-                containing_block.style.clone_justify_items().computed.0.0 ||
-            result.collapsible_with_parent_start_margin != collapsible_with_parent_start_margin ||
-            result.ignore_block_margins_for_stretch != ignore_block_margins_for_stretch ||
-            result.has_inline_parent != has_inline_parent
+        if result.containing_block_size != containing_block.size
+            || result.containing_block_writing_mode != containing_block.style.writing_mode
+            || result.containing_block_justify_items
+                != containing_block.style.clone_justify_items().computed.0.0
+            || result.collapsible_with_parent_start_margin != collapsible_with_parent_start_margin
+            || result.ignore_block_margins_for_stretch != ignore_block_margins_for_stretch
+            || result.has_inline_parent != has_inline_parent
         {
             return None;
         }

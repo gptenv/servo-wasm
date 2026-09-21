@@ -226,8 +226,8 @@ where
         cx: &mut JSContext,
         descriptor: &GPUTextureViewDescriptor,
     ) -> Fallible<DomRoot<GPUTextureView<D>>> {
-        let desc = if !matches!(descriptor.mipLevelCount, Some(0)) &&
-            !matches!(descriptor.arrayLayerCount, Some(0))
+        let desc = if !matches!(descriptor.mipLevelCount, Some(0))
+            && !matches!(descriptor.arrayLayerCount, Some(0))
         {
             Some(TextureViewDescriptor {
                 label: (&descriptor.parent).convert(),

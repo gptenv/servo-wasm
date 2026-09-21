@@ -237,10 +237,10 @@ impl<'a> ServoImageDecoder<'a> for DefaultImageDecoder<'a> {
         match &self.decoder {
             GenericImageDecoder::Apng(_) | GenericImageDecoder::Gif(_) => true,
             GenericImageDecoder::Webp(decoder) => decoder.has_animation(),
-            GenericImageDecoder::Png(_) |
-            GenericImageDecoder::Jpeg(_) |
-            GenericImageDecoder::Bmp(_) |
-            GenericImageDecoder::Ico(_) => false,
+            GenericImageDecoder::Png(_)
+            | GenericImageDecoder::Jpeg(_)
+            | GenericImageDecoder::Bmp(_)
+            | GenericImageDecoder::Ico(_) => false,
         }
     }
 

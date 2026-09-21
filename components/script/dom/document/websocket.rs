@@ -447,9 +447,9 @@ impl WebSocketMethods<crate::DomTypeHolder> for WebSocket {
     /// <https://websockets.spec.whatwg.org/#dom-websocket-close>
     fn Close(&self, code: Option<u16>, reason: Option<USVString>) -> ErrorResult {
         // Step 1. If code is present, but is neither an integer equal to 1000 nor an integer in the range 3000 to 4999, inclusive, throw an "InvalidAccessError" DOMException.
-        if let Some(code) = code &&
-            code != close_code::NORMAL &&
-            !(3000..=4999).contains(&code)
+        if let Some(code) = code
+            && code != close_code::NORMAL
+            && !(3000..=4999).contains(&code)
         {
             return Err(Error::InvalidAccess(Some(
                 "Invalid WebSocket connection close code".into(),
@@ -457,8 +457,8 @@ impl WebSocketMethods<crate::DomTypeHolder> for WebSocket {
         }
 
         // Step 2.2. If reasonBytes is longer than 123 bytes, then throw a "SyntaxError" DOMException.
-        if let Some(ref reason) = reason &&
-            reason.0.len() > 123
+        if let Some(ref reason) = reason
+            && reason.0.len() > 123
         {
             return Err(Error::Syntax(Some("Reason too long".to_string())));
         }

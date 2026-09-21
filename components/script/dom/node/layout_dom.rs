@@ -63,8 +63,8 @@ impl<'dom> LayoutDom<'dom, Node> {
     #[inline]
     pub(crate) fn composed_parent_node_ref(self) -> Option<LayoutDom<'dom, Node>> {
         let parent = self.parent_node_ref();
-        if let Some(parent) = parent &&
-            let Some(shadow_root) = parent.downcast::<ShadowRoot>()
+        if let Some(parent) = parent
+            && let Some(shadow_root) = parent.downcast::<ShadowRoot>()
         {
             return Some(shadow_root.get_host_for_layout().upcast());
         }
@@ -229,8 +229,9 @@ impl<'dom> LayoutDom<'dom, Node> {
         );
         // Currently `::placeholder` is only implemented for single line text input element.
         debug_assert!(
-            !is_single_line_text_inner_placeholder ||
-                self.containing_shadow_root_for_layout()
+            !is_single_line_text_inner_placeholder
+                || self
+                    .containing_shadow_root_for_layout()
                     .map(|root| root.get_host_for_layout())
                     .map(|host| host.downcast::<HTMLInputElement>())
                     .is_some()
@@ -259,8 +260,8 @@ impl<'dom> LayoutDom<'dom, Node> {
         }
 
         let unsafe_self = self.unsafe_get();
-        if !unsafe_self.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION) ||
-            unsafe_self.get_flag(NodeFlags::SELECTION_INHIBITED)
+        if !unsafe_self.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION)
+            || unsafe_self.get_flag(NodeFlags::SELECTION_INHIBITED)
         {
             return None;
         }
@@ -299,8 +300,8 @@ impl<'dom> LayoutDom<'dom, Node> {
 
     pub(crate) fn replaced_is_selected(&self) -> bool {
         let unsafe_self = self.unsafe_get();
-        unsafe_self.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION) &&
-            !unsafe_self.get_flag(NodeFlags::SELECTION_INHIBITED)
+        unsafe_self.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION)
+            && !unsafe_self.get_flag(NodeFlags::SELECTION_INHIBITED)
     }
 
     pub(crate) fn image_url(self) -> Option<ServoUrl> {

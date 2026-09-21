@@ -188,10 +188,10 @@ pub(crate) enum XHRProgress {
 impl XHRProgress {
     fn generation_id(&self) -> GenerationId {
         match *self {
-            XHRProgress::HeadersReceived(id, _, _) |
-            XHRProgress::Loading(id, _) |
-            XHRProgress::Done(id) |
-            XHRProgress::Errored(id, _) => id,
+            XHRProgress::HeadersReceived(id, _, _)
+            | XHRProgress::Loading(id, _)
+            | XHRProgress::Done(id)
+            | XHRProgress::Errored(id, _) => id,
         }
     }
 }
@@ -342,8 +342,8 @@ impl XMLHttpRequestMethods<crate::DomTypeHolder> for XMLHttpRequest {
         // Step 1. If this’s relevant global object is a Window object and its associated
         // Document is not fully active, then throw an "InvalidStateError" DOMException.
         let global = self.global();
-        if let Some(window) = global.downcast::<Window>() &&
-            !window.Document().is_fully_active()
+        if let Some(window) = global.downcast::<Window>()
+            && !window.Document().is_fully_active()
         {
             return Err(Error::InvalidState(None));
         }
@@ -358,8 +358,8 @@ impl XMLHttpRequestMethods<crate::DomTypeHolder> for XMLHttpRequest {
             // despite the there being a rust-http method variant for them
             let upper = s.to_ascii_uppercase();
             match &*upper {
-                "DELETE" | "GET" | "HEAD" | "OPTIONS" | "POST" | "PUT" | "CONNECT" | "TRACE" |
-                "TRACK" => upper.parse().ok(),
+                "DELETE" | "GET" | "HEAD" | "OPTIONS" | "POST" | "PUT" | "CONNECT" | "TRACE"
+                | "TRACK" => upper.parse().ok(),
                 _ => s.parse().ok(),
             }
         });
@@ -391,15 +391,15 @@ impl XMLHttpRequestMethods<crate::DomTypeHolder> for XMLHttpRequest {
                 // Step 8. If parsedURL’s host is non-null, then:
                 if parsed_url.host().is_some() {
                     // Step 8.1 If the username argument is not null, set the username given parsedURL and username.
-                    if let Some(user_str) = username &&
-                        let Err(error) = parsed_url.set_username(&user_str.0)
+                    if let Some(user_str) = username
+                        && let Err(error) = parsed_url.set_username(&user_str.0)
                     {
                         warn!("Could not set username on XMLHttpRequest: {error:?}");
                     }
 
                     // Step 8.2 If the password argument is not null, set the password given parsedURL and password.
-                    if let Some(pass_str) = password &&
-                        let Err(error) = parsed_url.set_password(Some(&pass_str.0))
+                    if let Some(pass_str) = password
+                        && let Err(error) = parsed_url.set_password(Some(&pass_str.0))
                     {
                         warn!("Could not set password on XMLHttpRequest: {error:?}");
                     }
@@ -410,8 +410,8 @@ impl XMLHttpRequestMethods<crate::DomTypeHolder> for XMLHttpRequest {
                 // then throw an "InvalidAccessError" DOMException.
                 if !asynch {
                     // FIXME: This should only happen if the global environment is a document environment
-                    if !self.timeout.get().is_zero() ||
-                        self.response_type.get() != XMLHttpRequestResponseType::_empty
+                    if !self.timeout.get().is_zero()
+                        || self.response_type.get() != XMLHttpRequestResponseType::_empty
                     {
                         return Err(Error::InvalidAccess(None));
                     }
@@ -544,9 +544,9 @@ impl XMLHttpRequestMethods<crate::DomTypeHolder> for XMLHttpRequest {
     fn SetWithCredentials(&self, with_credentials: bool) -> ErrorResult {
         match self.ready_state.get() {
             // Step 1
-            XMLHttpRequestState::HeadersReceived |
-            XMLHttpRequestState::Loading |
-            XMLHttpRequestState::Done => Err(Error::InvalidState(None)),
+            XMLHttpRequestState::HeadersReceived
+            | XMLHttpRequestState::Loading
+            | XMLHttpRequestState::Done => Err(Error::InvalidState(None)),
             // Step 2
             _ if self.send_flag.get() => Err(Error::InvalidState(None)),
             // Step 3
@@ -737,8 +737,8 @@ impl XMLHttpRequestMethods<crate::DomTypeHolder> for XMLHttpRequest {
         // step 4 (second half)
         if let Some(content_type) = content_type {
             let encoding = match data {
-                Some(DocumentOrXMLHttpRequestBodyInit::String(_)) |
-                Some(DocumentOrXMLHttpRequestBodyInit::Document(_)) =>
+                Some(DocumentOrXMLHttpRequestBodyInit::String(_))
+                | Some(DocumentOrXMLHttpRequestBodyInit::Document(_)) =>
                 // XHR spec differs from http, and says UTF-8 should be in capitals,
                 // instead of "utf-8", which is what Hyper defaults to. So not
                 // using content types provided by Hyper.
@@ -751,8 +751,8 @@ impl XMLHttpRequestMethods<crate::DomTypeHolder> for XMLHttpRequest {
             // We cannot use typed header insertion with `mime::Mime` parsing here,
             // since it lowercases `charset=UTF-8`: https://github.com/hyperium/mime/issues/116
             let mut content_type_set = false;
-            if !request.headers.contains_key(header::CONTENT_TYPE) &&
-                let Ok(content_type_value) = HeaderValue::from_str(&content_type.str())
+            if !request.headers.contains_key(header::CONTENT_TYPE)
+                && let Ok(content_type_value) = HeaderValue::from_str(&content_type.str())
             {
                 request
                     .headers
@@ -762,9 +762,9 @@ impl XMLHttpRequestMethods<crate::DomTypeHolder> for XMLHttpRequest {
 
             if !content_type_set {
                 let content_type = request.headers.typed_get::<ContentType>();
-                if let Some(content_type) = content_type &&
-                    let Some(encoding) = encoding &&
-                    let Ok(mime) = content_type.to_string().parse::<Mime>()
+                if let Some(content_type) = content_type
+                    && let Some(encoding) = encoding
+                    && let Ok(mime) = content_type.to_string().parse::<Mime>()
                 {
                     for param in mime.parameters.iter() {
                         if param.0 == CHARSET && !param.1.as_str().eq_ignore_ascii_case(encoding) {
@@ -815,9 +815,9 @@ impl XMLHttpRequestMethods<crate::DomTypeHolder> for XMLHttpRequest {
         self.terminate_ongoing_fetch(cx.no_gc());
         // Step 2
         let state = self.ready_state.get();
-        if (state == XMLHttpRequestState::Opened && self.send_flag.get()) ||
-            state == XMLHttpRequestState::HeadersReceived ||
-            state == XMLHttpRequestState::Loading
+        if (state == XMLHttpRequestState::Opened && self.send_flag.get())
+            || state == XMLHttpRequestState::HeadersReceived
+            || state == XMLHttpRequestState::Loading
         {
             let gen_id = self.generation_id.get();
             self.process_partial_response(cx, XHRProgress::Errored(gen_id, Error::Abort(None)));
@@ -934,8 +934,8 @@ impl XMLHttpRequestMethods<crate::DomTypeHolder> for XMLHttpRequest {
     /// <https://xhr.spec.whatwg.org/#the-responsetype-attribute>
     fn SetResponseType(&self, response_type: XMLHttpRequestResponseType) -> ErrorResult {
         // Step 1
-        if self.global().is::<WorkerGlobalScope>() &&
-            response_type == XMLHttpRequestResponseType::Document
+        if self.global().is::<WorkerGlobalScope>()
+            && response_type == XMLHttpRequestResponseType::Document
         {
             return Ok(());
         }
@@ -963,8 +963,8 @@ impl XMLHttpRequestMethods<crate::DomTypeHolder> for XMLHttpRequest {
             XMLHttpRequestResponseType::_empty | XMLHttpRequestResponseType::Text => {
                 let ready_state = self.ready_state.get();
                 // Step 2
-                if ready_state == XMLHttpRequestState::Done ||
-                    ready_state == XMLHttpRequestState::Loading
+                if ready_state == XMLHttpRequestState::Done
+                    || ready_state == XMLHttpRequestState::Loading
                 {
                     self.text_response().to_jsval(cx, rval);
                 } else {
@@ -1202,9 +1202,9 @@ impl XMLHttpRequest {
             },
             XHRProgress::Done(_) => {
                 assert!(
-                    self.ready_state.get() == XMLHttpRequestState::HeadersReceived ||
-                        self.ready_state.get() == XMLHttpRequestState::Loading ||
-                        self.sync.get()
+                    self.ready_state.get() == XMLHttpRequestState::HeadersReceived
+                        || self.ready_state.get() == XMLHttpRequestState::Loading
+                        || self.sync.get()
                 );
 
                 self.cancel_timeout(cx.no_gc());
@@ -1412,9 +1412,9 @@ impl XMLHttpRequest {
         let final_mime = self.final_mime_type();
 
         // Step 3: If finalMIME is not an HTML MIME type or an XML MIME type, then return.
-        let is_xml_mime_type = final_mime.matches(TEXT, XML) ||
-            final_mime.matches(APPLICATION, XML) ||
-            final_mime.has_suffix(XML);
+        let is_xml_mime_type = final_mime.matches(TEXT, XML)
+            || final_mime.matches(APPLICATION, XML)
+            || final_mime.has_suffix(XML);
         if !final_mime.matches(TEXT, HTML) && !is_xml_mime_type {
             return None;
         }

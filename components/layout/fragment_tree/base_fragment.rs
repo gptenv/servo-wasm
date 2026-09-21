@@ -167,10 +167,10 @@ impl From<ServoLayoutNode<'_>> for BaseFragmentInfo {
                 // TODO(mrobinson): It seems that anonymous boxes should take part in hit testing in some
                 // cases, but currently this means that the order of hit test results isn't as expected for
                 // some WPT tests. This needs more investigation.
-                PseudoElement::ServoAnonymousBox |
-                PseudoElement::ServoAnonymousTable |
-                PseudoElement::ServoAnonymousTableCell |
-                PseudoElement::ServoAnonymousTableRow => return Self::anonymous(),
+                PseudoElement::ServoAnonymousBox
+                | PseudoElement::ServoAnonymousTable
+                | PseudoElement::ServoAnonymousTableCell
+                | PseudoElement::ServoAnonymousTableRow => return Self::anonymous(),
                 // A `<br>` forces a new line using a `::before` pseudo-element. Both of them need to get
                 // this flag.
                 PseudoElement::Before

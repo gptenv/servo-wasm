@@ -58,8 +58,8 @@ impl WebGLExternalImages {
     fn unlock_swap_chain(&mut self, id: WebGLContextId) -> Option<()> {
         debug!("... unlocked chain {:?}", id);
 
-        if let Some(locked_front_buffer) = self.locked_front_buffers.remove(&id) &&
-            let Some(locked_front_buffer) =
+        if let Some(locked_front_buffer) = self.locked_front_buffers.remove(&id)
+            && let Some(locked_front_buffer) =
                 self.rendering_context.destroy_texture(locked_front_buffer)
         {
             self.swap_chains

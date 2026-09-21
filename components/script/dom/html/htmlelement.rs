@@ -678,8 +678,8 @@ impl HTMLElementMethods<crate::DomTypeHolder> for HTMLElement {
 
         // Step 7: If next is non-null and next's previous sibling is a Text node, then merge with
         // the next text node given next's previous sibling.
-        if let Some(next_sibling) = next &&
-            let Some(node) = next_sibling.GetPreviousSibling()
+        if let Some(next_sibling) = next
+            && let Some(node) = next_sibling.GetPreviousSibling()
         {
             Self::merge_with_the_next_text_node(cx, &node);
         }
@@ -725,9 +725,9 @@ impl HTMLElementMethods<crate::DomTypeHolder> for HTMLElement {
         if value.eq_ignore_ascii_case("inherit") {
             // > On setting, if the new value is an ASCII case-insensitive match for the string "inherit", then the content attribute must be removed,
             self.element.remove_attribute_by_name(cx, attr_name);
-        } else if value.eq_ignore_ascii_case("true") ||
-            value.eq_ignore_ascii_case("false") ||
-            value.eq_ignore_ascii_case("plaintext-only")
+        } else if value.eq_ignore_ascii_case("true")
+            || value.eq_ignore_ascii_case("false")
+            || value.eq_ignore_ascii_case("plaintext-only")
         {
             // > if the new value is an ASCII case-insensitive match for the string "true", then the content attribute must be set to the string "true",
             // > if the new value is an ASCII case-insensitive match for the string "plaintext-only", then the content attribute must be set to the string "plaintext-only",
@@ -908,12 +908,12 @@ impl HTMLElement {
                     *self.downcast::<HTMLInputElement>().unwrap().input_type(),
                     InputType::Hidden(_)
                 ),
-                HTMLElementTypeId::HTMLButtonElement |
-                HTMLElementTypeId::HTMLMeterElement |
-                HTMLElementTypeId::HTMLOutputElement |
-                HTMLElementTypeId::HTMLProgressElement |
-                HTMLElementTypeId::HTMLSelectElement |
-                HTMLElementTypeId::HTMLTextAreaElement => true,
+                HTMLElementTypeId::HTMLButtonElement
+                | HTMLElementTypeId::HTMLMeterElement
+                | HTMLElementTypeId::HTMLOutputElement
+                | HTMLElementTypeId::HTMLProgressElement
+                | HTMLElementTypeId::HTMLSelectElement
+                | HTMLElementTypeId::HTMLTextAreaElement => true,
                 _ => self.is_form_associated_custom_element(),
             },
             _ => false,
@@ -933,13 +933,13 @@ impl HTMLElement {
     pub(crate) fn is_listed_element(&self) -> bool {
         match self.upcast::<Node>().type_id() {
             NodeTypeId::Element(ElementTypeId::HTMLElement(type_id)) => match type_id {
-                HTMLElementTypeId::HTMLButtonElement |
-                HTMLElementTypeId::HTMLFieldSetElement |
-                HTMLElementTypeId::HTMLInputElement |
-                HTMLElementTypeId::HTMLObjectElement |
-                HTMLElementTypeId::HTMLOutputElement |
-                HTMLElementTypeId::HTMLSelectElement |
-                HTMLElementTypeId::HTMLTextAreaElement => true,
+                HTMLElementTypeId::HTMLButtonElement
+                | HTMLElementTypeId::HTMLFieldSetElement
+                | HTMLElementTypeId::HTMLInputElement
+                | HTMLElementTypeId::HTMLObjectElement
+                | HTMLElementTypeId::HTMLOutputElement
+                | HTMLElementTypeId::HTMLSelectElement
+                | HTMLElementTypeId::HTMLTextAreaElement => true,
                 _ => self.is_form_associated_custom_element(),
             },
             _ => false,
@@ -951,9 +951,9 @@ impl HTMLElement {
         let self_node = self.upcast::<Node>();
         self_node.GetParentNode().is_some_and(|parent| {
             let parent_node = parent.upcast::<Node>();
-            (self_node.is::<HTMLBodyElement>() || self_node.is::<HTMLFrameSetElement>()) &&
-                parent_node.is::<HTMLHtmlElement>() &&
-                self_node
+            (self_node.is::<HTMLBodyElement>() || self_node.is::<HTMLFrameSetElement>())
+                && parent_node.is::<HTMLHtmlElement>()
+                && self_node
                     .preceding_siblings()
                     .all(|n| !n.is::<HTMLBodyElement>() && !n.is::<HTMLFrameSetElement>())
         })
@@ -963,10 +963,10 @@ impl HTMLElement {
     pub(crate) fn is_submittable_element(&self) -> bool {
         match self.upcast::<Node>().type_id() {
             NodeTypeId::Element(ElementTypeId::HTMLElement(type_id)) => match type_id {
-                HTMLElementTypeId::HTMLButtonElement |
-                HTMLElementTypeId::HTMLInputElement |
-                HTMLElementTypeId::HTMLSelectElement |
-                HTMLElementTypeId::HTMLTextAreaElement => true,
+                HTMLElementTypeId::HTMLButtonElement
+                | HTMLElementTypeId::HTMLInputElement
+                | HTMLElementTypeId::HTMLSelectElement
+                | HTMLElementTypeId::HTMLTextAreaElement => true,
                 _ => self.is_form_associated_custom_element(),
             },
             _ => false,
@@ -1036,8 +1036,8 @@ impl HTMLElement {
             return Some("rtl".to_owned());
         }
 
-        if let Some(input) = self.downcast::<HTMLInputElement>() &&
-            matches!(*input.input_type(), InputType::Tel(_))
+        if let Some(input) = self.downcast::<HTMLInputElement>()
+            && matches!(*input.input_type(), InputType::Tel(_))
         {
             return Some("ltr".to_owned());
         }

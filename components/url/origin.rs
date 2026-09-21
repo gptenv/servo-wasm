@@ -191,8 +191,8 @@ impl ImmutableOrigin {
             // * origin’s host is "localhost" or "localhost."
             // * origin’s host ends with ".localhost" or ".localhost."
             // then return "Potentially Trustworthy".
-            if let Host::Domain(domain) = host &&
-                (domain == "localhost" || domain.ends_with(".localhost"))
+            if let Host::Domain(domain) = host
+                && (domain == "localhost" || domain.ends_with(".localhost"))
             {
                 return true;
             }
@@ -306,8 +306,8 @@ impl MutableOrigin {
     pub fn same_origin_domain(&self, other: &MutableOrigin) -> bool {
         if let Some(ref self_domain) = *(self.0).1.borrow() {
             if let Some(ref other_domain) = *(other.0).1.borrow() {
-                self_domain == other_domain &&
-                    self.immutable().scheme() == other.immutable().scheme()
+                self_domain == other_domain
+                    && self.immutable().scheme() == other.immutable().scheme()
             } else {
                 false
             }

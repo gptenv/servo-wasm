@@ -234,9 +234,9 @@ impl LinkRelations {
             Self::EXTERNAL
         } else if keyword.eq_ignore_ascii_case("help") {
             Self::HELP
-        } else if keyword.eq_ignore_ascii_case("icon") ||
-            keyword.eq_ignore_ascii_case("shortcut icon") ||
-            keyword.eq_ignore_ascii_case("apple-touch-icon")
+        } else if keyword.eq_ignore_ascii_case("icon")
+            || keyword.eq_ignore_ascii_case("shortcut icon")
+            || keyword.eq_ignore_ascii_case("apple-touch-icon")
         {
             // TODO: "apple-touch-icon" is not in the spec. Where did it come from? Do we need it?
             //       There is also "apple-touch-icon-precomposed" listed in
@@ -246,8 +246,8 @@ impl LinkRelations {
             Self::MANIFEST
         } else if keyword.eq_ignore_ascii_case("modulepreload") {
             Self::MODULE_PRELOAD
-        } else if keyword.eq_ignore_ascii_case("license") ||
-            keyword.eq_ignore_ascii_case("copyright")
+        } else if keyword.eq_ignore_ascii_case("license")
+            || keyword.eq_ignore_ascii_case("copyright")
         {
             Self::LICENSE
         } else if keyword.eq_ignore_ascii_case("next") {
@@ -331,10 +331,10 @@ pub(crate) fn valid_navigable_target_name_or_keyword(target: &DOMString) -> bool
     if valid_navigable_target_name(target) {
         return true;
     }
-    target.eq_ignore_ascii_case("_blank") ||
-        target.eq_ignore_ascii_case("_self") ||
-        target.eq_ignore_ascii_case("_parent") ||
-        target.eq_ignore_ascii_case("_top")
+    target.eq_ignore_ascii_case("_blank")
+        || target.eq_ignore_ascii_case("_self")
+        || target.eq_ignore_ascii_case("_parent")
+        || target.eq_ignore_ascii_case("_top")
 }
 
 /// <https://html.spec.whatwg.org/multipage/#get-an-element%27s-target>
@@ -343,9 +343,9 @@ pub(crate) fn get_element_target(
     target: Option<DOMString>,
 ) -> Option<DOMString> {
     assert!(
-        subject.is::<HTMLAreaElement>() ||
-            subject.is::<HTMLAnchorElement>() ||
-            subject.is::<HTMLFormElement>()
+        subject.is::<HTMLAreaElement>()
+            || subject.is::<HTMLAnchorElement>()
+            || subject.is::<HTMLFormElement>()
     );
 
     // Step 1. If target is null, then:
@@ -374,9 +374,9 @@ pub(crate) fn get_element_target(
         }
     });
     // Step 2. If target is not null, and contains an ASCII tab or newline and a U+003C (<), then set target to "_blank".
-    if let Some(ref target) = target &&
-        target.contains_tab_or_newline() &&
-        target.contains("\u{003C}")
+    if let Some(ref target) = target
+        && target.contains_tab_or_newline()
+        && target.contains("\u{003C}")
     {
         return Some(DOMString::from_static("_blank"));
     }

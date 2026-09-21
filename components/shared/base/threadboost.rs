@@ -142,8 +142,8 @@ mod platform {
     use super::linux_sysfs::pin_thread_to_medium_or_large_cpus;
 
     pub fn boost_thread(_: super::ThreadPriority, boost_affinity: super::BoostAffinity) {
-        if matches!(boost_affinity, BoostAffinity::Boost) &&
-            let Err(error) = pin_thread_to_medium_or_large_cpus()
+        if matches!(boost_affinity, BoostAffinity::Boost)
+            && let Err(error) = pin_thread_to_medium_or_large_cpus()
         {
             log::warn!(
                 "Failed to pin {} to medium or large cpus: {error:?}",
@@ -192,8 +192,8 @@ mod platform {
         if qos_rc != 0 {
             log::warn!("Failed to boost thread priority. `OH_QoS_SetThreadQoS` returned {qos_rc}");
         }
-        if matches!(boost_affinity, BoostAffinity::Boost) &&
-            let Err(error) = pin_thread_to_medium_or_large_cpus()
+        if matches!(boost_affinity, BoostAffinity::Boost)
+            && let Err(error) = pin_thread_to_medium_or_large_cpus()
         {
             log::warn!(
                 "Failed to pin {} to medium or large cpus: {error:?}",

@@ -63,8 +63,8 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
         let root_fragment = root_fragment
             .as_ref()
             .map(|root_fragment| root_fragment.with_style());
-        if let Some(root_fragment) = &root_fragment &&
-            !root_fragment.is_inline_box()
+        if let Some(root_fragment) = &root_fragment
+            && !root_fragment.is_inline_box()
         {
             self.handle_box(&state, root_fragment);
         }
@@ -283,10 +283,10 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                     }
                 }
             },
-            Fragment::AbsoluteOrFixedPositionedPlaceholder(..) |
-            Fragment::Text(..) |
-            Fragment::Image(..) |
-            Fragment::IFrame(..) => {},
+            Fragment::AbsoluteOrFixedPositionedPlaceholder(..)
+            | Fragment::Text(..)
+            | Fragment::Image(..)
+            | Fragment::IFrame(..) => {},
         }
 
         saw_inline_level_or_replaced
@@ -367,11 +367,11 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                     }
                 }
             },
-            Fragment::AbsoluteOrFixedPositionedPlaceholder(_) |
-            Fragment::Float(..) |
-            Fragment::IFrame(_) |
-            Fragment::Image(_) |
-            Fragment::Text(..) => {},
+            Fragment::AbsoluteOrFixedPositionedPlaceholder(_)
+            | Fragment::Float(..)
+            | Fragment::IFrame(_)
+            | Fragment::Image(_)
+            | Fragment::Text(..) => {},
         }
     }
 
@@ -572,10 +572,11 @@ impl TraversalState {
         //
         // Also do not propagate text decorations to floats or replaced content.
         let mut propagated_text_decorations = self.text_decorations.clone();
-        if box_fragment.is_atomic_inline_level() ||
-            box_fragment.base.flags.contains(
-                FragmentFlags::IS_OUTSIDE_LIST_ITEM_MARKER | FragmentFlags::IS_REPLACED,
-            )
+        if box_fragment.is_atomic_inline_level()
+            || box_fragment
+                .base
+                .flags
+                .contains(FragmentFlags::IS_OUTSIDE_LIST_ITEM_MARKER | FragmentFlags::IS_REPLACED)
         {
             propagated_text_decorations = Default::default();
         }

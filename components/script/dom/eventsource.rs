@@ -267,8 +267,8 @@ impl EventSourceContext {
             return;
         }
         // Step 3
-        if let Some(last) = self.data.pop() &&
-            last != '\n'
+        if let Some(last) = self.data.pop()
+            && last != '\n'
         {
             self.data.push(last);
         }
@@ -721,8 +721,8 @@ impl EventSourceTimeoutCallback {
         // Step 5.3: If the EventSource object's last event ID string is not the empty string, then:
         //  - Let lastEventIDValue be the EventSource object's last event ID string, encoded as UTF-8.
         //  - Set (`Last-Event-ID`, lastEventIDValue) in request's header list.
-        if !event_source.last_event_id.borrow().is_empty() &&
-            let Ok(header_value) =
+        if !event_source.last_event_id.borrow().is_empty()
+            && let Ok(header_value) =
                 HeaderValue::from_str(&String::from(event_source.last_event_id.borrow().clone()))
         {
             // TODO(eijebong): Change this once typed header support custom values

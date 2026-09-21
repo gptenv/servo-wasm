@@ -70,8 +70,8 @@ impl Iterator for FocusNavigationScopeIterator {
 
     fn next(&mut self) -> Option<Self::Item> {
         let should_skip_element_children = |element: &Element| {
-            element.is_shadow_host() ||
-                element
+            element.is_shadow_host()
+                || element
                     .downcast::<HTMLSlotElement>()
                     .is_some_and(|html_slot_element| html_slot_element.has_assigned_nodes())
         };
@@ -332,8 +332,8 @@ impl Node {
             };
 
             // > 1.4. If focusable area is not click focusable and focus trigger is "click", then continue.
-            if !focusable_area.kind().contains(FocusableAreaKind::Click) &&
-                focus_trigger == FocusTrigger::Click
+            if !focusable_area.kind().contains(FocusableAreaKind::Click)
+                && focus_trigger == FocusTrigger::Click
             {
                 continue;
             }

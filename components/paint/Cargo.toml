@@ -47,7 +47,6 @@ servo-geometry = { workspace = true }
 servo-tracing = { workspace = true }
 smallvec = { workspace = true }
 stylo_traits = { workspace = true }
-surfman = { workspace = true }
 timers = { workspace = true }
 tracing = { workspace = true, optional = true }
 webgl = { workspace = true, optional = true }
@@ -59,4 +58,7 @@ webxr-api = { workspace = true, optional = true }
 wr_malloc_size_of = { workspace = true }
 
 [dev-dependencies]
+surfman = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 surfman = { workspace = true }

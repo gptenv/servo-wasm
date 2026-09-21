@@ -620,10 +620,10 @@ where
     D: Equivalence,
     <D::Promise as PromiseHelpers<D>>::StackRoot: WebGPUPromise<D>,
 {
-    let number_of_provided_bindings = bgle.buffer.is_some() as u8 +
-        bgle.sampler.is_some() as u8 +
-        bgle.storageTexture.is_some() as u8 +
-        bgle.texture.is_some() as u8;
+    let number_of_provided_bindings = bgle.buffer.is_some() as u8
+        + bgle.sampler.is_some() as u8
+        + bgle.storageTexture.is_some() as u8
+        + bgle.texture.is_some() as u8;
     let ty = if let Some(buffer) = &bgle.buffer {
         Some(BindingType::Buffer {
             ty: match buffer.type_ {

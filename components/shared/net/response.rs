@@ -273,8 +273,8 @@ impl Response {
                     .iter()
                     .filter(|(name, _)| {
                         let name = name.as_str();
-                        !name.eq_ignore_ascii_case("set-cookie") &&
-                            !name.eq_ignore_ascii_case("set-cookie2")
+                        !name.eq_ignore_ascii_case("set-cookie")
+                            && !name.eq_ignore_ascii_case("set-cookie2")
                     })
                     .map(|(n, v)| (n.clone(), v.clone()))
                     .collect();
@@ -286,17 +286,17 @@ impl Response {
                     .iter()
                     .filter(|(name, _)| {
                         let name = name.as_str();
-                        if name.eq_ignore_ascii_case("cache-control") ||
-                            name.eq_ignore_ascii_case("content-language") ||
-                            name.eq_ignore_ascii_case("content-length") ||
-                            name.eq_ignore_ascii_case("content-type") ||
-                            name.eq_ignore_ascii_case("expires") ||
-                            name.eq_ignore_ascii_case("last-modified") ||
-                            name.eq_ignore_ascii_case("pragma")
+                        if name.eq_ignore_ascii_case("cache-control")
+                            || name.eq_ignore_ascii_case("content-language")
+                            || name.eq_ignore_ascii_case("content-length")
+                            || name.eq_ignore_ascii_case("content-type")
+                            || name.eq_ignore_ascii_case("expires")
+                            || name.eq_ignore_ascii_case("last-modified")
+                            || name.eq_ignore_ascii_case("pragma")
                         {
                             true
-                        } else if name.eq_ignore_ascii_case("set-cookie") ||
-                            name.eq_ignore_ascii_case("set-cookie2")
+                        } else if name.eq_ignore_ascii_case("set-cookie")
+                            || name.eq_ignore_ascii_case("set-cookie2")
                         {
                             false
                         } else {

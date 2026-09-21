@@ -104,8 +104,8 @@ where
         descriptor: &GPUQuerySetDescriptor,
     ) -> Fallible<DomRoot<Self>> {
         // 1. If descriptor.type is "timestamp", but "timestamp-query" is not enabled for this:
-        if descriptor.type_ == GPUQueryType::Timestamp &&
-            !device
+        if descriptor.type_ == GPUQueryType::Timestamp
+            && !device
                 .Features()
                 .wgpu_features()
                 .contains(Features::TIMESTAMP_QUERY)

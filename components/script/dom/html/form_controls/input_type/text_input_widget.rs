@@ -74,8 +74,8 @@ impl TextInputWidget {
         &self,
         new_range: Option<RangeAny<Utf32CodeUnits>>,
     ) -> bool {
-        if let Some(shadow_tree) = &*self.shadow_tree.borrow() &&
-            let Some(character_data) = shadow_tree.value_character_data()
+        if let Some(shadow_tree) = &*self.shadow_tree.borrow()
+            && let Some(character_data) = shadow_tree.value_character_data()
         {
             character_data.set_text_run_selection(new_range)
         } else {
@@ -227,8 +227,8 @@ impl TextInputWidgetShadowTree {
             (true, _) => DOMString::from_static("\u{200B}"),
         };
 
-        if let Some(character_data) = self.value_character_data() &&
-            character_data.Data() != value_text
+        if let Some(character_data) = self.value_character_data()
+            && character_data.Data() != value_text
         {
             character_data.SetData(cx, value_text);
         }

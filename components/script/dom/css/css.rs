@@ -90,11 +90,11 @@ impl CSSMethods<crate::DomTypeHolder> for CSS {
         );
         Err(match result {
             SuccessfullyRegistered => return Ok(()),
-            InvalidName |
-            InvalidSyntax |
-            InvalidInitialValue |
-            NoInitialValue |
-            InitialValueNotComputationallyIndependent => Error::Syntax(Some(
+            InvalidName
+            | InvalidSyntax
+            | InvalidInitialValue
+            | NoInitialValue
+            | InitialValueNotComputationallyIndependent => Error::Syntax(Some(
                 "CSS property value is not computationally independent".into(),
             )),
             AlreadyRegistered => {

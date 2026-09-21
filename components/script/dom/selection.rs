@@ -135,8 +135,8 @@ impl Selection {
         // are in different documents, so this must check both ends.
         let range_start_container = range.start_container();
         let range_end_container = range.end_container();
-        if self.is_in_composed_tree_of_document_and_is_not_ua_widget(&range_start_container) &&
-            self.is_in_composed_tree_of_document_and_is_not_ua_widget(&range_end_container)
+        if self.is_in_composed_tree_of_document_and_is_not_ua_widget(&range_start_container)
+            && self.is_in_composed_tree_of_document_and_is_not_ua_widget(&range_end_container)
         {
             return false;
         }
@@ -209,10 +209,10 @@ impl Selection {
         notification: SelectionLiveRangeNotification,
     ) {
         debug_assert!(Some(live_range) == self.live_range.get().as_deref());
-        let start_changed = notification.contains(SelectionLiveRangeNotification::Start) &&
-            self.set_start_or_end_from_live_range(no_gc, StartOrEnd::Start, live_range);
-        let end_changed = notification.contains(SelectionLiveRangeNotification::End) &&
-            self.set_start_or_end_from_live_range(no_gc, StartOrEnd::End, live_range);
+        let start_changed = notification.contains(SelectionLiveRangeNotification::Start)
+            && self.set_start_or_end_from_live_range(no_gc, StartOrEnd::Start, live_range);
+        let end_changed = notification.contains(SelectionLiveRangeNotification::End)
+            && self.set_start_or_end_from_live_range(no_gc, StartOrEnd::End, live_range);
         if start_changed || end_changed {
             self.selection_boundaries_changed();
         }
@@ -383,8 +383,8 @@ impl Selection {
     }
 
     fn is_in_composed_tree_of_document_and_is_not_ua_widget(&self, node: &Node) -> bool {
-        &*node.GetRootNode(&GetRootNodeOptions { composed: true }) == self.document.upcast::<Node>() &&
-            !node.is_in_ua_widget()
+        &*node.GetRootNode(&GetRootNodeOptions { composed: true }) == self.document.upcast::<Node>()
+            && !node.is_in_ua_widget()
     }
 
     pub(crate) fn start_boundary(&self, cx: &mut JSContext) -> (DomRoot<Node>, u32) {
@@ -581,16 +581,16 @@ impl Selection {
         }
         // Step 6: For each live range whose start node is parent and start offset is
         // greater than index, decrease its start offset by 1.
-        if range.start.container == parent_of_removed_node &&
-            range.start.offset > index_of_removed_node()
+        if range.start.container == parent_of_removed_node
+            && range.start.offset > index_of_removed_node()
         {
             range.start.offset -= 1;
             self.selection_boundaries_changed();
         }
         // Step 7: For each live range whose end node is parent and end offset is greater than
         // index, decrease its end offset by 1.
-        if range.end.container == parent_of_removed_node &&
-            range.end.offset > index_of_removed_node()
+        if range.end.container == parent_of_removed_node
+            && range.end.offset > index_of_removed_node()
         {
             range.end.offset -= 1;
             self.selection_boundaries_changed();
@@ -666,9 +666,9 @@ impl Selection {
         // offset to offset.
         let start_container = &range.start.container;
         let start_offset = range.start.offset;
-        if &**start_container == node &&
-            start_offset > offset &&
-            start_offset <= offset + removed_code_units
+        if &**start_container == node
+            && start_offset > offset
+            && start_offset <= offset + removed_code_units
         {
             range.start.offset = offset;
             self.selection_boundaries_changed();
@@ -678,9 +678,9 @@ impl Selection {
         // offset to offset.
         let end_container = &range.end.container;
         let end_offset = range.end.offset;
-        if &**end_container == node &&
-            end_offset > offset &&
-            end_offset <= offset + removed_code_units
+        if &**end_container == node
+            && end_offset > offset
+            && end_offset <= offset + removed_code_units
         {
             range.end.offset = offset;
             self.selection_boundaries_changed();
@@ -913,8 +913,8 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
     fn RemoveRange(&self, no_gc: &NoGC, range: &Range) -> ErrorResult {
         // > The method must make this empty by disassociating its range if this's range
         // > is range. Otherwise, it must throw a NotFoundError.
-        if let Some(own_range) = self.live_range.get() &&
-            &*own_range == range
+        if let Some(own_range) = self.live_range.get()
+            && &*own_range == range
         {
             self.set_range(no_gc, None);
             return Ok(());
@@ -963,8 +963,8 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
         // Step 3. While startNode is a node, startNode's root is a shadow root, and
         // startNode's root is not a shadow-including inclusive ancestor of any of
         // options["shadowRoots"], repeat these steps:
-        while let Some(containing_shadow_root) = start_node.containing_shadow_root() &&
-            !is_ancestor_of_provided_shadow_roots(&containing_shadow_root)
+        while let Some(containing_shadow_root) = start_node.containing_shadow_root()
+            && !is_ancestor_of_provided_shadow_roots(&containing_shadow_root)
         {
             // Step 3.1. Set startOffset to index of startNode's root's host.
             let host = DomRoot::upcast::<Node>(containing_shadow_root.Host());
@@ -987,8 +987,8 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
         // Step 5. While endNode is a node, endNode's root is a shadow root, and endNode's
         // root is not a shadow-including inclusive ancestor of any of
         // options["shadowRoots"], repeat these steps:
-        while let Some(containing_shadow_root) = end_node.containing_shadow_root() &&
-            !is_ancestor_of_provided_shadow_roots(&containing_shadow_root)
+        while let Some(containing_shadow_root) = end_node.containing_shadow_root()
+            && !is_ancestor_of_provided_shadow_roots(&containing_shadow_root)
         {
             // Step 5.1. Set endOffset to index of endNode's root's host plus 1.
             let host = DomRoot::upcast::<Node>(containing_shadow_root.Host());
@@ -1221,8 +1221,8 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
 
         // Step 2. If document associated with this is not a shadow-including inclusive
         // ancestor of anchorNode or focusNode, abort these steps.
-        if !self.is_in_composed_tree_of_document_and_is_not_ua_widget(anchor_node) ||
-            !self.is_in_composed_tree_of_document_and_is_not_ua_widget(focus_node)
+        if !self.is_in_composed_tree_of_document_and_is_not_ua_widget(anchor_node)
+            || !self.is_in_composed_tree_of_document_and_is_not_ua_widget(focus_node)
         {
             return Ok(());
         }
@@ -1474,8 +1474,8 @@ fn position_in_flat_tree_for_selection(
         if let FlatTreeParent::Parent(_) = child.parent_in_flat_tree(no_gc) {
             return FlatTreeNodePosition::Before(child);
         }
-    } else if let Some(last_child) = boundary.container.GetLastChild() &&
-        let FlatTreeParent::Parent(_) = last_child.parent_in_flat_tree(no_gc)
+    } else if let Some(last_child) = boundary.container.GetLastChild()
+        && let FlatTreeParent::Parent(_) = last_child.parent_in_flat_tree(no_gc)
     {
         return FlatTreeNodePosition::After(shadow_host_or_node(&boundary.container.as_rooted()));
     }
@@ -1525,8 +1525,8 @@ fn project_into_shared_tree<'a>(
     target: Option<&Node>,
 ) -> (UnrootedDom<'a, Node>, u32) {
     let mut start_node = UnrootedDom::from_ref(container_a, no_gc);
-    while let Some(containing_shadow_root) = start_node.containing_shadow_root_unrooted(no_gc) &&
-        target.is_none_or(|target| {
+    while let Some(containing_shadow_root) = start_node.containing_shadow_root_unrooted(no_gc)
+        && target.is_none_or(|target| {
             !containing_shadow_root
                 .upcast::<Node>()
                 .is_shadow_including_inclusive_ancestor_of(target)
@@ -1685,16 +1685,16 @@ impl<'no_gc> Iterator for VisibleSelectionTraversal<'no_gc> {
                 PrePostIteration::Enter(node) => {
                     // If the traversal ends right before the final node and this is the
                     // final node, just finish now.
-                    if &**node == self.end.node() &&
-                        matches!(self.end, FlatTreeNodePosition::Before(_))
+                    if &**node == self.end.node()
+                        && matches!(self.end, FlatTreeNodePosition::Before(_))
                     {
                         self.finished = true;
                         break;
                     }
                     // If the selection starts after the first node, do not set any flags
                     // on that nodes descendants.
-                    if &**node == self.start.node() &&
-                        matches!(self.start, FlatTreeNodePosition::After(_))
+                    if &**node == self.start.node()
+                        && matches!(self.start, FlatTreeNodePosition::After(_))
                     {
                         self.skip_subtree = true;
                     }

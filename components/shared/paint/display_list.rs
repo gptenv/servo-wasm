@@ -130,10 +130,10 @@ impl StickyNodeInfo {
         viewport_scroll_offset: &LayoutVector2D,
         viewport_rect: &LayoutRect,
     ) -> LayoutVector2D {
-        if self.margins.top.is_none() &&
-            self.margins.bottom.is_none() &&
-            self.margins.left.is_none() &&
-            self.margins.right.is_none()
+        if self.margins.top.is_none()
+            && self.margins.bottom.is_none()
+            && self.margins.left.is_none()
+            && self.margins.right.is_none()
         {
             return LayoutVector2D::zero();
         }
@@ -159,8 +159,8 @@ impl StickyNodeInfo {
         // handling the bottom margin case. Note that the "don't have a sticky-top offset"
         // case includes the case where we *had* a sticky-top offset but we reduced it to
         // zero in the above block.
-        if sticky_offset.y <= 0.0 &&
-            let Some(margin) = self.margins.bottom
+        if sticky_offset.y <= 0.0
+            && let Some(margin) = self.margins.bottom
         {
             // If sticky_offset.y is nonzero that means we must have set it
             // in the sticky-top handling code above, so this item must have
@@ -188,8 +188,8 @@ impl StickyNodeInfo {
             }
         }
 
-        if sticky_offset.x <= 0.0 &&
-            let Some(margin) = self.margins.right
+        if sticky_offset.x <= 0.0
+            && let Some(margin) = self.margins.right
         {
             sticky_rect.min.x += sticky_offset.x;
             sticky_rect.max.x += sticky_offset.x;
@@ -257,8 +257,8 @@ impl ScrollableNodeInfo {
         new_offset: LayoutVector2D,
         context: ScrollType,
     ) -> Option<LayoutVector2D> {
-        if !self.scroll_sensitivity.x.contains(context) &&
-            !self.scroll_sensitivity.y.contains(context)
+        if !self.scroll_sensitivity.x.contains(context)
+            && !self.scroll_sensitivity.y.contains(context)
         {
             return None;
         }
@@ -287,8 +287,8 @@ impl ScrollableNodeInfo {
         scroll_location: ScrollLocation,
         context: ScrollType,
     ) -> Option<LayoutVector2D> {
-        if !self.scroll_sensitivity.x.contains(context) &&
-            !self.scroll_sensitivity.y.contains(context)
+        if !self.scroll_sensitivity.x.contains(context)
+            && !self.scroll_sensitivity.y.contains(context)
         {
             return None;
         }
@@ -637,9 +637,9 @@ impl ScrollTree {
     ) -> FxHashMap<ExternalScrollId, LayoutVector2D> {
         let mut result = FxHashMap::default();
         for node in self.nodes.iter_mut() {
-            if let SpatialTreeNodeInfo::Scroll(ref mut scroll_info) = node.info &&
-                let Some(offset) = offsets.get(&scroll_info.external_id) &&
-                let Some(result_offset) =
+            if let SpatialTreeNodeInfo::Scroll(ref mut scroll_info) = node.info
+                && let Some(offset) = offsets.get(&scroll_info.external_id)
+                && let Some(result_offset) =
                     scroll_info.scroll_to_offset(*offset, ScrollType::Script)
             {
                 result.insert(scroll_info.external_id, result_offset);
@@ -809,8 +809,8 @@ impl ScrollTree {
                     nearest_scrolling_ancestor_viewport: parent_transforms
                         .nearest_scrolling_ancestor_viewport,
                     nearest_scrolling_ancestor_offset: parent_transforms
-                        .nearest_scrolling_ancestor_offset +
-                        offset,
+                        .nearest_scrolling_ancestor_offset
+                        + offset,
                     cumulative_sticky_offsets: parent_transforms.cumulative_sticky_offsets + offset,
                 }
             },

@@ -92,8 +92,8 @@ mod imp {
         pub fn set_seek_done(&self) {
             self.seeking.store(false, Ordering::Relaxed);
 
-            if let Some(size) = self.size.lock().unwrap().take() &&
-                self.appsrc.size() == -1
+            if let Some(size) = self.size.lock().unwrap().take()
+                && self.appsrc.size() == -1
             {
                 self.appsrc.set_size(size);
             }
@@ -129,8 +129,8 @@ mod imp {
 
             // set the stream size (in bytes) to current offset if
             // size is lesser than it
-            if let Ok(size) = u64::try_from(self.appsrc.size()) &&
-                pos.offset > size
+            if let Ok(size) = u64::try_from(self.appsrc.size())
+                && pos.offset > size
             {
                 gstreamer::debug!(
                     self.cat,
@@ -372,8 +372,8 @@ mod imp {
         }
 
         fn set_uri(&self, uri: &str) -> Result<(), glib::Error> {
-            if let Ok(uri) = Url::parse(uri) &&
-                uri.scheme() == "servosrc"
+            if let Ok(uri) = Url::parse(uri)
+                && uri.scheme() == "servosrc"
             {
                 return Ok(());
             }

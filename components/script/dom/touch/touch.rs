@@ -123,10 +123,10 @@ impl Touch {
         // Pressure is 0.5 for active touches, 0.0 for up/cancel/out/leave
         // <https://w3c.github.io/pointerevents/#dom-pointerevent-pressure>
         // TODO: add proper force support.
-        let pressure = if event_type == "pointerup" ||
-            event_type == "pointercancel" ||
-            event_type == "pointerout" ||
-            event_type == "pointerleave"
+        let pressure = if event_type == "pointerup"
+            || event_type == "pointercancel"
+            || event_type == "pointerout"
+            || event_type == "pointerleave"
         {
             0.0
         } else {
@@ -136,11 +136,11 @@ impl Touch {
         // <https://w3c.github.io/pointerevents/#the-button-property>
         // For pointermove, pointerover, pointerenter, pointerout, pointerleave: button is -1
         // For pointerdown, pointerup, pointercancel: button is 0 (primary button)
-        let button = if event_type == "pointermove" ||
-            event_type == "pointerover" ||
-            event_type == "pointerenter" ||
-            event_type == "pointerout" ||
-            event_type == "pointerleave"
+        let button = if event_type == "pointermove"
+            || event_type == "pointerover"
+            || event_type == "pointerenter"
+            || event_type == "pointerout"
+            || event_type == "pointerleave"
         {
             MouseButton::None
         } else {
@@ -149,10 +149,10 @@ impl Touch {
 
         // Buttons: Primary if a button is pressed during the event, empty otherwise.
         // For touch: button is pressed during over/enter/down/move, not during up/cancel/out/leave
-        let buttons = if event_type == "pointermove" ||
-            event_type == "pointerover" ||
-            event_type == "pointerenter" ||
-            event_type == "pointerdown"
+        let buttons = if event_type == "pointermove"
+            || event_type == "pointerover"
+            || event_type == "pointerenter"
+            || event_type == "pointerdown"
         {
             MouseButtons::Primary
         } else {

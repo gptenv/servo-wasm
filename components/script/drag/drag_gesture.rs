@@ -22,8 +22,8 @@ impl DragGesture {
     }
 
     pub(crate) fn handle_mouse_button_event(&self, event: &ConstellationInputEvent) -> bool {
-        event.primary_button_is_pressed() &&
-            match &self.handler {
+        event.primary_button_is_pressed()
+            && match &self.handler {
                 DragHandler::TextInputSelection(handler) => handler.still_connected(),
                 DragHandler::DocumentSelection(handler) => handler.still_connected(),
             }

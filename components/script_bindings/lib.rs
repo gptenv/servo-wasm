@@ -6,6 +6,27 @@
 // Register the linter `crown`, which is the Servo-specific linter for the script crate.
 #![cfg_attr(crown, register_tool(crown))]
 
+#[cfg(target_arch = "wasm32")]
+extern crate self as libc;
+#[cfg(target_arch = "wasm32")]
+#[allow(non_camel_case_types)]
+pub type c_char = i8;
+#[cfg(target_arch = "wasm32")]
+#[allow(non_camel_case_types)]
+pub type c_uint = u32;
+#[cfg(target_arch = "wasm32")]
+#[allow(non_camel_case_types)]
+pub type c_int = i32;
+#[cfg(target_arch = "wasm32")]
+#[allow(non_camel_case_types)]
+pub type size_t = usize;
+#[cfg(target_arch = "wasm32")]
+#[allow(non_camel_case_types)]
+pub type c_void = core::ffi::c_void;
+#[cfg(target_arch = "wasm32")]
+#[allow(non_camel_case_types)]
+pub type uintptr_t = usize;
+
 #[macro_use]
 extern crate js;
 #[macro_use]

@@ -271,8 +271,8 @@ impl HTMLButtonElement {
             ButtonType::Submit
         } else {
             let element = self.upcast::<Element>();
-            if element.has_attribute(&local_name!("command")) ||
-                element.has_attribute(&local_name!("commandfor"))
+            if element.has_attribute(&local_name!("command"))
+                || element.has_attribute(&local_name!("commandfor"))
             {
                 ButtonType::Button
             } else {
@@ -458,9 +458,9 @@ impl Validatable for HTMLButtonElement {
         // https://html.spec.whatwg.org/multipage/#the-button-element%3Abarred-from-constraint-validation
         // https://html.spec.whatwg.org/multipage/#enabling-and-disabling-form-controls%3A-the-disabled-attribute%3Abarred-from-constraint-validation
         // https://html.spec.whatwg.org/multipage/#the-datalist-element%3Abarred-from-constraint-validation
-        self.button_type.get() == ButtonType::Submit &&
-            !self.upcast::<Element>().disabled_state() &&
-            !is_barred_by_datalist_ancestor(self.upcast())
+        self.button_type.get() == ButtonType::Submit
+            && !self.upcast::<Element>().disabled_state()
+            && !is_barred_by_datalist_ancestor(self.upcast())
     }
 }
 
@@ -509,8 +509,8 @@ impl Activatable for HTMLButtonElement {
                 return;
             }
             // Step 3.3 If element's type attribute is in the Auto state, then return.
-            if button_type == ButtonType::Button &&
-                !self
+            if button_type == ButtonType::Button
+                && !self
                     .upcast::<Element>()
                     .get_string_attribute(&local_name!("type"))
                     .eq_ignore_ascii_case("button")

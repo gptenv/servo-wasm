@@ -189,8 +189,8 @@ impl<'dom> LayoutNode<'dom> for ServoLayoutNode<'dom> {
         // This is a workaround for handling the `::selection` pseudos where it would not
         // propagate to the children and Shadow DOM elements. For this case, UA widget
         // inner elements should follow the originating element in terms of selection.
-        if self.node.is_in_ua_widget() &&
-            let Some(shadow_root) = self.node.containing_shadow_root_for_layout()
+        if self.node.is_in_ua_widget()
+            && let Some(shadow_root) = self.node.containing_shadow_root_for_layout()
         {
             return Self::from(shadow_root.get_host_for_layout().upcast()).selected_style(context);
         }

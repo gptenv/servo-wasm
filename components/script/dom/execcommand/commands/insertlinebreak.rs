@@ -42,8 +42,8 @@ pub(crate) fn execute_insert_line_break_command(
 
     // Step 3. If the active range's start node is an Element, and "br" is not an allowed child of
     //         it, return true.
-    if active_range.start_container().is::<Element>() &&
-        !is_allowed_child(
+    if active_range.start_container().is::<Element>()
+        && !is_allowed_child(
             NodeOrString::String("br".to_owned()),
             NodeOrString::from_node(&active_range.start_container(), cx.no_gc()),
         )
@@ -53,8 +53,8 @@ pub(crate) fn execute_insert_line_break_command(
 
     // Step 4. If the active range's start node is not an Element, and "br" is not an allowed child
     //         of the active range's start node's parent, return true.
-    if !active_range.start_container().is::<Element>() &&
-        !is_allowed_child(
+    if !active_range.start_container().is::<Element>()
+        && !is_allowed_child(
             NodeOrString::String("br".to_owned()),
             NodeOrString::from_node(
                 &active_range
@@ -92,8 +92,8 @@ pub(crate) fn execute_insert_line_break_command(
     //         of its start node, call collapse() on the context object's selection, with first
     //         argument equal to the active range's start node's parent and second argument equal
     //         to one plus the active range's start node's index.
-    if active_range.start_container().is::<Text>() &&
-        active_range.start_offset() == active_range.start_container().len()
+    if active_range.start_container().is::<Text>()
+        && active_range.start_offset() == active_range.start_container().len()
     {
         if selection
             .Collapse(

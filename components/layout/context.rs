@@ -70,10 +70,11 @@ impl LayoutContext<'_> {
     }
 
     pub(crate) fn should_parallelize_layout(&self, jobs: impl Iterator<Item = usize>) -> bool {
-        self.allow_parallel_layout &&
-            jobs.filter(|job| *job >= self.parallelism_job_size_minimum)
-                .count() >=
-                self.parallelism_job_count_minimum
+        self.allow_parallel_layout
+            && jobs
+                .filter(|job| *job >= self.parallelism_job_size_minimum)
+                .count()
+                >= self.parallelism_job_count_minimum
     }
 }
 

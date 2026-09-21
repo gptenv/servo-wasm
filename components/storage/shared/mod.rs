@@ -4,6 +4,7 @@
 
 use std::error::Error as StdError;
 
+#[cfg(not(target_arch = "wasm32"))]
 use libc::ENOSPC;
 use rusqlite::{Error as RusqliteError, ffi};
 
@@ -28,8 +29,9 @@ pub const DB_IN_MEMORY_PRAGMAS: [&str; 1] = ["PRAGMA cache_size = 2000;"];
 pub(crate) fn is_sqlite_disk_full_error(error: &RusqliteError) -> bool {
     fn has_enospc(mut source: Option<&(dyn StdError + 'static)>) -> bool {
         while let Some(err) = source {
-            if let Some(io_err) = err.downcast_ref::<std::io::Error>() &&
-                io_err.raw_os_error() == Some(ENOSPC)
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(io_err) = err.downcast_ref::<std::io::Error>()
+                && io_err.raw_os_error() == Some(ENOSPC)
             {
                 return true;
             }
@@ -44,22 +46,22 @@ pub(crate) fn is_sqlite_disk_full_error(error: &RusqliteError) -> bool {
     match error {
         RusqliteError::SqliteFailure(sqlite_err, _) => {
             // High confidence "database or disk is full".
-            if sqlite_err.code == ffi::ErrorCode::DiskFull ||
-                sqlite_err.extended_code == ffi::SQLITE_FULL
+            if sqlite_err.code == ffi::ErrorCode::DiskFull
+                || sqlite_err.extended_code == ffi::SQLITE_FULL
             {
                 return true;
             }
 
             // Only treat IO errors as quota-related if ENOSPC is present.
-            if saw_enospc &&
-                matches!(
+            if saw_enospc
+                && matches!(
                     sqlite_err.extended_code,
-                    ffi::SQLITE_IOERR |
-                        ffi::SQLITE_IOERR_WRITE |
-                        ffi::SQLITE_IOERR_FSYNC |
-                        ffi::SQLITE_IOERR_DIR_FSYNC |
-                        ffi::SQLITE_IOERR_TRUNCATE |
-                        ffi::SQLITE_IOERR_MMAP
+                    ffi::SQLITE_IOERR
+                        | ffi::SQLITE_IOERR_WRITE
+                        | ffi::SQLITE_IOERR_FSYNC
+                        | ffi::SQLITE_IOERR_DIR_FSYNC
+                        | ffi::SQLITE_IOERR_TRUNCATE
+                        | ffi::SQLITE_IOERR_MMAP
                 )
             {
                 return true;

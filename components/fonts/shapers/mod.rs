@@ -2,16 +2,22 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#[cfg(not(target_arch = "wasm32"))]
 mod harfbuzz;
+#[cfg(target_arch = "wasm32")]
+mod wasm;
 
 use app_units::Au;
 use euclid::default::Point2D;
 use fonts_traits::FontFaceRuleInfo;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use harfbuzz::Shaper;
 use read_fonts::types::Tag;
 use rustc_hash::FxHashMap;
 use style::computed_values::font_variant_position::T as FontVariantPosition;
 use style::values::computed::{FontVariantEastAsian, FontVariantLigatures, FontVariantNumeric};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use wasm::Shaper;
 
 use crate::{
     AFRC, CALT, CLIG, CWSH, DLIG, FRAC, FWID, GlyphId, HIST, HLIG, JP04, JP78, JP83, JP90, KERN,
@@ -34,6 +40,7 @@ const HIGHEST_DEFINED_CHARACTER_VARIANT_INDEX: u32 = 99;
 
 /// Utility function to convert a `unicode_script::Script` enum into the corresponding `c_uint` tag that
 /// harfbuzz uses to represent unicode scipts.
+#[cfg(not(target_arch = "wasm32"))]
 fn unicode_script_to_iso15924_tag(script: unicode_script::Script) -> u32 {
     let bytes: [u8; 4] = match script {
         unicode_script::Script::Unknown => *b"Zzzz",
@@ -53,6 +60,7 @@ pub(crate) struct ShapedGlyph {
     /// The original byte offset in the input buffer of the character that this
     /// glyph belongs to. More than one glyph can share the same character and
     /// one character can produce multiple glyphs.
+    #[cfg(not(target_arch = "wasm32"))]
     pub string_byte_offset: usize,
     /// The advance the direction of the writing mode that this glyph needs.
     pub advance: Au,
@@ -62,6 +70,7 @@ pub(crate) struct ShapedGlyph {
 
 /// Holds the results of shaping. Abstracts over HarfBuzz and HarfRust which return data in very similar
 /// form but with different types
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) trait GlyphShapingResult {
     /// The number of shaped glyphs
     fn len(&self) -> usize;

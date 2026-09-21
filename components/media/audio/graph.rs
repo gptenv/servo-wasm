@@ -583,8 +583,8 @@ impl AudioGraph {
             // Tarjan's algorithm groups the graph into strongly connected components.
             // A component with multiple nodes is a cycle; a single-node component is a
             // cycle only when the node has an edge to itself.
-            let is_cycle = component.len() > 1 ||
-                component.first().is_some_and(|node_index| {
+            let is_cycle = component.len() > 1
+                || component.first().is_some_and(|node_index| {
                     self.graph
                         .edges(*node_index)
                         .any(|edge| edge.target() == *node_index)

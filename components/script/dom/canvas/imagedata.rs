@@ -189,6 +189,7 @@ impl ImageData {
         )
     }
 
+    #[cfg_attr(not(feature = "webgpu"), allow(dead_code))]
     pub(crate) fn get_snapshot(&self, no_gc: &NoGC) -> Snapshot {
         Snapshot::from_vec(
             self.get_size(),

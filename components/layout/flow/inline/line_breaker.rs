@@ -49,15 +49,15 @@ impl LineBreaker {
 
         let mut linebreaks_range = self.current_linebreak_offset..self.linebreaks.len();
 
-        while self.linebreaks[linebreaks_range.start] < text_range.start &&
-            linebreaks_range.len() > 1
+        while self.linebreaks[linebreaks_range.start] < text_range.start
+            && linebreaks_range.len() > 1
         {
             linebreaks_range.start += 1;
         }
 
         let mut ending_linebreak_index = linebreaks_range.start;
-        while self.linebreaks[ending_linebreak_index] < text_range.end &&
-            ending_linebreak_index < self.linebreaks.len() - 1
+        while self.linebreaks[ending_linebreak_index] < text_range.end
+            && ending_linebreak_index < self.linebreaks.len() - 1
         {
             ending_linebreak_index += 1;
         }
@@ -139,8 +139,8 @@ mod test {
             [Utf8CodeUnits(4), Utf8CodeUnits(6), Utf8CodeUnits(9)]
         );
         assert!(
-            advance_to_linebreaks_in_range(&mut linebreaker, 0..7) ==
-                &[Utf8CodeUnits(4), Utf8CodeUnits(6)]
+            advance_to_linebreaks_in_range(&mut linebreaker, 0..7)
+                == &[Utf8CodeUnits(4), Utf8CodeUnits(6)]
         );
         assert!(advance_to_linebreaks_in_range(&mut linebreaker, 8..9).is_empty());
 
@@ -151,8 +151,8 @@ mod test {
 
         // Sending a value out of range shouldn't break things.
         assert!(
-            advance_to_linebreaks_in_range(&mut linebreaker, 0..999) ==
-                &[Utf8CodeUnits(4), Utf8CodeUnits(6)]
+            advance_to_linebreaks_in_range(&mut linebreaker, 0..999)
+                == &[Utf8CodeUnits(4), Utf8CodeUnits(6)]
         );
 
         linebreaker.current_linebreak_offset = 0;

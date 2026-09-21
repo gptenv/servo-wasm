@@ -223,16 +223,17 @@ impl HTMLLinkElement {
     }
 
     pub(crate) fn is_alternate(&self) -> bool {
-        self.relations.get().contains(LinkRelations::ALTERNATE) &&
-            !self
+        self.relations.get().contains(LinkRelations::ALTERNATE)
+            && !self
                 .upcast::<Element>()
                 .get_string_attribute(&local_name!("title"))
                 .is_empty()
     }
 
     pub(crate) fn is_effectively_disabled(&self) -> bool {
-        (self.is_alternate() && !self.is_explicitly_enabled.get()) ||
-            self.upcast::<Element>()
+        (self.is_alternate() && !self.is_explicitly_enabled.get())
+            || self
+                .upcast::<Element>()
                 .has_attribute(&local_name!("disabled"))
     }
 
@@ -286,9 +287,9 @@ impl VirtualMethods for HTMLLinkElement {
 
         // For stylesheets, we should only refetch when the actual attribute value
         // has been changed.
-        if self.relations.get().contains(LinkRelations::STYLESHEET) &&
-            let AttributeMutation::Set(Some(previous_value), _) = mutation &&
-            **previous_value == **attr.value()
+        if self.relations.get().contains(LinkRelations::STYLESHEET)
+            && let AttributeMutation::Set(Some(previous_value), _) = mutation
+            && **previous_value == **attr.value()
         {
             return;
         }
@@ -383,8 +384,8 @@ impl VirtualMethods for HTMLLinkElement {
                 // https://html.spec.whatwg.org/multipage/#link-type-preload
                 // When the as attribute of the link element of an external resource link
                 // that is already browsing-context connected is changed.
-                if self.relations.get().contains(LinkRelations::PRELOAD) &&
-                    let AttributeMutation::Set(Some(_), _) = mutation
+                if self.relations.get().contains(LinkRelations::PRELOAD)
+                    && let AttributeMutation::Set(Some(_), _) = mutation
                 {
                     self.handle_preload_url();
                 }
@@ -406,8 +407,8 @@ impl VirtualMethods for HTMLLinkElement {
                 // is already browsing-context connected, but was previously not obtained due to
                 // the type attribute specifying an unsupported type for the request destination,
                 // is set, removed, or changed.
-                if self.relations.get().contains(LinkRelations::PRELOAD) &&
-                    !self.previous_type_matched.get()
+                if self.relations.get().contains(LinkRelations::PRELOAD)
+                    && !self.previous_type_matched.get()
                 {
                     self.handle_preload_url();
                 }
@@ -417,8 +418,8 @@ impl VirtualMethods for HTMLLinkElement {
                 // When the media attribute of the link element of an external resource link that
                 // is already browsing-context connected, but was previously not obtained due to
                 // the media attribute not matching the environment, is changed or removed.
-                if self.relations.get().contains(LinkRelations::PRELOAD) &&
-                    !self.previous_media_environment_matched.get()
+                if self.relations.get().contains(LinkRelations::PRELOAD)
+                    && !self.previous_media_environment_matched.get()
                 {
                     match mutation {
                         AttributeMutation::Removed | AttributeMutation::Set(Some(_), _) => {
@@ -426,8 +427,8 @@ impl VirtualMethods for HTMLLinkElement {
                         },
                         _ => {},
                     };
-                } else if self.relations.get().contains(LinkRelations::STYLESHEET) &&
-                    let Some(ref stylesheet) = *self.stylesheet.borrow_mut()
+                } else if self.relations.get().contains(LinkRelations::STYLESHEET)
+                    && let Some(ref stylesheet) = *self.stylesheet.borrow_mut()
                 {
                     let document = self.owner_document();
                     let shared_lock = document.style_shared_author_lock().clone();
@@ -469,9 +470,9 @@ impl VirtualMethods for HTMLLinkElement {
         let element = self.upcast::<Element>();
         let href = element.get_attribute_string_value(&local_name!("href"));
 
-        if context.tree_connected &&
-            (href.as_ref().is_some_and(|x| !x.is_empty()) ||
-                element.has_attribute(&local_name!("imagesrcset")))
+        if context.tree_connected
+            && (href.as_ref().is_some_and(|x| !x.is_empty())
+                || element.has_attribute(&local_name!("imagesrcset")))
         {
             let relations = self.relations.get();
             // https://html.spec.whatwg.org/multipage/#link-type-stylesheet:fetch-and-process-the-linked-resource
@@ -751,8 +752,8 @@ impl HTMLLinkElement {
         if is_removal {
             self.is_explicitly_enabled.set(true);
         }
-        if let Some(stylesheet) = self.get_stylesheet() &&
-            stylesheet.set_disabled(!is_removal)
+        if let Some(stylesheet) = self.get_stylesheet()
+            && stylesheet.set_disabled(!is_removal)
         {
             self.stylesheet_list_owner().invalidate_stylesheets(no_gc);
         }
@@ -790,8 +791,8 @@ impl HTMLLinkElement {
             }) => {
                 self.process_favicon_response(image);
             },
-            ImageCacheResult::Available(ImageOrMetadataAvailable::MetadataAvailable(_, id)) |
-            ImageCacheResult::Pending(id) => {
+            ImageCacheResult::Available(ImageOrMetadataAvailable::MetadataAvailable(_, id))
+            | ImageCacheResult::Pending(id) => {
                 let sender = self.register_image_cache_callback(id);
                 window.image_cache().add_listener(ImageLoadListener::new(
                     sender,
@@ -1110,8 +1111,9 @@ impl StylesheetOwner for HTMLLinkElement {
         //
         // https://html.spec.whatwg.org/multipage/#link-type-stylesheet:implicitly-potentially-render-blocking
         // > A link element of this type is implicitly potentially render-blocking if the element was created by its node document's parser.
-        self.parser_inserted() ||
-            self.blocking
+        self.parser_inserted()
+            || self
+                .blocking
                 .get()
                 .is_some_and(|list| list.Contains(DOMString::from_static("render")))
     }

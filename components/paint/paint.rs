@@ -89,8 +89,8 @@ pub struct WebGLPaint {
 impl WebGLPaint {
     fn shutdown(&self) {
         self.webgl_threads.exit();
-        if let Some(webgl_join_handle) = self.webgl_join_handle.take() &&
-            webgl_join_handle.join().is_err()
+        if let Some(webgl_join_handle) = self.webgl_join_handle.take()
+            && webgl_join_handle.join().is_err()
         {
             warn!("Could not join WebGLThread.");
         }

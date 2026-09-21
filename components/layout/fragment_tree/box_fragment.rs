@@ -738,8 +738,8 @@ impl<'a> BoxFragmentWithStyle<'a> {
         // TODO: For input elements, we also disable the padding in the inline direction, as we
         // do not have a way to scroll the textual input element in inline direction yet.
         let should_include_additional_padding =
-            self.style().establishes_scroll_container(self.base.flags) &&
-                !self.base.flags.intersects(FragmentFlags::IS_INPUT_ELEMENT);
+            self.style().establishes_scroll_container(self.base.flags)
+                && !self.base.flags.intersects(FragmentFlags::IS_INPUT_ELEMENT);
 
         if should_include_additional_padding {
             scrollable_overflow = self

@@ -49,10 +49,10 @@ pub(crate) fn execute_forward_delete_command(
     loop {
         // Step 4.1. If offset is the length of node and node's nextSibling is an editable invisible node,
         //           remove node's nextSibling from its parent.
-        if offset == node.len() &&
-            let Some(sibling) = node.GetNextSibling() &&
-            sibling.is_editable() &&
-            sibling.is_invisible(cx.no_gc())
+        if offset == node.len()
+            && let Some(sibling) = node.GetNextSibling()
+            && sibling.is_editable()
+            && sibling.is_invisible(cx.no_gc())
         {
             sibling.remove_self(cx);
             continue;
@@ -60,9 +60,9 @@ pub(crate) fn execute_forward_delete_command(
 
         // Step 4.2. Otherwise, if node has a child with index offset and that child is an editable invisible node,
         //           remove that child from node.
-        if let Some(child) = node.children().nth(offset as usize) &&
-            child.is_editable() &&
-            child.is_invisible(cx.no_gc())
+        if let Some(child) = node.children().nth(offset as usize)
+            && child.is_editable()
+            && child.is_invisible(cx.no_gc())
         {
             child.remove_self(cx);
             continue;
@@ -80,11 +80,11 @@ pub(crate) fn execute_forward_delete_command(
 
         // Step 4.4. Otherwise, if node has a child with index offset and that child is neither a block node nor a br
         //           nor an img nor a collapsed block prop, set node to that child, then set offset to zero.
-        if let Some(child) = node.children().nth(offset as usize) &&
-            !(child.is_block_node() ||
-                child.is::<HTMLBRElement>() ||
-                child.is::<HTMLImageElement>() ||
-                child.is_collapsed_block_prop(cx.no_gc()))
+        if let Some(child) = node.children().nth(offset as usize)
+            && !(child.is_block_node()
+                || child.is::<HTMLBRElement>()
+                || child.is::<HTMLImageElement>()
+                || child.is_collapsed_block_prop(cx.no_gc()))
         {
             node = child;
             offset = 0;
@@ -134,11 +134,11 @@ pub(crate) fn execute_forward_delete_command(
     }
 
     // Step 7. If node has a child with index offset and that child is a br or hr or img, but is not a collapsed block prop:
-    if let Some(child) = node.children().nth(offset as usize) &&
-        (child.is::<HTMLBRElement>() ||
-            child.is::<HTMLHRElement>() ||
-            child.is::<HTMLImageElement>()) &&
-        !child.is_collapsed_block_prop(cx.no_gc())
+    if let Some(child) = node.children().nth(offset as usize)
+        && (child.is::<HTMLBRElement>()
+            || child.is::<HTMLHRElement>()
+            || child.is::<HTMLImageElement>())
+        && !child.is_collapsed_block_prop(cx.no_gc())
     {
         // Step 7.1. Call collapse(node, offset) on the context object's selection.
         if selection.Collapse(cx, Some(&node), offset).is_err() {
@@ -168,8 +168,8 @@ pub(crate) fn execute_forward_delete_command(
     let mut end_offset = offset;
 
     // Step 9. If end node has a child with index end offset, and that child is a collapsed block prop, add one to end offset.
-    if let Some(child) = end_node.children().nth(end_offset as usize) &&
-        child.is_collapsed_block_prop(cx.no_gc())
+    if let Some(child) = end_node.children().nth(end_offset as usize)
+        && child.is_collapsed_block_prop(cx.no_gc())
     {
         end_offset += 1;
     }
@@ -190,9 +190,9 @@ pub(crate) fn execute_forward_delete_command(
         }
 
         // Step 10.2. Otherwise, if end node has an editable invisible child with index end offset, remove it from end node.
-        if let Some(child) = end_node.children().nth(end_offset as usize) &&
-            child.is_editable() &&
-            child.is_invisible(cx.no_gc())
+        if let Some(child) = end_node.children().nth(end_offset as usize)
+            && child.is_editable()
+            && child.is_invisible(cx.no_gc())
         {
             child.remove_self(cx);
             continue;
@@ -203,16 +203,16 @@ pub(crate) fn execute_forward_delete_command(
     }
 
     // Step 11. If the child of end node with index end offset minus one is a table, return true.
-    if end_offset > 0 &&
-        let Some(child) = end_node.children().nth((end_offset - 1) as usize) &&
-        child.is::<HTMLTableElement>()
+    if end_offset > 0
+        && let Some(child) = end_node.children().nth((end_offset - 1) as usize)
+        && child.is::<HTMLTableElement>()
     {
         return true;
     }
 
     // Step 12. If the child of end node with index end offset is a table:
-    if let Some(child) = end_node.children().nth(end_offset as usize) &&
-        child.is::<HTMLTableElement>()
+    if let Some(child) = end_node.children().nth(end_offset as usize)
+        && child.is::<HTMLTableElement>()
     {
         // Step 12.1. Call collapse(end node, end offset) on the context object's selection.
         if selection.Collapse(cx, Some(&end_node), end_offset).is_err() {
@@ -229,9 +229,9 @@ pub(crate) fn execute_forward_delete_command(
     }
 
     // Step 13. If offset is the length of node, and the child of end node with index end offset is an hr or br:
-    if offset == node.len() &&
-        let Some(child) = end_node.children().nth(end_offset as usize) &&
-        (child.is::<HTMLHRElement>() || child.is::<HTMLBRElement>())
+    if offset == node.len()
+        && let Some(child) = end_node.children().nth(end_offset as usize)
+        && (child.is::<HTMLHRElement>() || child.is::<HTMLBRElement>())
     {
         // Step 13.1. Call collapse(end node, end offset) on the context object's selection.
         if selection.Collapse(cx, Some(&end_node), end_offset).is_err() {

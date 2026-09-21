@@ -765,8 +765,8 @@ impl AccessibilityNode {
             ));
             self.update_bounds_from_dom_node(&dom_node, context, update);
 
-            if local_damage.contains(LocalAccessibilityDamage::SubtreeChanged) &&
-                let Some(scroll_offset) = self.scroll_offset
+            if local_damage.contains(LocalAccessibilityDamage::SubtreeChanged)
+                && let Some(scroll_offset) = self.scroll_offset
             {
                 // If children have changed, re-set the scroll transforms on all children.
                 self.set_scroll_offset(scroll_offset, update);
@@ -863,8 +863,8 @@ impl AccessibilityNode {
 
         // Iterate over existing children and DOM children while they match. No action is necessary
         // for these nodes.
-        while let Some(&old_id) = old_child_ids.peek() &&
-            let Some(dom_child) = remaining_dom_children.peek()
+        while let Some(&old_id) = old_child_ids.peek()
+            && let Some(dom_child) = remaining_dom_children.peek()
         {
             if tree.existing_id_for_opaque(dom_child.opaque()) == Some(*old_id) {
                 update.insert_dom_node(*old_id, *dom_child);
@@ -1003,8 +1003,8 @@ impl AccessibilityNode {
         }
         update.counters.nodes_updated_from_tree += 1;
 
-        if local_damage.contains(LocalAccessibilityDamage::SubtreeChanged) ||
-            local_damage.contains(LocalAccessibilityDamage::RoleChanged)
+        if local_damage.contains(LocalAccessibilityDamage::SubtreeChanged)
+            || local_damage.contains(LocalAccessibilityDamage::RoleChanged)
         {
             if let Some(text) = self.label_from_descendants() {
                 new_damage.insert(self.set_label(text.as_str()));

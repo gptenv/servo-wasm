@@ -72,6 +72,7 @@ impl From<&HTMLCanvasElementOrOffscreenCanvas> for RootedHTMLCanvasElementOrOffs
 pub(crate) trait CanvasContext {
     type ID;
 
+    #[cfg_attr(not(feature = "webgl"), allow(dead_code))]
     fn context_id(&self) -> Self::ID;
 
     fn canvas(&self) -> Option<RootedHTMLCanvasElementOrOffscreenCanvas>;

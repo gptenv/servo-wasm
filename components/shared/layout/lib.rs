@@ -859,8 +859,9 @@ impl ImageAnimationState {
             return false;
         }
         let time_interval_since_last_update = now - self.frame_start_time;
-        let mut remain_time_interval = time_interval_since_last_update -
-            self.image
+        let mut remain_time_interval = time_interval_since_last_update
+            - self
+                .image
                 .frames
                 .get(self.active_frame)
                 .unwrap()

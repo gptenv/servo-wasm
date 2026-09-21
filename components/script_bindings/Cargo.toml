@@ -31,7 +31,6 @@ indexmap = { workspace = true }
 js = { workspace = true }
 jstraceable_derive = { workspace = true }
 keyboard-types = { workspace = true }
-libc = { workspace = true }
 log = { workspace = true }
 malloc_size_of = { workspace = true }
 malloc_size_of_derive = { workspace = true }
@@ -61,6 +60,9 @@ zeroize = { workspace = true, features = ["zeroize_derive"] }
 phf_codegen = { workspace = true }
 phf_shared = { workspace = true }
 serde_json = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libc = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

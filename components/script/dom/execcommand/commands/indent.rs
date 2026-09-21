@@ -36,8 +36,8 @@ pub(crate) fn indent(cx: &mut JSContext, document: &Document, node_list: Vec<Dom
         .clone();
 
     // Step 3. If first node's parent is an ol or ul:
-    if let Some(parent) = first_node.GetParentElement() &&
-        (parent.is::<HTMLOListElement>() || parent.is::<HTMLUListElement>())
+    if let Some(parent) = first_node.GetParentElement()
+        && (parent.is::<HTMLOListElement>() || parent.is::<HTMLUListElement>())
     {
         // Step 3.1. Let tag be the local name of the parent of first node.
         let tag = parent.local_name();
@@ -96,9 +96,9 @@ pub(crate) fn normalize_sublists(cx: &mut JSContext, item: DomRoot<Node>) {
         .expect("item should be an element");
 
     // Step 1. If item is not an li or it is not editable or its parent is not editable, abort these steps.
-    if !item.is::<HTMLLIElement>() ||
-        !item.is_editable() ||
-        !item
+    if !item.is::<HTMLLIElement>()
+        || !item.is_editable()
+        || !item
             .GetParentElement()
             .is_some_and(|parent| parent.upcast::<Node>().is_editable())
     {
@@ -117,10 +117,10 @@ pub(crate) fn normalize_sublists(cx: &mut JSContext, item: DomRoot<Node>) {
         let child = item.GetLastChild().expect("Must have a last child here.");
 
         // Step 3.2. If child is an ol or ul, or new item is null and child is a Text node whose data consists of zero of more space characters:
-        if child.is::<HTMLOListElement>() ||
-            child.is::<HTMLUListElement>() ||
-            (new_item.is_none() &&
-                child
+        if child.is::<HTMLOListElement>()
+            || child.is::<HTMLUListElement>()
+            || (new_item.is_none()
+                && child
                     .downcast::<Text>()
                     .is_some_and(|text| text.data().bytes().all(|byte| byte == b' ')))
         {
@@ -198,15 +198,15 @@ pub(crate) fn execute_indent_command(
     //         and if the last member of node list (if any) is not an ancestor of node,
     //         append node to node list.
     for node in new_range.contained_nodes(cx.no_gc()) {
-        if node.is_editable() &&
-            (is_allowed_child(
+        if node.is_editable()
+            && (is_allowed_child(
                 NodeOrString::Node(node.clone()),
                 NodeOrString::String("div".to_owned()),
             ) || is_allowed_child(
                 NodeOrString::Node(node.clone()),
                 NodeOrString::String("ol".to_owned()),
-            )) &&
-            node_list
+            ))
+            && node_list
                 .last()
                 .is_none_or(|last| !last.is_ancestor_of(&node))
         {
@@ -215,24 +215,24 @@ pub(crate) fn execute_indent_command(
     }
 
     // Step 6. If the first visible member of node list is an li whose parent is an ol or ul:
-    if let Some(first_visible_member) = node_list.iter().find(|node| node.is_visible(cx.no_gc())) &&
-        first_visible_member.is::<HTMLLIElement>() &&
-        let Some(parent) = first_visible_member.GetParentNode() &&
-        (parent.is::<HTMLOListElement>() || parent.is::<HTMLUListElement>())
+    if let Some(first_visible_member) = node_list.iter().find(|node| node.is_visible(cx.no_gc()))
+        && first_visible_member.is::<HTMLLIElement>()
+        && let Some(parent) = first_visible_member.GetParentNode()
+        && (parent.is::<HTMLOListElement>() || parent.is::<HTMLUListElement>())
     {
         // Step 6.1. Let sibling be node list's first visible member's previousSibling.
         let mut sibling = first_visible_member.GetPreviousSibling();
 
         // Step 6.2. While sibling is invisible, set sibling to its previousSibling.
-        while let Some(ref some_sibling) = sibling &&
-            some_sibling.is_invisible(cx.no_gc())
+        while let Some(ref some_sibling) = sibling
+            && some_sibling.is_invisible(cx.no_gc())
         {
             sibling = some_sibling.GetPreviousSibling();
         }
 
         // Step 6.3. If sibling is an li, normalize sublists of sibling.
-        if let Some(sibling) = sibling &&
-            sibling.is::<HTMLLIElement>()
+        if let Some(sibling) = sibling
+            && sibling.is::<HTMLLIElement>()
         {
             normalize_sublists(cx, sibling);
         }

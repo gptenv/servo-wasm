@@ -502,8 +502,8 @@ impl AnimationManager {
                 continue;
             }
 
-            if set.animations.iter().any(|animation| animation.is_new) ||
-                set.transitions.iter().any(|transition| transition.is_new)
+            if set.animations.iter().any(|animation| animation.is_new)
+                || set.transitions.iter().any(|transition| transition.is_new)
             {
                 root_node(&mut rooted_nodes, opaque_node);
             }
@@ -530,8 +530,8 @@ impl AnimationManager {
         // Calculate the `elapsed-time` property of the event and take the absolute
         // value to prevent -0 values.
         let elapsed_time = match event_type {
-            TransitionOrAnimationEventType::TransitionRun |
-            TransitionOrAnimationEventType::TransitionStart => transition
+            TransitionOrAnimationEventType::TransitionRun
+            | TransitionOrAnimationEventType::TransitionStart => transition
                 .property_animation
                 .duration
                 .min((-transition.delay).max(0.)),
@@ -568,8 +568,8 @@ impl AnimationManager {
         pipeline_id: PipelineId,
     ) {
         let iteration_index = match animation.iteration_state {
-            KeyframesIterationState::Finite(current, _) |
-            KeyframesIterationState::Infinite(current) => current,
+            KeyframesIterationState::Finite(current, _)
+            | KeyframesIterationState::Infinite(current) => current,
         };
 
         let active_duration = match animation.iteration_state {
@@ -735,14 +735,14 @@ impl TransitionOrAnimationEventType {
     /// Whether or not this event is a transition-related event.
     pub(crate) fn is_transition_event(&self) -> bool {
         match *self {
-            Self::TransitionRun |
-            Self::TransitionEnd |
-            Self::TransitionCancel |
-            Self::TransitionStart => true,
-            Self::AnimationEnd |
-            Self::AnimationIteration |
-            Self::AnimationStart |
-            Self::AnimationCancel => false,
+            Self::TransitionRun
+            | Self::TransitionEnd
+            | Self::TransitionCancel
+            | Self::TransitionStart => true,
+            Self::AnimationEnd
+            | Self::AnimationIteration
+            | Self::AnimationStart
+            | Self::AnimationCancel => false,
         }
     }
 }

@@ -288,9 +288,9 @@ fn inline_box_style_breaks_shaping(style: &ComputedValues) -> (bool, bool) {
     // intrinsically by the fact that bidi isolation inserts bidi characters into the inline
     // formatting context text content. This leads to non-contiguous character offsets between
     // shaping queue entries.
-    if style.clone_baseline_shift() != BaselineShift::zero() ||
-        style.clone_baseline_source() != BaselineSource::Auto ||
-        style.clone_alignment_baseline() != AlignmentBaseline::Baseline
+    if style.clone_baseline_shift() != BaselineShift::zero()
+        || style.clone_baseline_source() != BaselineSource::Auto
+        || style.clone_alignment_baseline() != AlignmentBaseline::Baseline
     {
         return (true, true);
     }
@@ -301,15 +301,15 @@ fn inline_box_style_breaks_shaping(style: &ComputedValues) -> (bool, bool) {
     let margin = style.margin(style.writing_mode);
 
     (
-        !border_widths.inline_start.is_zero() ||
-            !padding.inline_start.is_zero() ||
-            !margin
+        !border_widths.inline_start.is_zero()
+            || !padding.inline_start.is_zero()
+            || !margin
                 .inline_start
                 .non_auto()
                 .is_none_or(LengthPercentage::is_zero),
-        !border_widths.inline_end.is_zero() ||
-            !padding.inline_end.is_zero() ||
-            !margin
+        !border_widths.inline_end.is_zero()
+            || !padding.inline_end.is_zero()
+            || !margin
                 .inline_end
                 .non_auto()
                 .is_none_or(LengthPercentage::is_zero),

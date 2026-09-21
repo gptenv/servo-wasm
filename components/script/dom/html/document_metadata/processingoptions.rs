@@ -282,8 +282,8 @@ impl LinkProcessingOptions {
         assert!(self.type_matches_destination());
         // Step 2. If options's destination is "image" and options's source set is not null,
         // then set options's href to the result of selecting an image source from options's source set.
-        if self.destination == Destination::Image &&
-            let Some(srcset) = &mut self.source_set
+        if self.destination == Destination::Image
+            && let Some(srcset) = &mut self.source_set
         {
             self.href = String::from(
                 srcset
@@ -385,9 +385,9 @@ pub(crate) fn process_link_headers(
         // Not applicable, that's in `link_object.params`
         // Step 2.3. Let expectedPhase be "media" if either "srcset", "imagesrcset",
         // or "media" exist in attribs; otherwise "pre-media".
-        let expected_phase = if link_object.has_key_in_link_header("srcset") ||
-            link_object.has_key_in_link_header("imagesrcset") ||
-            link_object.has_key_in_link_header("media")
+        let expected_phase = if link_object.has_key_in_link_header("srcset")
+            || link_object.has_key_in_link_header("imagesrcset")
+            || link_object.has_key_in_link_header("media")
         {
             LinkProcessingPhase::Media
         } else {
@@ -398,8 +398,8 @@ pub(crate) fn process_link_headers(
             continue;
         }
         // Step 2.5. If attribs["media"] exists and attribs["media"] does not match the environment, then continue.
-        if let Some(media) = link_object.value_for_key_in_link_header("media") &&
-            !MediaList::matches_environment(document, media)
+        if let Some(media) = link_object.value_for_key_in_link_header("media")
+            && !MediaList::matches_environment(document, media)
         {
             continue;
         }
@@ -427,8 +427,8 @@ pub(crate) fn process_link_headers(
         // Step 2.8. If attribs["imagesrcset"] exists and attribs["imagesizes"] exists,
         // then set options's source set to the result of creating a source set given
         // linkObject["target_uri"], attribs["imagesrcset"], attribs["imagesizes"], and null.
-        if let Some(imagesrcset) = link_object.value_for_key_in_link_header("imagesrcset") &&
-            let Some(imagesizes) = link_object.value_for_key_in_link_header("imagesizes")
+        if let Some(imagesrcset) = link_object.value_for_key_in_link_header("imagesrcset")
+            && let Some(imagesizes) = link_object.value_for_key_in_link_header("imagesizes")
         {
             options.source_set = Some(SourceSet::create_source_set(
                 &link_object.url,

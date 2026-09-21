@@ -1014,8 +1014,8 @@ impl WindowProxy {
     }
 
     pub(crate) fn set_currently_active(&self, cx: &mut JSContext, window: &Window) {
-        if let Some(pipeline_id) = self.currently_active() &&
-            pipeline_id == window.pipeline_id()
+        if let Some(pipeline_id) = self.currently_active()
+            && pipeline_id == window.pipeline_id()
         {
             return debug!(
                 "Attempt to set the currently active window to the currently active window."
@@ -1391,8 +1391,8 @@ unsafe fn has_or_has_own(
     let window = WindowOrDissimilarOriginWindow::new(cx, target.handle());
 
     let (success, found) = if is_platform_object_same_origin(cx, proxy) {
-        if let Some(array_index) = get_array_index_from_id(id) &&
-            window
+        if let Some(array_index) = get_array_index_from_id(id)
+            && window
                 .window_proxy_for_child_navigable_at_index(array_index)
                 .is_some()
         {
@@ -1463,8 +1463,8 @@ unsafe extern "C" fn get(
 
     // Step 3. If IsPlatformObjectSameOrigin(W) is true, then return ? OrdinaryGet(this, P, Receiver).
     if is_platform_object_same_origin(cx, proxy) {
-        if let Some(index) = get_array_index_from_id(id) &&
-            let Some(window_proxy) = window.window_proxy_for_child_navigable_at_index(index)
+        if let Some(index) = get_array_index_from_id(id)
+            && let Some(window_proxy) = window.window_proxy_for_child_navigable_at_index(index)
         {
             window_proxy.to_jsval(cx, return_value);
             return true;

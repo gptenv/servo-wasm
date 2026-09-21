@@ -313,12 +313,12 @@ impl PeriodicWave {
         let higher_position_index = (lower_position_index + 1) & index_mask;
         // Linear interpolation of the higher and lower position index
         // to calculate the lower and higher wave values
-        let lower = (1.0 - position_interpolation_factor) *
-            lower_wave_data[lower_position_index] as f64 +
-            position_interpolation_factor * lower_wave_data[higher_position_index] as f64;
-        let higher = (1.0 - position_interpolation_factor) *
-            higher_wave_data[lower_position_index] as f64 +
-            position_interpolation_factor * higher_wave_data[higher_position_index] as f64;
+        let lower = (1.0 - position_interpolation_factor)
+            * lower_wave_data[lower_position_index] as f64
+            + position_interpolation_factor * lower_wave_data[higher_position_index] as f64;
+        let higher = (1.0 - position_interpolation_factor)
+            * higher_wave_data[lower_position_index] as f64
+            + position_interpolation_factor * higher_wave_data[higher_position_index] as f64;
         // Linear interpolation of the lower and higher waves
         (1.0 - table_interpolation_factor) * lower + table_interpolation_factor * higher
     }

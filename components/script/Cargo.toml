@@ -142,7 +142,6 @@ k12 = { workspace = true, optional = true }
 keyboard-types = { workspace = true }
 keccak = { workspace = true, optional = true }
 layout_api = { workspace = true }
-libc = { workspace = true }
 log = { workspace = true }
 malloc_size_of = { workspace = true }
 malloc_size_of_derive = { workspace = true }
@@ -219,12 +218,15 @@ web_atoms = { workspace = true }
 webdriver = { workspace = true }
 webgpu_traits = { workspace = true, optional = true }
 webrender_api = { workspace = true }
+xml5ever = { workspace = true }
+xpath = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libc = { workspace = true }
 webxr-api = { workspace = true, optional = true }
 x-wing = { workspace = true, optional = true }
 x25519-dalek = { workspace = true, optional = true }
 x448 = { workspace = true, optional = true }
-xml5ever = { workspace = true }
-xpath = { workspace = true }
 zeroize = { workspace = true, optional = true }
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]

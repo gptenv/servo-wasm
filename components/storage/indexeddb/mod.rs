@@ -210,10 +210,10 @@ impl<E: KvsEngine> IndexedDBEnvironment<E> {
         };
 
         self.txn_info.iter().any(|(other_transaction, other)| {
-            *other_transaction != transaction &&
-                comes_before(other) &&
-                Self::scopes_overlap(current, other) &&
-                predicate(other)
+            *other_transaction != transaction
+                && comes_before(other)
+                && Self::scopes_overlap(current, other)
+                && predicate(other)
         })
     }
 
@@ -935,10 +935,10 @@ impl OpenRequest {
                 id: _,
                 proxy_map: _,
             } => {
-                !processed ||
-                    pending_upgrade.is_some() ||
-                    !pending_close.is_empty() ||
-                    !pending_versionchange.is_empty()
+                !processed
+                    || pending_upgrade.is_some()
+                    || !pending_close.is_empty()
+                    || !pending_versionchange.is_empty()
             },
             OpenRequest::Delete {
                 sender: _,
@@ -1353,8 +1353,8 @@ impl IndexedDBManager {
             };
             let mut pruned = false;
             let front_is_pending = queue.front().map(|record| record.is_pending());
-            if let Some(is_pending) = front_is_pending &&
-                !is_pending
+            if let Some(is_pending) = front_is_pending
+                && !is_pending
             {
                 queue.pop_front().expect("Queue has a non-pending item.");
                 pruned = true
@@ -1494,8 +1494,8 @@ impl IndexedDBManager {
                     queue.retain_mut(|open_request| {
                         if ids.contains(&open_request.get_id()) {
                             let upgrade = open_request.abort();
-                            if upgrade_to_revert.is_none() &&
-                                let Some(upgrade) = upgrade
+                            if upgrade_to_revert.is_none()
+                                && let Some(upgrade) = upgrade
                             {
                                 upgrade_to_revert = Some(upgrade);
                             }
@@ -1729,8 +1729,8 @@ impl IndexedDBManager {
             // Step 10.4: If any of the connections in openConnections are still not closed,
             // queue a database task to fire a version change event named blocked
             // at request with db’s version and version.
-            if !pending_close.is_empty() &&
-                sender
+            if !pending_close.is_empty()
+                && sender
                     .send(ConnectionMsg::Blocked {
                         name,
                         id: *id,
@@ -2156,9 +2156,9 @@ impl IndexedDBManager {
                 pending_close.remove(&id);
                 (
                     // Note: need to exclude requests that have already started upgrading.
-                    pending_close.is_empty() &&
-                        pending_versionchange.is_empty() &&
-                        !pending_upgrade.is_some(),
+                    pending_close.is_empty()
+                        && pending_versionchange.is_empty()
+                        && !pending_upgrade.is_some(),
                     *version,
                 )
             } else {
@@ -2466,8 +2466,8 @@ impl IndexedDBManager {
 
         // If the transaction is running wait to abort until after it finishes to actually
         // abort.
-        if database.running_readwrite == Some(transaction) ||
-            database.running_readonly.contains(&transaction)
+        if database.running_readwrite == Some(transaction)
+            || database.running_readonly.contains(&transaction)
         {
             return;
         }
@@ -2481,9 +2481,9 @@ impl IndexedDBManager {
             reports.push(Report {
                 path: path!["indexeddb"],
                 kind: ReportKind::ExplicitJemallocHeapSize,
-                size: self.connections.size_of(ops) +
-                    self.databases.size_of(ops) +
-                    self.connection_queues.size_of(ops),
+                size: self.connections.size_of(ops)
+                    + self.databases.size_of(ops)
+                    + self.connection_queues.size_of(ops),
             });
         });
         reports

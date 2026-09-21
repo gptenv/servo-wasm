@@ -486,8 +486,8 @@ impl ModuleTree {
                 // Step 10.1 If scopePrefix is serializedBaseURL, or if scopePrefix ends with U+002F (/)
                 // and scopePrefix is a code unit prefix of serializedBaseURL, then:
                 let prefix = prefix.as_str();
-                if prefix == serialized_base_url ||
-                    (serialized_base_url.starts_with(prefix) && prefix.ends_with('\u{002f}'))
+                if prefix == serialized_base_url
+                    || (serialized_base_url.starts_with(prefix) && prefix.ends_with('\u{002f}'))
                 {
                     // Step 10.1.1 Let scopeImportsMatch be the result of resolving an imports match
                     // given normalizedSpecifier, asURL, and scopeImports.
@@ -715,8 +715,8 @@ impl FetchResponseListener for ModuleContext {
             // "javascript-or-wasm", then set moduleScript to the result of creating a JavaScript
             // module script given sourceText, settingsObject, response's URL, and options.
             (ModuleType::JavaScript, Some(mime)) if MimeClassifier::is_javascript(&mime) => {
-                if let Some(window) = global.downcast::<Window>() &&
-                    let Some(script_souce) = window.local_script_source()
+                if let Some(window) = global.downcast::<Window>()
+                    && let Some(script_souce) = window.local_script_source()
                 {
                     substitute_with_local_script(script_souce, &mut source_text, &final_url);
                 }
@@ -1226,8 +1226,8 @@ pub(crate) fn fetch_a_modulepreload_module(
 
             // Step 3. If result is not null, optionally fetch the descendants of and link result
             // given settingsObject, destination, and an empty algorithm.
-            if pref!(dom_allow_preloading_module_descendants) &&
-                let Some(module) = result
+            if pref!(dom_allow_preloading_module_descendants)
+                && let Some(module) = result
             {
                 fetch_the_descendants_and_link_module_script(
                     cx,
@@ -1493,9 +1493,9 @@ fn resolve_imports_match(
         // - specifierKey ends with U+002F (/)
         // - specifierKey is a code unit prefix of normalizedSpecifier
         // - either asURL is null, or asURL is special, then:
-        if specifier_key.ends_with('\u{002f}') &&
-            normalized_specifier.starts_with(specifier_key) &&
-            (as_url.is_none() || as_url.is_some_and(|u| u.is_special_scheme()))
+        if specifier_key.ends_with('\u{002f}')
+            && normalized_specifier.starts_with(specifier_key)
+            && (as_url.is_none() || as_url.is_some_and(|u| u.is_special_scheme()))
         {
             // Step 1.2.1 If resolutionResult is null, then throw a TypeError.
             // Step 1.2.2 Assert: resolutionResult is a URL.

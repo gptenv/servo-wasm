@@ -344,6 +344,7 @@ impl HTMLCanvasElement {
     }
 
     #[cfg(not(feature = "webgpu"))]
+    #[allow(dead_code)]
     fn get_or_init_webgpu_context(&self) -> Option<DomRoot<GPUCanvasContext>> {
         None
     }
@@ -396,6 +397,7 @@ impl HTMLCanvasElement {
         }
     }
 
+    #[cfg_attr(not(feature = "webgl"), allow(dead_code))]
     pub(crate) fn is_valid(&self) -> bool {
         self.Height() != 0 && self.Width() != 0
     }
@@ -405,8 +407,8 @@ impl HTMLCanvasElement {
             Some(context) => context.get_image_data(),
             None => {
                 let size = self.get_size();
-                if size.is_empty() ||
-                    pixels::compute_rgba8_byte_length_if_within_limit(
+                if size.is_empty()
+                    || pixels::compute_rgba8_byte_length_if_within_limit(
                         size.width as usize,
                         size.height as usize,
                     )

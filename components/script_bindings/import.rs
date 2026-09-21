@@ -24,7 +24,6 @@ pub(crate) mod base {
     pub(crate) use js::rust::{
         HandleObject, HandleValue, MutableHandle, MutableHandleObject, MutableHandleValue,
     };
-    pub(crate) use js::typedarray;
     pub(crate) use js::typedarray::{
         HeapArrayBuffer, HeapArrayBufferView, HeapFloat32Array, HeapFloat64Array, HeapUint8Array,
         HeapUint8ClampedArray,

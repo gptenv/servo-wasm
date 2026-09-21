@@ -262,15 +262,15 @@ impl<'a> ElementDamageSet<'a> {
         // first independent formatting context, which should isolate that tree from further
         // box damage.
         let mut damage_for_children = (self.on_element | self.from_parent).only_layout_modes();
-        let rebuild_children = self.on_element.contains(LayoutDamage::BoxDamage) ||
-            (self.from_parent.contains(LayoutDamage::BoxDamage) &&
-                !self.node.isolates_damage_for_damage_propagation());
+        let rebuild_children = self.on_element.contains(LayoutDamage::BoxDamage)
+            || (self.from_parent.contains(LayoutDamage::BoxDamage)
+                && !self.node.isolates_damage_for_damage_propagation());
 
         if rebuild_children {
             damage_for_children.insert(LayoutDamage::BoxDamage);
-        } else if self.from_parent.contains(LayoutDamage::Relayout) &&
-            !self.on_element.contains(LayoutDamage::Relayout) &&
-            self.node.isolates_damage_for_damage_propagation()
+        } else if self.from_parent.contains(LayoutDamage::Relayout)
+            && !self.on_element.contains(LayoutDamage::Relayout)
+            && self.node.isolates_damage_for_damage_propagation()
         {
             // If not rebuilding the boxes for this node, but fragments need to be laid out
             // only because of an ancestor, fragment layout caches should still be valid when
@@ -299,8 +299,8 @@ impl<'a> ElementDamageSet<'a> {
         //
         // In other situations, such as when layout will not run at all or when we are
         // guaranteed that children are undamaged, we can skip traversing children entirely.
-        if has_dirty_descendants ||
-            damage_for_children.intersects(LayoutDamage::BoxDamage | LayoutDamage::Relayout)
+        if has_dirty_descendants
+            || damage_for_children.intersects(LayoutDamage::BoxDamage | LayoutDamage::Relayout)
         {
             for child in self.node.flat_tree_children() {
                 if child.is_element() {
@@ -414,16 +414,16 @@ impl<'a> ElementDamageSet<'a> {
                     base.invalidate_caches(&self);
                     base.mark_fragments_as_descendants_changed();
                 });
-                LayoutDamage::RecalculateOverflow |
-                    LayoutDamage::DescendantCollectedAsLayoutRoot |
-                    LayoutDamage::RecomputeInlineContentSizes
+                LayoutDamage::RecalculateOverflow
+                    | LayoutDamage::DescendantCollectedAsLayoutRoot
+                    | LayoutDamage::RecomputeInlineContentSizes
             },
             BoxDamageAction::InvalidateFragmentTreeAboveLayoutRoot => {
                 // Damage propagation works exactly the same at the point the layout root is collected
                 // and above it. Layout caches are invalidated and damage is adjusted, maybe limited
                 // inline content size recalculation.
-                let mut damage_for_parent = LayoutDamage::RecalculateOverflow |
-                    LayoutDamage::DescendantCollectedAsLayoutRoot;
+                let mut damage_for_parent = LayoutDamage::RecalculateOverflow
+                    | LayoutDamage::DescendantCollectedAsLayoutRoot;
 
                 let mut inline_size_depends_on_content = false;
                 self.node.with_layout_box_base_including_pseudos(|base| {
@@ -475,9 +475,9 @@ impl<'a> ElementDamageSet<'a> {
             return BoxDamageAction::TryRebuild;
         }
 
-        if element_and_children_damage.contains(LayoutDamage::Relayout) &&
-            !self.from_parent.contains(LayoutDamage::Relayout) &&
-            let Ok(layout_root) = LayoutRoot::try_from(self.node)
+        if element_and_children_damage.contains(LayoutDamage::Relayout)
+            && !self.from_parent.contains(LayoutDamage::Relayout)
+            && let Ok(layout_root) = LayoutRoot::try_from(self.node)
         {
             return BoxDamageAction::CollectLayoutRoot(layout_root);
         }
@@ -513,8 +513,8 @@ impl<'a> ElementDamageSet<'a> {
     ) {
         let children_need_inline_content_size_recalculation = self
             .from_children
-            .contains(LayoutDamage::RecomputeInlineContentSizes) &&
-            inline_size_depends_on_content;
+            .contains(LayoutDamage::RecomputeInlineContentSizes)
+            && inline_size_depends_on_content;
         damage_for_parent.set(
             LayoutDamage::RecomputeInlineContentSizes,
             !self.on_element.is_empty() || children_need_inline_content_size_recalculation,

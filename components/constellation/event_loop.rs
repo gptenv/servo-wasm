@@ -10,14 +10,19 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-use background_hang_monitor_api::{BackgroundHangMonitorControlMsg, HangAlert};
+use background_hang_monitor_api::BackgroundHangMonitorControlMsg;
+#[cfg(feature = "multiprocess")]
+use background_hang_monitor_api::HangAlert;
 use embedder_traits::ScriptToEmbedderChan;
 use layout_api::ScriptThreadFactory;
 use log::error;
 use media::WindowGLContext;
 use script_traits::{InitialScriptState, ScriptThreadMessage};
+#[cfg(feature = "multiprocess")]
 use serde::{Deserialize, Serialize};
-use servo_base::generic_channel::{GenericReceiver, GenericSender, SendError};
+#[cfg(feature = "multiprocess")]
+use servo_base::generic_channel::GenericReceiver;
+use servo_base::generic_channel::{GenericSender, SendError};
 use servo_base::id::ScriptEventLoopId;
 #[cfg(feature = "multiprocess")]
 use servo_config::opts::{self, Opts};
@@ -207,8 +212,8 @@ impl EventLoop {
         &self,
         message: &BackgroundHangMonitorControlMsg,
     ) {
-        if let Some(background_hang_monitor_sender) = &self.background_hang_monitor_sender &&
-            let Err(error) = background_hang_monitor_sender.send(message.clone())
+        if let Some(background_hang_monitor_sender) = &self.background_hang_monitor_sender
+            && let Err(error) = background_hang_monitor_sender.send(message.clone())
         {
             error!("Could not send message ({message:?}) to BHM: {error}");
         }

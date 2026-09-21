@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::fmt::{Debug, Error, Formatter};
 
+#[cfg(target_arch = "wasm32")]
+use crate::rendering_context::{Adapter, Connection};
 use crossbeam_channel::Sender;
 use embedder_traits::{AnimationState, EventLoopWaker};
 use euclid::{Rect, Scale, Size2D};
@@ -19,10 +21,15 @@ use servo_base::id::{PainterId, PipelineId, WebViewId};
 use smallvec::SmallVec;
 use strum::IntoStaticStr;
 use style_traits::CSSPixel;
+#[cfg(not(target_arch = "wasm32"))]
 use surfman::{Adapter, Connection};
 use webrender_api::{DocumentId, FontVariation};
 
 pub mod display_list;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod rendering_context;
+#[cfg(target_arch = "wasm32")]
+#[path = "rendering_context_wasm.rs"]
 pub mod rendering_context;
 pub mod viewport_description;
 
@@ -238,8 +245,8 @@ impl CrossProcessPaintApi {
         callback: Option<Box<dyn Fn(PaintMessage) + Send + 'static>>,
     ) -> Self {
         let callback = GenericCallback::new(move |msg| {
-            if let Some(ref handler) = callback &&
-                let Ok(paint_message) = msg
+            if let Some(ref handler) = callback
+                && let Ok(paint_message) = msg
             {
                 handler(paint_message);
             }

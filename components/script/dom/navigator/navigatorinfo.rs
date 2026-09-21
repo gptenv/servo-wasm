@@ -64,6 +64,12 @@ pub(crate) fn Platform() -> DOMString {
 }
 
 #[expect(non_snake_case)]
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn Platform() -> DOMString {
+    DOMString::from_static("Cloudflare Worker")
+}
+
+#[expect(non_snake_case)]
 pub(crate) fn UserAgent(user_agent: &str) -> DOMString {
     DOMString::from(user_agent)
 }

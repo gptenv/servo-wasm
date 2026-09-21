@@ -1869,8 +1869,8 @@ impl Handler {
         // Step 6. cookie expiry time is not an integer type,
         // or it less than 0 or greater than the maximum safe integer,
         // return error with error code invalid argument.
-        if let Some(ref expiry) = params.expiry &&
-            expiry.0 > MAXIMUM_SAFE_INTEGER
+        if let Some(ref expiry) = params.expiry
+            && expiry.0 > MAXIMUM_SAFE_INTEGER
         {
             return Err(WebDriverError::new(
                 ErrorStatus::InvalidArgument,
@@ -2705,11 +2705,11 @@ impl WebDriverHandler<ServoExtensionRoute> for Handler {
         // Unless we are trying to create/delete a new session, check status, or shutdown Servo,
         // we need to ensure that a session has previously been created.
         match msg.command {
-            WebDriverCommand::NewSession(_) |
-            WebDriverCommand::Status |
-            WebDriverCommand::DeleteSession |
-            WebDriverCommand::Extension(ServoExtensionCommand::Shutdown) |
-            WebDriverCommand::Extension(ServoExtensionCommand::ResetAllCookies) => {},
+            WebDriverCommand::NewSession(_)
+            | WebDriverCommand::Status
+            | WebDriverCommand::DeleteSession
+            | WebDriverCommand::Extension(ServoExtensionCommand::Shutdown)
+            | WebDriverCommand::Extension(ServoExtensionCommand::ResetAllCookies) => {},
             _ => {
                 self.session()?;
             },

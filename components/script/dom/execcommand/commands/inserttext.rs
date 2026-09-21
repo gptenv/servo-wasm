@@ -75,17 +75,17 @@ pub(crate) fn execute_insert_text_command(
     let mut offset = active_range.start_offset();
 
     // Step 7. If node has a child whose index is offset − 1, and that child is a Text node, set node to that child, then set offset to node's length.
-    if offset > 0 &&
-        let Some(child) = node.children().nth((offset - 1) as usize) &&
-        child.is::<Text>()
+    if offset > 0
+        && let Some(child) = node.children().nth((offset - 1) as usize)
+        && child.is::<Text>()
     {
         node = child;
         offset = node.len();
     }
 
     // Step 8. If node has a child whose index is offset, and that child is a Text node, set node to that child, then set offset to zero.
-    if let Some(child) = node.children().nth((offset) as usize) &&
-        child.is::<Text>()
+    if let Some(child) = node.children().nth((offset) as usize)
+        && child.is::<Text>()
     {
         node = child;
         offset = 0;

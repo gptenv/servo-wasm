@@ -189,9 +189,9 @@ impl IndependentFormattingContext {
 
                 // Some replaced elements can have inner widgets, e.g. `<video controls>`.
                 let node = node_and_style_info.node;
-                let should_make_widget = node.pseudo_element_chain().is_empty() &&
-                    node.is_root_of_user_agent_widget() &&
-                    !contents.is_content_replacement;
+                let should_make_widget = node.pseudo_element_chain().is_empty()
+                    && node.is_root_of_user_agent_widget()
+                    && !contents.is_content_replacement;
                 let widget = should_make_widget.then(|| {
                     let widget_info = node_and_style_info
                         .with_pseudo_element(context, PseudoElement::ServoAnonymousBox)

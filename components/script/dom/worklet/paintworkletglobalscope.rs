@@ -139,11 +139,11 @@ impl PaintWorkletGlobalScope {
         properties: &[(Atom, String)],
         arguments: &[String],
     ) -> bool {
-        (&*self.cached_name.borrow() == name) &&
-            (self.cached_size.get() == size) &&
-            (self.cached_device_pixel_ratio.get() == device_pixel_ratio) &&
-            (*self.cached_properties.borrow() == properties) &&
-            (*self.cached_arguments.borrow() == arguments)
+        (&*self.cached_name.borrow() == name)
+            && (self.cached_size.get() == size)
+            && (self.cached_device_pixel_ratio.get() == device_pixel_ratio)
+            && (*self.cached_properties.borrow() == properties)
+            && (*self.cached_arguments.borrow() == arguments)
     }
 
     fn set_cached_paint_image(
@@ -411,9 +411,9 @@ impl SpeculativePainter for WorkletPainter {
                     .downcast::<PaintWorkletGlobalScope>()
                     .expect("PaintWorklet's task should be run only on PaintWorkletGlobalScope.");
 
-                let should_speculate = (*paint_worklet_global_scope.cached_name.borrow() != name) ||
-                    (*paint_worklet_global_scope.cached_properties.borrow() != properties) ||
-                    (*paint_worklet_global_scope.cached_arguments.borrow() != arguments);
+                let should_speculate = (*paint_worklet_global_scope.cached_name.borrow() != name)
+                    || (*paint_worklet_global_scope.cached_properties.borrow() != properties)
+                    || (*paint_worklet_global_scope.cached_arguments.borrow() != arguments);
                 if should_speculate {
                     let size = paint_worklet_global_scope.cached_size.get();
                     let device_pixel_ratio =

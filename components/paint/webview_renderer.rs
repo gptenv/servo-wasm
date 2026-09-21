@@ -683,11 +683,11 @@ impl WebViewRenderer {
                         TouchSequenceState::Finished => {
                             self.touch_handler.remove_touch_sequence(sequence_id);
                         },
-                        TouchSequenceState::Touching |
-                        TouchSequenceState::Panning { .. } |
-                        TouchSequenceState::Pinching |
-                        TouchSequenceState::MultiTouch |
-                        TouchSequenceState::PendingFling { .. } => {
+                        TouchSequenceState::Touching
+                        | TouchSequenceState::Panning { .. }
+                        | TouchSequenceState::Pinching
+                        | TouchSequenceState::MultiTouch
+                        | TouchSequenceState::PendingFling { .. } => {
                             // It's possible to transition from Pinch to pan, Which means that
                             // a touch_up event for a pinch might have arrived here, but we
                             // already transitioned to pan or even PendingFling.
@@ -720,8 +720,8 @@ impl WebViewRenderer {
                         touch_id,
                         TouchIdMoveTracking::Remove,
                     );
-                    if let Some(info) = self.touch_handler.get_touch_sequence_mut(sequence_id) &&
-                        info.prevent_move == TouchMoveAllowed::Pending
+                    if let Some(info) = self.touch_handler.get_touch_sequence_mut(sequence_id)
+                        && info.prevent_move == TouchMoveAllowed::Pending
                     {
                         info.prevent_move = TouchMoveAllowed::Allowed;
                         if let TouchSequenceState::PendingFling { velocity, point } = info.state {
@@ -750,9 +750,9 @@ impl WebViewRenderer {
                         TouchSequenceState::Finished => {
                             self.touch_handler.remove_touch_sequence(sequence_id);
                         },
-                        TouchSequenceState::Panning { .. } |
-                        TouchSequenceState::Pinching |
-                        TouchSequenceState::PendingFling { .. } => {
+                        TouchSequenceState::Panning { .. }
+                        | TouchSequenceState::Pinching
+                        | TouchSequenceState::PendingFling { .. } => {
                             // It's possible to transition from Pinch to pan, Which means that
                             // a touch_up event for a pinch might have arrived here, but we
                             // already transitioned to pan or even PendingFling.
@@ -952,8 +952,8 @@ impl WebViewRenderer {
         let mut previous_pipeline_id = None;
         for hit_test_result in hit_test_results {
             let pipeline_details = self.pipelines.get_mut(&hit_test_result.pipeline_id)?;
-            if previous_pipeline_id.replace(hit_test_result.pipeline_id) !=
-                Some(hit_test_result.pipeline_id)
+            if previous_pipeline_id.replace(hit_test_result.pipeline_id)
+                != Some(hit_test_result.pipeline_id)
             {
                 let scroll_result = pipeline_details.scroll_tree.scroll_node_or_ancestor(
                     hit_test_result.external_scroll_id,
@@ -1125,8 +1125,8 @@ impl WebViewRenderer {
         let device_pixel_ratio = self.device_pixels_per_page_pixel_not_including_pinch_zoom();
         // From <https://www.w3.org/TR/css-viewport-1/#actual-viewport>:
         // This is the viewport you get after processing the viewport <meta> tag.
-        let layout_viewport = self.rect.size().to_f32() /
-            (device_pixel_ratio * Scale::new(self.viewport_description.initial_scale.get()));
+        let layout_viewport = self.rect.size().to_f32()
+            / (device_pixel_ratio * Scale::new(self.viewport_description.initial_scale.get()));
         let _ = self.embedder_to_constellation_sender.send(
             EmbedderToConstellationMessage::ChangeViewportDetails(
                 self.id,
@@ -1213,8 +1213,8 @@ impl WebViewRenderer {
                 );
         }
 
-        if let Some(wheel_event) = self.pending_wheel_events.remove(&id) &&
-            !result.contains(InputEventResult::DefaultPrevented)
+        if let Some(wheel_event) = self.pending_wheel_events.remove(&id)
+            && !result.contains(InputEventResult::DefaultPrevented)
         {
             // A scroll delta for a wheel event is the inverse of the wheel delta.
             let scroll_delta =

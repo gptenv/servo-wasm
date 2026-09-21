@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomFillSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
@@ -9,15 +10,30 @@ import test from 'node:test';
 // fprintf. Cloudflare Workers load wasm32-unknown-unknown modules via plain
 // WebAssembly.instantiate() with no WASI runtime, so as built, this module
 // could not actually have been instantiated in a real Worker -- it only
-// worked in this test because node:wasi was polyfilling those imports,
-// silently masking the problem. mozjs-sys/src/worker_libc_shim.c now
-// intercepts each higher-level libc function at the layer where wasi-libc's
-// own real-WASI-import object would otherwise get linked in, so the only
-// imports this module needs are the three below, all of which a Worker can
-// actually supply. Instantiating with `{}` here (no WASI polyfill at all)
-// is the actual regression test for that.
+// worked in earlier versions of this test because node:wasi was polyfilling
+// those imports, silently masking the problem. mozjs-sys/build.rs's
+// worker_libc_shim.c plus its trimmed copy of wasi-sysroot's libc.a (see
+// that file's build_trimmed_wasi_libc) now physically remove every object
+// that would otherwise bake those WASI imports in, so the module has
+// exactly five `env` imports, all of which a Worker can actually supply.
+// Instantiating with exactly this import object (no WASI polyfill, nothing
+// extra) is the actual regression test for that -- see the allowlist test
+// below, which additionally asserts no *other* imports crept in.
+const WORKER_ENV_IMPORT_ALLOWLIST = [
+  'worker_fetch_request',
+  'worker_getrandom',
+  'worker_log_error',
+  'worker_monotonic_now_ns',
+  'worker_unix_time_now_ns',
+];
+
+// Defaults to the production-stripped release artifact -- the one actually
+// audited for its import allowlist and measured against the 64 MiB Worker
+// bundle budget (see ports/servo-js-wasm/Cargo.toml's `production-stripped`
+// profile) -- not a debug build, so this test exercises what would actually
+// ship.
 const wasmPath = process.env.SERVO_WASM_PATH ??
-  new URL('../../../target/wasm32-unknown-unknown/debug/servo_js_wasm.wasm', import.meta.url);
+  new URL('../../../target/wasm32-unknown-unknown/production-stripped/servo_js_wasm.wasm', import.meta.url);
 const wasm = new WebAssembly.Module(readFileSync(wasmPath));
 let instance;
 const unixEpochNsAtStartup = BigInt(Date.now()) * 1_000_000n;
@@ -28,6 +44,26 @@ instance = new WebAssembly.Instance(wasm, {
     worker_log_error: (ptr, len) => {
       const bytes = new Uint8Array(instance.exports.memory.buffer, ptr, len);
       console.error(new TextDecoder().decode(bytes));
+    },
+    // No-op: nothing in this test suite drives Servo's fetch pipeline far
+    // enough to issue a real outbound request. Present only so the module
+    // (which declares this as a required `env` import) can instantiate.
+    worker_fetch_request: (_ptr, _len) => {},
+    // Real entropy, not a stub: getrandom's custom wasm32 backend
+    // (servo-net-traits' __getrandom_v03_custom) is fail-closed on a
+    // non-zero return, so a fake "always succeeds without writing bytes"
+    // implementation here would silently hand SpiderMonkey's Math.random
+    // and any crypto-adjacent code path uninitialized memory instead of
+    // failing loudly. Node's CSPRNG is a reasonable host-side stand-in for
+    // a Worker's crypto.getRandomValues() (see net/lib.rs's doc comment on
+    // worker_getrandom for why the real host must be CSPRNG-backed too).
+    worker_getrandom: (ptr, len) => {
+      try {
+        randomFillSync(new Uint8Array(instance.exports.memory.buffer, ptr, len));
+        return 0;
+      } catch {
+        return 1;
+      }
     },
   },
 });
@@ -47,10 +83,21 @@ function evaluate(source) {
   }
 }
 
-test('module instantiates with no WASI import object', () => {
+test('module imports exactly the allowed env functions, nothing else', () => {
+  // Stronger than "no wasi_* imports": this also catches a regression back
+  // to __wbindgen_placeholder__/__wbindgen_externref_xform__ (the
+  // wasm-bindgen glue that leaked in via `glow`'s WebGL backend before
+  // components/shared/canvas and components/shared/paint's Cargo.toml
+  // target-gated it out), an accidental new `env` import nobody adapted
+  // worker-adapter.mjs for yet, or any import from a module other than
+  // `env` at all -- a raw WebAssembly.instantiate() in a Worker can only
+  // ever supply imports under a single, hand-written `env` object.
   const imports = WebAssembly.Module.imports(wasm);
-  const wasiImports = imports.filter((i) => i.module.startsWith('wasi_'));
-  assert.deepEqual(wasiImports, [], 'module must not require any wasi_snapshot_preview1 imports');
+  const modules = new Set(imports.map((i) => i.module));
+  assert.deepEqual([...modules], ['env'], 'every import must come from the env module');
+  const names = imports.map((i) => i.name).sort();
+  assert.deepEqual(names, [...WORKER_ENV_IMPORT_ALLOWLIST].sort(),
+    'module must import exactly the Worker-supplied env allowlist, no more and no less');
 });
 
 test('SpiderMonkey smoke export runs in wasm', () => {

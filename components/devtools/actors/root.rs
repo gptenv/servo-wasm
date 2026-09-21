@@ -301,8 +301,8 @@ impl Actor for RootActor {
                 let some_active_tab = active_tab_name
                     .as_ref()
                     .is_some_and(|name| top_level_tabs.contains(name));
-                if let Some(first_tab) = top_level_tabs.first() &&
-                    !some_active_tab
+                if let Some(first_tab) = top_level_tabs.first()
+                    && !some_active_tab
                 {
                     *self.active_tab.borrow_mut() = Some(first_tab.clone());
                 }

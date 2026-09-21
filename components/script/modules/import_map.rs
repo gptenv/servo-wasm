@@ -84,8 +84,8 @@ fn merge_existing_and_new_import_maps(
             // If scopePrefix is record's serialized base URL, or if scopePrefix ends with
             // U+002F (/) and scopePrefix is a code unit prefix of record's serialized base URL, then:
             let prefix = scope_prefix.as_str();
-            if prefix == record.base_url ||
-                (record.base_url.starts_with(prefix) && prefix.ends_with('\u{002f}'))
+            if prefix == record.base_url
+                || (record.base_url.starts_with(prefix) && prefix.ends_with('\u{002f}'))
             {
                 // For each specifierKey → resolutionResult of scopeImports:
                 scope_imports.retain(|key, val| {
@@ -93,11 +93,11 @@ fn merge_existing_and_new_import_maps(
                     // specifierKey ends with U+002F (/);
                     // specifierKey is a code unit prefix of record's specifier;
                     // either record's specifier as a URL is null or is special,
-                    if *key == record.specifier ||
-                        (key.ends_with('\u{002f}') &&
-                            record.specifier.starts_with(key) &&
-                            (record.specifier_url.is_none() ||
-                                record
+                    if *key == record.specifier
+                        || (key.ends_with('\u{002f}')
+                            && record.specifier.starts_with(key)
+                            && (record.specifier_url.is_none()
+                                || record
                                     .specifier_url
                                     .as_ref()
                                     .is_some_and(|u| u.is_special_scheme())))

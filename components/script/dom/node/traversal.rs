@@ -49,8 +49,8 @@ impl NoGcTraversal for FlatTreeForSelectionNoGcTraversal {
             };
         }
 
-        if let Some(slot) = node.downcast::<HTMLSlotElement>() &&
-            let Some(first_node) = slot.assigned_nodes().first()
+        if let Some(slot) = node.downcast::<HTMLSlotElement>()
+            && let Some(first_node) = slot.assigned_nodes().first()
         {
             return FlatTreeChildIterator {
                 no_gc,

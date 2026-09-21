@@ -344,8 +344,8 @@ impl InlineFormattingContextBuilder {
         // Push any leading white space first.
         let first_letter_range_u32 = LazyCell::new(|| {
             // TODO: ensure layout doesn’t handle more than 4 GiB at a time?
-            Utf32CodeUnits::length_of(AssumeUnder4GB, &text[..first_letter_range.start])..
-                Utf32CodeUnits::length_of(AssumeUnder4GB, &text[..first_letter_range.end])
+            Utf32CodeUnits::length_of(AssumeUnder4GB, &text[..first_letter_range.start])
+                ..Utf32CodeUnits::length_of(AssumeUnder4GB, &text[..first_letter_range.end])
         });
         if first_letter_range.start != 0 {
             let leading_whitespace_range = 0..first_letter_range.start;
@@ -427,18 +427,18 @@ impl InlineFormattingContextBuilder {
                 // If this character has a strong right-to-left class the new inline formatting context will
                 // need to be BiDi-aware. This match is derived from the list of strong right-to-left classes
                 // at https://www.unicode.org/reports/tr44/#Bidi_Class_Values.
-                self.has_right_to_left_content = self.has_right_to_left_content ||
-                    matches!(
+                self.has_right_to_left_content = self.has_right_to_left_content
+                    || matches!(
                         bidi_class_map.get(character),
-                        BidiClass::RightToLeft |
-                            BidiClass::ArabicLetter |
-                            BidiClass::RightToLeftEmbedding |
-                            BidiClass::RightToLeftIsolate |
-                            BidiClass::RightToLeftOverride
+                        BidiClass::RightToLeft
+                            | BidiClass::ArabicLetter
+                            | BidiClass::RightToLeftEmbedding
+                            | BidiClass::RightToLeftIsolate
+                            | BidiClass::RightToLeftOverride
                     );
 
-                self.is_empty = self.is_empty &&
-                    match white_space_collapse {
+                self.is_empty = self.is_empty
+                    && match white_space_collapse {
                         WhiteSpaceCollapse::Collapse => Self::is_document_white_space(character),
                         WhiteSpaceCollapse::PreserveBreaks => {
                             Self::is_document_white_space(character) && character != '\n'
@@ -579,9 +579,9 @@ fn first_letter_range(text: &str) -> Range<usize> {
             State::Lns => {
                 // TODO: Implement support for intervening spaces
                 // <https://drafts.csswg.org/css-pseudo/#first-letter-pattern>
-                if character.is_punctuation() &&
-                    !character.is_punctuation_open() &&
-                    !character.is_punctuation_dash()
+                if character.is_punctuation()
+                    && !character.is_punctuation_open()
+                    && !character.is_punctuation_dash()
                 {
                     state = State::TrailingPunctuation;
                 } else {
@@ -591,9 +591,9 @@ fn first_letter_range(text: &str) -> Range<usize> {
             State::TrailingPunctuation => {
                 // TODO: Implement support for intervening spaces
                 // <https://drafts.csswg.org/css-pseudo/#first-letter-pattern>
-                if character.is_punctuation() &&
-                    !character.is_punctuation_open() &&
-                    !character.is_punctuation_dash()
+                if character.is_punctuation()
+                    && !character.is_punctuation_open()
+                    && !character.is_punctuation_dash()
                 {
                     continue;
                 } else {

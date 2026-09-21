@@ -224,8 +224,8 @@ impl HTMLSlotElement {
             for child in self.upcast::<Node>().children_unrooted(cx) {
                 let is_slottable = matches!(
                     child.type_id(),
-                    NodeTypeId::Element(_) |
-                        NodeTypeId::CharacterData(CharacterDataTypeId::Text(_))
+                    NodeTypeId::Element(_)
+                        | NodeTypeId::CharacterData(CharacterDataTypeId::Text(_))
                 );
                 if is_slottable {
                     slottables.push(Slottable(Dom::from_ref(&*child)));
@@ -291,8 +291,8 @@ impl HTMLSlotElement {
             for child in host.upcast::<Node>().children_unrooted(cx) {
                 let is_slottable = matches!(
                     child.type_id(),
-                    NodeTypeId::Element(_) |
-                        NodeTypeId::CharacterData(CharacterDataTypeId::Text(_))
+                    NodeTypeId::Element(_)
+                        | NodeTypeId::CharacterData(CharacterDataTypeId::Text(_))
                 );
                 if is_slottable {
                     rooted!(&in(cx) let slottable = Slottable(Dom::from_ref(&*child)));
@@ -375,10 +375,10 @@ impl HTMLSlotElement {
             slottable.node().dirty(cx.no_gc(), NodeDamage::Other);
         }
 
-        if let Some(selection) = self.owner_document().selection() &&
-            let FlatTreeParent::Parent(parent) =
-                self.upcast::<Node>().parent_in_flat_tree(cx.no_gc()) &&
-            parent.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION)
+        if let Some(selection) = self.owner_document().selection()
+            && let FlatTreeParent::Parent(parent) =
+                self.upcast::<Node>().parent_in_flat_tree(cx.no_gc())
+            && parent.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION)
         {
             selection.set_visible_selection_dirty();
         }
@@ -543,8 +543,8 @@ impl VirtualMethods for HTMLSlotElement {
             s.unbind_from_tree(cx, context);
         }
 
-        if !self.upcast::<Node>().is_in_a_shadow_tree() &&
-            let Some(old_shadow_root) = self.containing_shadow_root()
+        if !self.upcast::<Node>().is_in_a_shadow_tree()
+            && let Some(old_shadow_root) = self.containing_shadow_root()
         {
             // If we used to be in a shadow root, but aren't anymore, then unregister this slot
             old_shadow_root.unregister_slot(self.Name(), self);

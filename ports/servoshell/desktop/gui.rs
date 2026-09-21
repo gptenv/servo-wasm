@@ -769,10 +769,10 @@ impl Gui {
         //       because logical OR would short-circuit if any of the functions return true.
         //       We want to ensure that all functions are called. The "bitwise OR" operator
         //       does not short-circuit.
-        self.update_load_status(window) |
-            self.update_location_in_toolbar(window) |
-            self.update_status_text(window) |
-            self.update_can_go_back_and_forward(window)
+        self.update_load_status(window)
+            | self.update_location_in_toolbar(window)
+            | self.update_status_text(window)
+            | self.update_can_go_back_and_forward(window)
     }
 
     /// Returns true if a redraw is required after handling the provided event.

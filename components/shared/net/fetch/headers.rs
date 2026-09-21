@@ -68,8 +68,8 @@ pub fn get_decode_and_split_header_value(value: Vec<u8>) -> Vec<String> {
 
         // Step 5.2. If position is not past the end of input and the code point
         // at position within input is U+0022 ("):
-        if let Some(&ch) = position.peek() &&
-            ch == '\u{0022}'
+        if let Some(&ch) = position.peek()
+            && ch == '\u{0022}'
         {
             // Step 5.2.1. Append the result of collecting an HTTP quoted string from input,
             // given position, to temporaryValue.

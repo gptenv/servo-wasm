@@ -171,8 +171,8 @@ fn test_largest_contentful_paint_js_api_with_mouse_move() {
 
     // Wait for the larger image to load and a rendering update to happen.
     loop {
-        if evaluate_javascript(&servo_test, webview.clone(), "window.image2Done === true;") ==
-            Ok(JSValue::Boolean(true))
+        if evaluate_javascript(&servo_test, webview.clone(), "window.image2Done === true;")
+            == Ok(JSValue::Boolean(true))
         {
             break;
         }
@@ -223,8 +223,8 @@ fn test_largest_contentful_paint_js_api_with_mouse_click_and_reload() {
 
     // Wait for the larger image to load and a rendering update to happen.
     loop {
-        if evaluate_javascript(&servo_test, webview.clone(), "window.image2Done === true;") ==
-            Ok(JSValue::Boolean(true))
+        if evaluate_javascript(&servo_test, webview.clone(), "window.image2Done === true;")
+            == Ok(JSValue::Boolean(true))
         {
             break;
         }

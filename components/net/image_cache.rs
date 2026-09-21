@@ -10,6 +10,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::{mem, thread_local};
 
+#[cfg(not(target_arch = "wasm32"))]
 use imsz::imsz_from_reader;
 use log::{debug, error, warn};
 use malloc_size_of::{MallocConditionalSizeOf, MallocSizeOf as MallocSizeOfTrait, MallocSizeOfOps};
@@ -429,9 +430,9 @@ enum KeyCacheState {
 impl KeyCacheState {
     fn size(&self) -> usize {
         match self {
-            KeyCacheState::PendingBatch |
-            KeyCacheState::Processing |
-            KeyCacheState::PipelineClosed => 0,
+            KeyCacheState::PendingBatch
+            | KeyCacheState::Processing
+            | KeyCacheState::PipelineClosed => 0,
             KeyCacheState::Ready(items) => items.len(),
         }
     }
@@ -563,8 +564,9 @@ impl ImageCacheStore {
     /// If a key is available the image will be immediately loaded, otherwise it will load then the next batch of
     /// keys is received. Only call this if the image does not have a `LoadKey` yet.
     fn load_image_with_keycache(&mut self, pending_image: PendingKey) {
-        if let PendingKey::Svg((pending_id, ref _raster_image, requested_size)) = pending_image &&
-            self.key_cache
+        if let PendingKey::Svg((pending_id, ref _raster_image, requested_size)) = pending_image
+            && self
+                .key_cache
                 .evicted_images
                 .remove(&(pending_id, requested_size))
         {
@@ -721,9 +723,9 @@ impl ImageCacheStore {
     ) {
         if let Some(loaded_image) =
             self.completed_loads
-                .remove(&(url.clone(), origin.clone(), *cors_setting)) &&
-            let ImageResponse::Loaded(Image::Raster(image), _) = loaded_image.image_response &&
-            let Some(id) = image.id
+                .remove(&(url.clone(), origin.clone(), *cors_setting))
+            && let ImageResponse::Loaded(Image::Raster(image), _) = loaded_image.image_response
+            && let Some(id) = image.id
         {
             self.paint_api.update_images(
                 self.webview_id.into(),
@@ -1068,10 +1070,10 @@ impl ImageCache for ImageCacheImpl {
             return Some(result.clone());
         }
 
-        if let Some(svg_id) = svg_id &&
-            let Some(old_mapped_image_id) =
-                self.svg_id_image_id_map.lock().insert(svg_id, image_id) &&
-            old_mapped_image_id != image_id
+        if let Some(svg_id) = svg_id
+            && let Some(old_mapped_image_id) =
+                self.svg_id_image_id_map.lock().insert(svg_id, image_id)
+            && old_mapped_image_id != image_id
         {
             store.vector_images.remove(&old_mapped_image_id);
             store
@@ -1105,9 +1107,9 @@ impl ImageCache for ImageCacheImpl {
         };
 
         // Requirements from tiny_skia::Pixmap::new
-        if tinyskia_requested_size.width() == 0 ||
-            tinyskia_requested_size.width() > (i32::MAX / 4).try_into().unwrap() ||
-            tinyskia_requested_size.height() == 0
+        if tinyskia_requested_size.width() == 0
+            || tinyskia_requested_size.width() > (i32::MAX / 4).try_into().unwrap()
+            || tinyskia_requested_size.height() == 0
         {
             debug!(
                 "Asked for requested size {:?} which has zero size. Not returning image",
@@ -1237,8 +1239,8 @@ impl ImageCache for ImageCacheImpl {
     /// Inform the image cache about a response for a pending request.
     fn notify_pending_response(&self, id: PendingImageId, action: FetchResponseMsg) {
         match (action, id) {
-            (FetchResponseMsg::ProcessRequestBody(..), _) |
-            (FetchResponseMsg::ProcessCspViolations(..), _) => (),
+            (FetchResponseMsg::ProcessRequestBody(..), _)
+            | (FetchResponseMsg::ProcessCspViolations(..), _) => (),
             (FetchResponseMsg::ProcessResponse(_, response), _) => {
                 debug!("Received {:?} for {:?}", response.as_ref().map(|_| ()), id);
                 let mut store = self.store.lock();
@@ -1251,8 +1253,8 @@ impl ImageCache for ImageCacheImpl {
                                     FilteredMetadata::Basic(_) | FilteredMetadata::Cors(_) => {
                                         CorsStatus::Safe
                                     },
-                                    FilteredMetadata::Opaque |
-                                    FilteredMetadata::OpaqueRedirect(_) => CorsStatus::Unsafe,
+                                    FilteredMetadata::Opaque
+                                    | FilteredMetadata::OpaqueRedirect(_) => CorsStatus::Unsafe,
                                 },
                                 Some(unsafe_),
                             ),
@@ -1277,6 +1279,7 @@ impl ImageCache for ImageCacheImpl {
                     pending_load.bytes.extend_from_slice(&data);
 
                     // jmr0 TODO: possibly move to another task?
+                    #[cfg(not(target_arch = "wasm32"))]
                     if pending_load.metadata.is_none() {
                         let mut reader = std::io::Cursor::new(pending_load.bytes.as_slice());
                         if let Ok(info) = imsz_from_reader(&mut reader) {

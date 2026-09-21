@@ -89,8 +89,8 @@ impl CharacterData {
         // If this is a Text node, we might need to re-parse (say, if our parent
         // is a <style> element.) We don't need to if this is a Comment or
         // ProcessingInstruction.
-        if self.is::<Text>() &&
-            let Some(parent_node) = node.GetParentNode()
+        if self.is::<Text>()
+            && let Some(parent_node) = node.GetParentNode()
         {
             let mutation = ChildrenMutation::ChangeText;
             vtable_for(&parent_node).children_changed(cx, &mutation);
@@ -263,11 +263,11 @@ impl CharacterDataMethods<crate::DomTypeHolder> for CharacterData {
 
             // Step 5 to 7.
             new_data = String::with_capacity(
-                prefix.len() +
-                    replacement_before.len() +
-                    usize::from(arg.len_utf8()) +
-                    replacement_after.len() +
-                    suffix.len(),
+                prefix.len()
+                    + replacement_before.len()
+                    + usize::from(arg.len_utf8())
+                    + replacement_after.len()
+                    + suffix.len(),
             );
             new_data.push_str(prefix);
             new_data.push_str(replacement_before);

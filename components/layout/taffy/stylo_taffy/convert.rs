@@ -103,8 +103,8 @@ pub fn margin(val: &stylo::MarginVal) -> taffy::LengthPercentageAuto {
         stylo::MarginVal::LengthPercentage(val) => length_percentage(val).into(),
 
         // Anchor positioning will be flagged off for time being
-        stylo::MarginVal::AnchorSizeFunction(_) |
-        stylo::MarginVal::AnchorContainingCalcFunction(_) => {
+        stylo::MarginVal::AnchorSizeFunction(_)
+        | stylo::MarginVal::AnchorContainingCalcFunction(_) => {
             unreachable!("Anchor positioning is disabled in stylo")
         },
     }
@@ -117,9 +117,9 @@ pub fn inset(val: &stylo::InsetVal) -> taffy::LengthPercentageAuto {
         stylo::InsetVal::LengthPercentage(val) => length_percentage(val).into(),
 
         // Anchor positioning will be flagged off for time being
-        stylo::InsetVal::AnchorSizeFunction(_) |
-        stylo::InsetVal::AnchorFunction(_) |
-        stylo::InsetVal::AnchorContainingCalcFunction(_) => {
+        stylo::InsetVal::AnchorSizeFunction(_)
+        | stylo::InsetVal::AnchorFunction(_)
+        | stylo::InsetVal::AnchorContainingCalcFunction(_) => {
             unreachable!("Anchor positioning is disabled in stylo")
         },
     }
@@ -127,8 +127,8 @@ pub fn inset(val: &stylo::InsetVal) -> taffy::LengthPercentageAuto {
 
 #[inline]
 pub fn is_block(input: stylo::Display) -> bool {
-    matches!(input.outside(), stylo::DisplayOutside::Block) &&
-        matches!(
+    matches!(input.outside(), stylo::DisplayOutside::Block)
+        && matches!(
             input.inside(),
             stylo::DisplayInside::Flow | stylo::DisplayInside::FlowRoot
         )

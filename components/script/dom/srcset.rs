@@ -236,8 +236,8 @@ impl SourceSet {
 
             // Step 5.6. If child has a media attribute, and its value does not match the
             // environment, continue to the next child.
-            if let Some(media) = child.get_attribute_string_value(&local_name!("media")) &&
-                !MediaList::matches_environment(&child.owner_document(), &media)
+            if let Some(media) = child.get_attribute_string_value(&local_name!("media"))
+                && !MediaList::matches_environment(&child.owner_document(), &media)
             {
                 continue;
             }
@@ -250,8 +250,8 @@ impl SourceSet {
 
             // Step 5.8. If child has a type attribute, and its value is an unknown or unsupported
             // MIME type, continue to the next child.
-            if let Some(type_) = child.get_attribute_string_value(&local_name!("type")) &&
-                !is_supported_image_mime_type(&type_)
+            if let Some(type_) = child.get_attribute_string_value(&local_name!("type"))
+                && !is_supported_image_mime_type(&type_)
             {
                 continue;
             }
@@ -259,8 +259,8 @@ impl SourceSet {
             // Step 5.9. If child has width or height attributes, set el's dimension attribute
             // source to child. Otherwise, set el's dimension attribute source to el.
             if let Some(image) = img {
-                if child.has_attribute(&local_name!("width")) ||
-                    child.has_attribute(&local_name!("height"))
+                if child.has_attribute(&local_name!("width"))
+                    || child.has_attribute(&local_name!("height"))
                 {
                     image.set_dimension_attribute_source(Some(child));
                 } else {
@@ -610,9 +610,9 @@ pub fn parse_a_srcset_attribute(input: &str) -> Vec<ImageSource> {
                 // > 2. If width and density are not both absent, then let error be yes.
                 // > 3. Apply the rules for parsing non-negative integers to the descriptor.
                 // >    If the result is 0, let error be yes. Otherwise, let width be the result.
-                'w' if is_valid_non_negative_integer_string(first_part_of_string) &&
-                    density.is_none() &&
-                    width.is_none() =>
+                'w' if is_valid_non_negative_integer_string(first_part_of_string)
+                    && density.is_none()
+                    && width.is_none() =>
                 {
                     match parse_unsigned_integer(first_part_of_string.chars()) {
                         Ok(number) if number > 0 => {
@@ -636,10 +636,10 @@ pub fn parse_a_srcset_attribute(input: &str) -> Vec<ImageSource> {
                 // what Gecko does, but it also checks to see if the number is a valid HTML-spec compliant
                 // number first. Not doing that means that we might be parsing numbers that otherwise
                 // wouldn't parse.
-                'x' if is_valid_floating_point_number_string(first_part_of_string) &&
-                    width.is_none() &&
-                    density.is_none() &&
-                    future_compat_h.is_none() =>
+                'x' if is_valid_floating_point_number_string(first_part_of_string)
+                    && width.is_none()
+                    && density.is_none()
+                    && future_compat_h.is_none() =>
                 {
                     match first_part_of_string.parse::<f64>() {
                         Ok(number) if number.is_finite() && number >= 0. => {
@@ -658,9 +658,9 @@ pub fn parse_a_srcset_attribute(input: &str) -> Vec<ImageSource> {
                 // > 2. Apply the rules for parsing non-negative integers to the descriptor.
                 // >    If the result is 0, let error be yes. Otherwise, let future-compat-h be the
                 // >    result.
-                'h' if is_valid_non_negative_integer_string(first_part_of_string) &&
-                    future_compat_h.is_none() &&
-                    density.is_none() =>
+                'h' if is_valid_non_negative_integer_string(first_part_of_string)
+                    && future_compat_h.is_none()
+                    && density.is_none() =>
                 {
                     match parse_unsigned_integer(first_part_of_string.chars()) {
                         Ok(number) if number > 0 => {

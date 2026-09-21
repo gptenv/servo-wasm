@@ -27,12 +27,12 @@ use crate::dom::selection::Selection;
 fn is_command_listed_in_miscellaneous_section(command_name: CommandName) -> bool {
     matches!(
         command_name,
-        CommandName::DefaultParagraphSeparator |
-            CommandName::Redo |
-            CommandName::SelectAll |
-            CommandName::StyleWithCss |
-            CommandName::Undo |
-            CommandName::Usecss
+        CommandName::DefaultParagraphSeparator
+            | CommandName::Redo
+            | CommandName::SelectAll
+            | CommandName::StyleWithCss
+            | CommandName::Undo
+            | CommandName::Usecss
     )
 }
 
@@ -45,16 +45,16 @@ fn bump_selection_out_of_invalid_node(cx: &mut JSContext, selection: &Selection)
     let active_range = selection
         .active_range(cx)
         .expect("Must always have an active range");
-    if let start_container = active_range.start_container() &&
-        (start_container.is::<Comment>() || start_container.is::<ProcessingInstruction>())
+    if let start_container = active_range.start_container()
+        && (start_container.is::<Comment>() || start_container.is::<ProcessingInstruction>())
     {
         let Some(parent) = start_container.GetParentNode() else {
             return Err(());
         };
         let _ = active_range.SetStart(cx.no_gc(), &parent, start_container.index());
     }
-    if let end_container = active_range.end_container() &&
-        (end_container.is::<Comment>() || end_container.is::<ProcessingInstruction>())
+    if let end_container = active_range.end_container()
+        && (end_container.is::<Comment>() || end_container.is::<ProcessingInstruction>())
     {
         let Some(parent) = end_container.GetParentNode() else {
             return Err(());
@@ -137,9 +137,9 @@ impl Document {
         }
 
         // Some commands are only enabled if the editing host is *not* in plaintext-only state.
-        if !command_name.is_enabled_in_plaintext_only_state() &&
-            (start_container_editing_host.is_in_plaintext_only_state() ||
-                end_container_editing_host.is_in_plaintext_only_state())
+        if !command_name.is_enabled_in_plaintext_only_state()
+            && (start_container_editing_host.is_in_plaintext_only_state()
+                || end_container_editing_host.is_in_plaintext_only_state())
         {
             None
         } else {
@@ -328,8 +328,8 @@ impl DocumentExecCommandSupport for Document {
             None
         };
 
-        if affected_editing_host.is_some() &&
-            bump_selection_out_of_invalid_node(cx, &selection).is_err()
+        if affected_editing_host.is_some()
+            && bump_selection_out_of_invalid_node(cx, &selection).is_err()
         {
             return false;
         }

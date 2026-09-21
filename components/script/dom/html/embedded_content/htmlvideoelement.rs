@@ -26,7 +26,6 @@ use net_traits::{
 };
 use pixels::{Snapshot, SnapshotAlphaMode, SnapshotPixelFormat};
 use script_bindings::cell::DomRefCell;
-use script_bindings::error::Fallible;
 use servo_media::player::video::VideoFrame;
 use servo_url::ServoUrl;
 use style::attr::{AttrValue, LengthOrPercentageOrAuto};
@@ -195,8 +194,8 @@ impl HTMLVideoElement {
             let mut planar_texture = self.planar_texture.borrow_mut();
             match planar_texture.as_ref() {
                 Some(planar_texture) => {
-                    if planar_texture.is_expired() &&
-                        let Some(snapshot) = self.get_current_frame_data()
+                    if planar_texture.is_expired()
+                        && let Some(snapshot) = self.get_current_frame_data()
                     {
                         planar_texture.update(snapshot);
                     }

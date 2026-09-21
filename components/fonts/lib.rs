@@ -9,7 +9,6 @@ mod font_context;
 pub mod font_feature_values;
 mod font_store;
 mod glyph;
-#[expect(unsafe_code)]
 pub mod platform; // Public because integration tests need this
 mod shapers;
 mod system_font_service;
@@ -76,10 +75,10 @@ impl FallbackFontSelectionOptions {
             // of the emoji presentation selectors above).
             _ if matches!(
                 character.emoji_status(),
-                EmojiStatus::EmojiPresentation |
-                    EmojiStatus::EmojiPresentationAndModifierBase |
-                    EmojiStatus::EmojiPresentationAndEmojiComponent |
-                    EmojiStatus::EmojiPresentationAndModifierAndEmojiComponent
+                EmojiStatus::EmojiPresentation
+                    | EmojiStatus::EmojiPresentationAndModifierBase
+                    | EmojiStatus::EmojiPresentationAndEmojiComponent
+                    | EmojiStatus::EmojiPresentationAndModifierAndEmojiComponent
             ) =>
             {
                 EmojiPresentationPreference::Emoji
@@ -95,10 +94,12 @@ impl FallbackFontSelectionOptions {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn float_to_fixed(before: usize, f: f64) -> i32 {
     ((1i32 << before) as f64 * f) as i32
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn fixed_to_float(before: usize, f: i32) -> f64 {
     f as f64 * 1.0f64 / ((1i32 << before) as f64)
 }

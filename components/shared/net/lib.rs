@@ -28,6 +28,7 @@ use rand::{Rng, rng};
 use request::RequestId;
 use rustc_hash::FxHashMap;
 use rustls::{CipherSuite, NamedGroup, ProtocolVersion};
+#[cfg(not(target_arch = "wasm32"))]
 use rustls_pki_types::CertificateDer;
 use serde::{Deserialize, Serialize};
 use serde_with::{FromInto, serde_as};
@@ -92,7 +93,7 @@ mod wasm_getrandom {
     #[link(wasm_import_module = "env")]
     unsafe extern "C" {
         #[link_name = "worker_getrandom"]
-        fn host_getrandom(ptr: *mut u8, len: usize);
+        fn host_getrandom(ptr: *mut u8, len: usize) -> i32;
     }
 
     #[unsafe(no_mangle)]
@@ -100,8 +101,11 @@ mod wasm_getrandom {
         dest: *mut u8,
         len: usize,
     ) -> Result<(), getrandom::Error> {
-        unsafe { host_getrandom(dest, len) };
-        Ok(())
+        if unsafe { host_getrandom(dest, len) } == 0 {
+            Ok(())
+        } else {
+            Err(getrandom::Error::new_custom(1))
+        }
     }
 }
 
@@ -319,12 +323,12 @@ pub enum FetchResponseMsg {
 impl FetchResponseMsg {
     pub fn request_id(&self) -> RequestId {
         match self {
-            FetchResponseMsg::ProcessRequestBody(id) |
-            FetchResponseMsg::ProcessResponse(id, ..) |
-            FetchResponseMsg::ProcessResponseChunk(id, ..) |
-            FetchResponseMsg::ProcessResponseEOF(id, ..) |
-            FetchResponseMsg::ProcessCspViolations(id, ..) |
-            FetchResponseMsg::ProcessContentLength(id, _) => *id,
+            FetchResponseMsg::ProcessRequestBody(id)
+            | FetchResponseMsg::ProcessResponse(id, ..)
+            | FetchResponseMsg::ProcessResponseChunk(id, ..)
+            | FetchResponseMsg::ProcessResponseEOF(id, ..)
+            | FetchResponseMsg::ProcessCspViolations(id, ..)
+            | FetchResponseMsg::ProcessContentLength(id, _) => *id,
         }
     }
 }
@@ -1343,20 +1347,20 @@ impl NetworkError {
     pub fn is_permanent_failure(&self) -> bool {
         matches!(
             self,
-            NetworkError::ContentSecurityPolicy |
-                NetworkError::MixedContent |
-                NetworkError::SubresourceIntegrity |
-                NetworkError::Nosniff |
-                NetworkError::InvalidPort |
-                NetworkError::CorsGeneral |
-                NetworkError::CrossOriginResponse |
-                NetworkError::CorsCredentials |
-                NetworkError::CorsAllowMethods |
-                NetworkError::CorsAllowHeaders |
-                NetworkError::CorsMethod |
-                NetworkError::CorsAuthorization |
-                NetworkError::CorsHeaders |
-                NetworkError::UnsupportedScheme
+            NetworkError::ContentSecurityPolicy
+                | NetworkError::MixedContent
+                | NetworkError::SubresourceIntegrity
+                | NetworkError::Nosniff
+                | NetworkError::InvalidPort
+                | NetworkError::CorsGeneral
+                | NetworkError::CrossOriginResponse
+                | NetworkError::CorsCredentials
+                | NetworkError::CorsAllowMethods
+                | NetworkError::CorsAllowHeaders
+                | NetworkError::CorsMethod
+                | NetworkError::CorsAuthorization
+                | NetworkError::CorsHeaders
+                | NetworkError::UnsupportedScheme
         )
     }
 

@@ -31,8 +31,8 @@ pub(crate) fn execute_insert_horizontal_rule_command(
 
     // Step 2. While start offset is 0 and start node's parent is not null, set start offset to start node's index,
     //         then set start node to its parent.
-    while let Some(parent) = start_node.GetParentNode() &&
-        start_offset == 0
+    while let Some(parent) = start_node.GetParentNode()
+        && start_offset == 0
     {
         start_offset = start_node.index();
         start_node = parent;
@@ -40,8 +40,8 @@ pub(crate) fn execute_insert_horizontal_rule_command(
 
     // Step 3. While end offset is end node's length, and end node's parent is not null, set end offset to one plus end
     //         node's index, then set end node to its parent.
-    while let Some(parent) = end_node.GetParentNode() &&
-        end_offset == end_node.len()
+    while let Some(parent) = end_node.GetParentNode()
+        && end_offset == end_node.len()
     {
         end_offset = 1 + end_node.index();
         end_node = parent;
@@ -100,8 +100,8 @@ pub(crate) fn execute_insert_horizontal_rule_command(
     // Step 9. If the active range's start node is a Text node and its start offset is the length of its start node,
     //         call collapse() on the context object's selection, with first argument the active range's start node's
     //         parent, and the second argument one plus the active range's start node's index.
-    if active_range.start_container().is::<Text>() &&
-        active_range.start_offset() == active_range.start_container().len()
+    if active_range.start_container().is::<Text>()
+        && active_range.start_offset() == active_range.start_container().len()
     {
         if selection
             .Collapse(

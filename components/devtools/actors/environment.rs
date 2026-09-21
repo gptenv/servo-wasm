@@ -114,8 +114,8 @@ impl EnvironmentActor {
         if let Some(DebuggerValue::ObjectValue {
             preview: Some(preview),
             ..
-        }) = &environment.object &&
-            let Some(props) = &preview.own_properties
+        }) = &environment.object
+            && let Some(props) = &preview.own_properties
         {
             names.extend(
                 props

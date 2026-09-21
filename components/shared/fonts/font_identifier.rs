@@ -24,6 +24,57 @@ impl FontIdentifier {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+mod platform {
+    use std::path::PathBuf;
+
+    use malloc_size_of_derive::MallocSizeOf;
+    use serde::{Deserialize, Serialize};
+    use style::Atom;
+    use webrender_api::NativeFontHandle;
+
+    use crate::FontDataAndIndex;
+
+    /// A local-font descriptor retained for protocol compatibility on Worker.
+    ///
+    /// Workers do not expose an operating-system font registry or filesystem.
+    /// Fonts used by the wasm port therefore arrive as web fonts or explicitly
+    /// registered byte buffers; this descriptor is kept only for messages that
+    /// can also be produced by native Servo.
+    #[derive(Clone, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize)]
+    pub struct LocalFontIdentifier {
+        pub path: Atom,
+        pub face_index: u16,
+        pub named_instance_index: u16,
+    }
+
+    impl LocalFontIdentifier {
+        pub fn index(&self) -> u32 {
+            self.face_index as u32
+        }
+
+        pub fn named_instance_index(&self) -> u32 {
+            self.named_instance_index as u32
+        }
+
+        pub fn native_font_handle(&self) -> NativeFontHandle {
+            NativeFontHandle {
+                path: PathBuf::from(&*self.path),
+                index: self.index(),
+            }
+        }
+
+        /// System font bytes cannot be discovered from a Worker.
+        pub fn font_data_and_index(&self) -> Option<FontDataAndIndex> {
+            None
+        }
+
+        pub fn face_index_for_freetype(&self) -> u32 {
+            (self.named_instance_index() << 16) | self.index()
+        }
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
 mod platform {
     use std::fs::File;
