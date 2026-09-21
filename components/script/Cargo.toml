@@ -125,7 +125,6 @@ euclid = { workspace = true }
 flate2 = { workspace = true }
 fonts = { workspace = true }
 fonts_traits = { workspace = true }
-glow = { workspace = true }
 headers = { workspace = true }
 hkdf = { workspace = true, optional = true }
 html5ever = { workspace = true }
