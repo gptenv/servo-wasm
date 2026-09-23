@@ -26,6 +26,7 @@ servo-url = { workspace = true }
 uuid = { workspace = true }
 servo = { path = "../../components/servo", default-features = false, features = ["baked-in-resources"] }
 url = { workspace = true }
+data-url = { workspace = true }
 
 [lints]
 workspace = true

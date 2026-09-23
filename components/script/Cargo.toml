@@ -228,5 +228,8 @@ x25519-dalek = { workspace = true, optional = true }
 x448 = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+servo-canvas = { workspace = true }
+
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 mozangle = { workspace = true, optional = true }

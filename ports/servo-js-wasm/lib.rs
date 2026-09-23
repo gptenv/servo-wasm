@@ -389,9 +389,19 @@ fn worker_response_visibility(
 #[cfg(target_arch = "wasm32")]
 fn queue_worker_fetch(mut request: RequestBuilder, mut callback: net_traits::BoxedFetchCallback) {
     let request_id = request.id;
+    if request.url.url().scheme() == "data" {
+        fetch_worker_data_url(request, callback);
+        return;
+    }
     let visibility = match worker_response_visibility(&mut request) {
         Ok(visibility) => visibility,
         Err(error) => {
+            worker_log(&format!(
+                "Worker fetch of {} ({:?}, {:?}) rejected before host dispatch: {error:?}",
+                request.url.url(),
+                request.destination,
+                request.mode,
+            ));
             callback(FetchResponseMsg::ProcessResponse(
                 request_id,
                 Err(error.clone()),
@@ -424,16 +434,78 @@ fn queue_worker_fetch(mut request: RequestBuilder, mut callback: net_traits::Box
     dispatch_worker_fetch(request_id, payload);
 }
 
+fn worker_log(message: &str) {
+    unsafe { host_log_error(message.as_ptr(), message.len()) };
+}
+
+/// Resolve a `data:` URL inside the Worker, like Fetch's scheme fetch does:
+/// it needs no network access, so it must not become a host subrequest (which
+/// would also subject it to the cross-origin checks meant for real origins).
+fn fetch_worker_data_url(request: RequestBuilder, mut callback: net_traits::BoxedFetchCallback) {
+    let request_id = request.id;
+    let url = request.url.url();
+    let decoded = data_url::DataUrl::process(url.as_str())
+        .ok()
+        .and_then(|data| {
+            let mime = data.mime_type().to_string();
+            data.decode_to_vec().ok().map(|(body, _)| (mime, body))
+        });
+    let Some((mime_type, body)) = decoded else {
+        let error = NetworkError::ResourceLoadError("Invalid data: URL".into());
+        callback(FetchResponseMsg::ProcessResponse(request_id, Err(error.clone())));
+        callback(FetchResponseMsg::ProcessResponseEOF(
+            request_id,
+            Err(error),
+            ResourceFetchTiming::new(ResourceTimingType::Resource),
+        ));
+        return;
+    };
+    let mut headers = HeaderMap::new();
+    if let Ok(value) = HeaderValue::from_str(&mime_type) {
+        headers.insert(header::CONTENT_TYPE, value);
+    }
+    let mut metadata = Metadata::default(url);
+    metadata.set_content_type(mime::Mime::from_str(&mime_type).ok().as_ref());
+    metadata.headers = Some(Serde(headers));
+    // data: responses are basic (same-origin) for every request mode.
+    let visibility = if request.destination == Destination::None {
+        WorkerResponseVisibility::Basic
+    } else {
+        WorkerResponseVisibility::Unfiltered
+    };
+    let metadata = match filter_worker_metadata(metadata, &visibility) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            callback(FetchResponseMsg::ProcessResponse(request_id, Err(error.clone())));
+            callback(FetchResponseMsg::ProcessResponseEOF(
+                request_id,
+                Err(error),
+                ResourceFetchTiming::new(ResourceTimingType::Resource),
+            ));
+            return;
+        },
+    };
+    callback(FetchResponseMsg::ProcessResponse(request_id, Ok(metadata)));
+    if !body.is_empty() {
+        callback(FetchResponseMsg::ProcessResponseChunk(
+            request_id,
+            Bytes::from(body),
+        ));
+    }
+    callback(FetchResponseMsg::ProcessResponseEOF(
+        request_id,
+        Ok(()),
+        ResourceFetchTiming::new(ResourceTimingType::Resource),
+    ));
+}
+
 fn dispatch_worker_fetch(request_id: RequestId, payload: serde_json::Result<Vec<u8>>) {
     match payload {
         Ok(payload) => unsafe { host_fetch_request(payload.as_ptr(), payload.len()) },
         Err(error) => {
-            complete_worker_fetch_error(
-                request_id,
-                NetworkError::ResourceLoadError(format!(
-                    "Worker request serialization failed: {error}"
-                )),
-            );
+            let message = format!("Worker request serialization failed: {error}");
+            worker_log(&message);
+            complete_worker_fetch_error(request_id, NetworkError::ResourceLoadError(message));
         },
     }
 }

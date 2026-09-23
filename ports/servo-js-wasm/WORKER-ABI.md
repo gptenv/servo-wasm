@@ -67,7 +67,9 @@ without a host network fetch; relative resources still use the host adapter.
 Only one supplied document may be staged at a time. A normal load or reset clears
 any staged document.
 
-`evaluatePage(source)` queues a main-page-realm evaluation. `pageResult()` returns
+`evaluatePage(source)` queues a main-page-realm evaluation. `pumpUntilSettled()`
+does not report settlement while an accepted evaluation has no result yet; if the
+result never arrives, the budget is exhausted and it returns `settled:false`. `pageResult()` returns
 the serialized Servo result once available. This is a low-level, single-result
 slot: serialize evaluations and read each result before starting the next one.
 It does not await returned JavaScript promises or implement a script timeout.
@@ -89,6 +91,24 @@ an infinite page script inside a synchronous WASM call.
 a secure erase of all storage or a full engine destroy. A fresh WASM instance is
 required for isolation between unrelated users. Drop host references when the
 invocation ends; Servo's native blocking shutdown path is not used.
+
+## Traps
+
+A WASM trap does not unwind Rust state, so the instance is unusable afterwards.
+After the first `WebAssembly.RuntimeError`, every adapter call throws a clear
+"unusable after an earlier WASM trap" error and `runtime.trapped` holds the
+original error. Create a new runtime (a new instance) to continue.
+
+## In-process resources and rendering
+
+`data:` URLs are decoded inside the module (Fetch "scheme fetch" semantics, a
+basic response in every mode) and never become host subrequests. Images use
+Servo's real image cache; decoding work is queued and run by the pump, not a
+thread pool. Canvas 2D is rasterized in-process by `vello_cpu` (single-threaded
+on wasm32), including `getImageData`, `putImageData`, `drawImage`, patterns,
+gradients and `toDataURL`/`toBlob`. `getContext("webgl")` returns `null`. Canvas
+text needs fonts, which the Worker does not have yet. Page screenshots are not
+implemented: layout does not produce a display list on the Worker today.
 
 ## Limits and intentionally incomplete behavior
 

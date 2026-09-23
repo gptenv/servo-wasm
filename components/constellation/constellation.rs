@@ -5328,29 +5328,42 @@ where
         size: UntypedSize2D<u64>,
         response_sender: GenericSender<Option<(GenericSender<CanvasMsg>, CanvasId)>>,
     ) {
-        let (canvas_data_sender, canvas_data_receiver) = unbounded();
-        let (canvas_sender, canvas_ipc_sender) = self
-            .canvas
-            .get_or_init(|| self.create_canvas_paint_thread());
-
-        let response = if let Err(e) = canvas_sender.send(ConstellationCanvasMsg::Create {
-            sender: canvas_data_sender,
-            size,
-        }) {
-            warn!("Create canvas paint thread failed ({})", e);
-            None
-        } else {
-            match canvas_data_receiver.recv() {
-                Ok(Some(canvas_id)) => Some((canvas_ipc_sender.clone(), canvas_id)),
-                Ok(None) => None,
-                Err(e) => {
-                    warn!("Create canvas paint thread id response failed ({})", e);
-                    None
-                },
+        // Worker script creates canvases in-process (see script's CanvasState);
+        // the native path would spawn an OS thread that wasm32 cannot run.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = size;
+            if let Err(e) = response_sender.send(None) {
+                warn!("Create canvas paint thread response failed ({})", e);
             }
-        };
-        if let Err(e) = response_sender.send(response) {
-            warn!("Create canvas paint thread response failed ({})", e);
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (canvas_data_sender, canvas_data_receiver) = unbounded();
+            let (canvas_sender, canvas_ipc_sender) = self
+                .canvas
+                .get_or_init(|| self.create_canvas_paint_thread());
+
+            let response = if let Err(e) = canvas_sender.send(ConstellationCanvasMsg::Create {
+                sender: canvas_data_sender,
+                size,
+            }) {
+                warn!("Create canvas paint thread failed ({})", e);
+                None
+            } else {
+                match canvas_data_receiver.recv() {
+                    Ok(Some(canvas_id)) => Some((canvas_ipc_sender.clone(), canvas_id)),
+                    Ok(None) => None,
+                    Err(e) => {
+                        warn!("Create canvas paint thread id response failed ({})", e);
+                        None
+                    },
+                }
+            };
+            if let Err(e) = response_sender.send(response) {
+                warn!("Create canvas paint thread response failed ({})", e);
+            }
         }
     }
 

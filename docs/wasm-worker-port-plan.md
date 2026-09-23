@@ -1,12 +1,12 @@
 # Servo WASM Worker Port: Completion Plan
 
-Status: active port; DOM/JS/CSS, streaming fetch cancellation, timers, inline HTML, page reset, and repeated loads verified locally (2026-09-23)
+Status: active port; DOM/JS/CSS, streaming fetch cancellation, timers, inline HTML, page reset, repeated loads, canvas 2D and image loading verified locally (2026-09-23). Next goal: page screenshots.
 
 Target: a raw `wasm32-unknown-unknown` Servo module instantiated directly by a Cloudflare Worker. The MCP server and OAuth layer remain a separate repository and are intentionally out of scope for this port.
 
 ## 1. Current state
 
-The port builds as a raw `wasm32-unknown-unknown` module with no WASI or wasm-bindgen imports. The current production-stripped artifact is **55,912,978 bytes** (about 53.3 MiB), below the 64 MiB target. The Worker bundle remains about **54,637 KiB** uncompressed (see the smoke-test README for the latest exact dry-run measurement). It imports exactly these five host functions:
+The port builds as a raw `wasm32-unknown-unknown` module with no WASI or wasm-bindgen imports. The current production-stripped artifact is **57,836,481 bytes** (about 55.2 MiB), below the 64 MiB target (the same limit applies on Workers Free and Paid). The Worker bundle remains about **54,637 KiB** uncompressed (see the smoke-test README for the latest exact dry-run measurement). It imports exactly these five host functions:
 
 - `worker_fetch_request`
 - `worker_getrandom`
@@ -14,7 +14,7 @@ The port builds as a raw `wasm32-unknown-unknown` module with no WASI or wasm-bi
 - `worker_monotonic_now_ns`
 - `worker_unix_time_now_ns`
 
-The Worker adapter instantiates the module, creates a Servo instance, installs the fetch bridge, and advances the cooperative event loop. Deterministic raw-WASM integration coverage includes navigation and subresource fetches, JS `fetch()` success and 404 responses, in-memory POST bodies and clean rejection of oversized bodies, response headers, responses over 1 MiB via chunked delivery, bounded response size, failed fetches, navigation and JS fetch redirects, rejection of cross-origin script-fetch redirects before forwarding credentials, CSSOM parsing and cross-origin stylesheet-rule access control, a resolved CSS color, inline scripts, `setTimeout`, cross-origin page-global separation, aborting an in-flight host fetch on page reset, and four sequential page loads with a bounded linear-memory check. The expanded suite has **31 passing tests including subtests** against the production-stripped artifact. A host-facing timer deadline export and `pumpUntilSettled()` use Worker `scheduler.wait()` where available, with a cancellable timer fallback. The pump reports internal browser event progress and wakes on response headers/chunks, preventing false idle and allowing page code to consume or abort a response before its body completes.
+The Worker adapter instantiates the module, creates a Servo instance, installs the fetch bridge, and advances the cooperative event loop. Deterministic raw-WASM integration coverage includes navigation and subresource fetches, JS `fetch()` success and 404 responses, in-memory POST bodies and clean rejection of oversized bodies, response headers, responses over 1 MiB via chunked delivery, bounded response size, failed fetches, navigation and JS fetch redirects, rejection of cross-origin script-fetch redirects before forwarding credentials, CSSOM parsing and cross-origin stylesheet-rule access control, a resolved CSS color, inline scripts, `setTimeout`, cross-origin page-global separation, aborting an in-flight host fetch on page reset, and four sequential page loads with a bounded linear-memory check. The expanded suite has **36 passing tests including subtests** against the production-stripped artifact (run `npm test` in `ports/servo-js-wasm`), including canvas 2D pixel readback and `<img>` decoding. A host-facing timer deadline export and `pumpUntilSettled()` use Worker `scheduler.wait()` where available, with a cancellable timer fallback. The pump reports internal browser event progress and wakes on response headers/chunks, preventing false idle and allowing page code to consume or abort a response before its body completes.
 
 The latest batch adds a checked **version-1 host ABI**, `loadHtml(html, {url})`, deterministic initial `about:blank` bootstrapping before the async factory returns, reset-then-load navigation coalescing, and cancellation of active/queued host fetches from page `AbortController`s. Response delivery enforces header/chunk/terminal ordering. Mid-body failures now reject body consumers instead of succeeding with truncated content, and already-errored/canceled streams ignore duplicate failure transitions and late chunks. Tests cover these cases, unread response/redirect-body cleanup, subrequest limits across redirects and resets, and invalid/concurrent settling calls. A small original web-platform-style corpus covers templates, selectors, DOM fragments/clones, event propagation, CSS rule mutation/computed-style invalidation, shadow DOM, and microtask/timer ordering. It is not the upstream WPT runner or a claim of complete web conformance. The exact contract is in [WORKER-ABI.md](../ports/servo-js-wasm/WORKER-ABI.md).
 
@@ -22,9 +22,9 @@ The host adapter queues requests above six concurrent outbound connections and c
 
 The browser-engine path is not complete yet. Worker pipelines currently share one script event loop because creating a second SpiderMonkey runtime on the same WASM thread traps; a basic cross-origin global-separation test passes, but browsing-context/security coverage remains limited. The reset API navigates to `about:blank`, aborts host fetches, and clears pending results; it does not destroy Servo or its SpiderMonkey runtime, because Servo's native shutdown path blocks on OS-thread services and is not Worker-safe. Replacing a pending navigation now retires its pipeline, but cleanup of incomplete-load records and cancellation on ordinary navigation (without reset) need a broader lifetime audit. The Worker rendering context is still a null-GL placeholder and Paint target paths do not create WebRender painters, so screenshots, animation frames, and rendering-dependent observer delivery are not implemented. `getComputedStyle(...).color` works with a Worker-safe empty system-font lookup, but layout-dependent measurements and text rasterization need a real font and paint backend. Request bodies are supported only when the script layer already holds at most 256 KiB in memory; general request-body streaming must be ported. The response bridge streams 64 KiB chunks with an 8 MiB default limit. The Worker bridge has a limited CORS path for simple, non-credentialed direct cross-origin GET/HEAD requests: it checks `Access-Control-Allow-Origin`, filters exposed response headers, and rejects denied responses before body delivery. Cross-origin no-CORS subresources receive opaque metadata while parsers can still consume the internal body, preventing cross-origin stylesheet rules from leaking via CSSOM. Preflighted/credentialed cross-origin requests and cross-origin JS redirects fail closed; full Fetch-standard CORS, `no-cors` script fetches, cookies, manual-redirect filtering, body-reader cancellation and cloned-response abort semantics remain incomplete or unverified. A local Wrangler/workerd smoke Worker verifies inline HTML, computed CSS, script fetch and open-stream abort; a clean-target build remains outstanding.
 
-**Free-tier feasibility is now the main operational blocker.** [Cloudflare's current limits](https://developers.cloudflare.com/workers/platform/limits/) list 64 MiB for the Worker bundle, 128 MB memory per isolate, and only 10 ms CPU time per HTTP request on Workers Free. After fixing the async factory to finish its initial document before returning, the reproducible `node ports/servo-js-wasm/tests/cpu-benchmark.mjs` diagnostic measured about **402 ms CPU** for ready-to-use bootstrap and **252 ms CPU** for a tiny HTML page load and DOM evaluation; four individual page pumps exceeded 10 ms and the slowest used about 37 ms. The earlier 61 ms bootstrap figure measured construction only, not a ready initial document, and is not comparable. This is a Node process measurement, not a Cloudflare production CPU measurement, but it is far beyond the free-tier budget. Local workerd does not enforce the account's CPU quota. Remote validation requires explicit authorization. Yielding between pumps inside one request does not reset its accumulated CPU budget; resumable execution is useful for responsiveness but is not by itself a Free-tier solution. Per the user's decision, continue the engine port while investigating this limit.
+**Hosting decision (2026-09-23): target Workers Paid first.** Paid allows up to 5 minutes of CPU per request (30 s default, configurable), so the numbers below no longer block the first release. Bundle size (64 MiB) and memory (128 MB per isolate) are the same on both plans and remain hard constraints. A Free-tier variant is a later goal; for it, the following measurements still apply. [Cloudflare's current limits](https://developers.cloudflare.com/workers/platform/limits/) list 64 MiB for the Worker bundle, 128 MB memory per isolate, and only 10 ms CPU time per HTTP request on Workers Free. After fixing the async factory to finish its initial document before returning, the reproducible `node ports/servo-js-wasm/tests/cpu-benchmark.mjs` diagnostic measured about **402 ms CPU** for ready-to-use bootstrap and **252 ms CPU** for a tiny HTML page load and DOM evaluation; four individual page pumps exceeded 10 ms and the slowest used about 37 ms. The earlier 61 ms bootstrap figure measured construction only, not a ready initial document, and is not comparable. This is a Node process measurement, not a Cloudflare production CPU measurement, but it is far beyond the free-tier budget. Local workerd does not enforce the account's CPU quota. Remote validation requires explicit authorization. Yielding between pumps inside one request does not reset its accumulated CPU budget; resumable execution is useful for responsiveness but is not by itself a Free-tier solution. Per the user's decision, continue the engine port while investigating this limit.
 
-The existing changes are uncommitted and spread across Servo, the WASM port, and dependency wiring. Preserve them while executing the plan below.
+Work is committed to `gptenv/servo-wasm` `main`; see git history and Section 14 for the latest changes.
 
 ## 2. Definition of “finished”
 
@@ -305,6 +305,52 @@ Every layer should run after a clean target build at least once in CI. Increment
 - [ ] MCP/OAuth implementation begins only in the separate server repository.
 
 ## 14. Characterization pass findings (2026-09-23)
+
+**Update (later on 2026-09-23): canvas 2D and images now work on the Worker.**
+The stopgap below (`getContext("2d")` returning `null`) has been replaced by a
+real implementation: script owns an in-process `WorkerCanvasPaintThread`
+(components/canvas/canvas_paint_thread.rs) that runs Servo's own canvas code and
+the `vello_cpu` CPU rasterizer on the script thread, draining its command
+queue after every send so readback replies exist before the blocking `recv()`.
+Related root causes found and fixed while doing it:
+
+- `vello_cpu`'s `RenderSettings::default()` unwraps `available_parallelism()`
+  when its `multithreading` feature is on, which panics on wasm32; Servo now
+  builds the settings explicitly and always single-threaded on wasm32.
+- `servo_base::threadpool::ThreadPool` built a rayon pool; on wasm32 its work is
+  now queued and run by the Worker pump (`run_worker_deferred_work`).
+- The Worker port had replaced Servo's image cache with a stub that always
+  answered `FailedToLoadOrDecode`, so **every `<img>` failed without a fetch**.
+  The real cache is enabled on wasm32. It then hung at startup because
+  `CrossProcessPaintApi::generate_image_key_blocking` / `fetch_font_keys` block
+  on Paint, which only runs between script turns; on wasm32 they now return
+  the same placeholder keys the Worker Paint returns without a painter.
+- `data:` URLs were forwarded to the host adapter and failed its CORS check;
+  they are now decoded in-process (ports/servo-js-wasm/lib.rs).
+- The script `TaskQueue` per-iteration throttle budget was only reset in the
+  native blocking `select()` path, so on the Worker it never reset and
+  throttled tasks were held back; each Worker pump now resets it.
+- `pumpUntilSettled` could report settlement before an `evaluatePage` result
+  arrived; it now waits for outstanding evaluations. The adapter also refuses
+  all calls after a WASM trap instead of producing misleading secondary panics.
+
+Verified: 36/36 Node tests (`npm test` in ports/servo-js-wasm, which also sets
+the larger stack Node's defaults need; real workerd did not overflow), exact
+five-import allowlist, artifact 57,836,481 bytes. Local workerd `/cases` runs the
+shared fixture corpus repeatedly.
+
+**Open: other blocking `recv()` sites.** The canvas and image-key hangs share one
+pattern: script blocks on a reply from a component that only runs after the
+current script turn. Remaining script sites of this kind include `alert`,
+`confirm`, `prompt` (window.rs), `outerWidth`/`screenX` (`client_window`),
+`screen.*` (screen.rs), `history.length` and history state (history.rs), and
+`window.open` (windowproxy.rs). These need characterizing and Worker-safe
+answers before arbitrary real pages can be loaded reliably.
+
+**Build memory.** This machine has 15 GB and no swap. Building the `script` crate
+alone at this profile needs several GB; with other large apps open, even
+`--jobs 1` can exhaust memory. Build with a memory watchdog and close heavy
+apps; `--jobs 2`-`4` is safe with roughly 6-7 GB available.
 
 A no-rebuild pass against the existing production-stripped artifact, probing
 each surface Sections 9/10 and WORKER-ABI.md call unsupported/incomplete, to

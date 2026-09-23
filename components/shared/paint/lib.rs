@@ -376,11 +376,19 @@ impl CrossProcessPaintApi {
 
     /// Create a new image key. Blocks until the key is available.
     pub fn generate_image_key_blocking(&self, webview_id: WebViewId) -> Option<ImageKey> {
-        let (sender, receiver) = generic_channel::channel().unwrap();
-        self.0
-            .send(PaintMessage::GenerateImageKey(webview_id, sender))
-            .ok()?;
-        receiver.recv().ok()
+        // Worker Paint runs only between script turns and has no WebRender
+        // instance, so waiting for its reply would deadlock. Return the same
+        // placeholder key it would produce without a painter.
+        #[cfg(target_arch = "wasm32")]
+        return Some(ImageKey::new(PainterId::from(webview_id).into(), 0));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (sender, receiver) = generic_channel::channel().unwrap();
+            self.0
+                .send(PaintMessage::GenerateImageKey(webview_id, sender))
+                .ok()?;
+            receiver.recv().ok()
+        }
     }
 
     /// Sends a message to `Paint` for creating new image keys.
@@ -493,14 +501,24 @@ impl CrossProcessPaintApi {
         number_of_font_instance_keys: usize,
         painter_id: PainterId,
     ) -> (Vec<FontKey>, Vec<FontInstanceKey>) {
-        let (sender, receiver) = generic_channel::channel().expect("Could not create IPC channel");
-        let _ = self.0.send(PaintMessage::GenerateFontKeys(
-            number_of_font_keys,
-            number_of_font_instance_keys,
-            sender,
-            painter_id,
-        ));
-        receiver.recv().unwrap()
+        // See `generate_image_key_blocking`: blocking on Worker Paint deadlocks.
+        #[cfg(target_arch = "wasm32")]
+        return (
+            vec![FontKey::new(painter_id.into(), 0); number_of_font_keys],
+            vec![FontInstanceKey::new(painter_id.into(), 0); number_of_font_instance_keys],
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (sender, receiver) =
+                generic_channel::channel().expect("Could not create IPC channel");
+            let _ = self.0.send(PaintMessage::GenerateFontKeys(
+                number_of_font_keys,
+                number_of_font_instance_keys,
+                sender,
+                painter_id,
+            ));
+            receiver.recv().unwrap()
+        }
     }
 
     pub fn viewport(&self, webview_id: WebViewId, description: ViewportDescription) {

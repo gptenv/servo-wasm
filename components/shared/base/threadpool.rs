@@ -2,8 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#[cfg(target_arch = "wasm32")]
+use std::cell::RefCell;
+#[cfg(target_arch = "wasm32")]
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use log::debug;
@@ -54,25 +60,53 @@ impl ThreadPoolState {
 /// The thread pools used throughout Servo, apart from those used by Layout and WebRender which
 /// are handled separately.
 pub struct ThreadPool {
+    #[cfg(not(target_arch = "wasm32"))]
     pool: rayon::ThreadPool,
     state: Arc<Mutex<ThreadPoolState>>,
 }
 
 static GLOBAL_THREAD_POOL: OnceLock<Arc<ThreadPool>> = OnceLock::new();
 
+// Worker WASM has one thread and no rayon workers. Pool work is deferred to
+// this queue and run by the cooperative pump, never inline: callers such as
+// the image cache may still hold locks that the work itself takes.
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static WORKER_DEFERRED_WORK: RefCell<VecDeque<Box<dyn FnOnce()>>> =
+        RefCell::new(VecDeque::new());
+}
+
+/// Run all pool work queued before this call. Returns whether any work ran.
+#[cfg(target_arch = "wasm32")]
+pub fn run_worker_deferred_work() -> bool {
+    let batch = WORKER_DEFERRED_WORK.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
+    let ran = !batch.is_empty();
+    for work in batch {
+        work();
+    }
+    ran
+}
+
 impl ThreadPool {
     /// Get the global thread pool for the process.
     pub fn global() -> Arc<Self> {
         let pool = GLOBAL_THREAD_POOL.get_or_init(|| {
+            #[cfg(target_arch = "wasm32")]
+            return Arc::new(Self {
+                state: Arc::new(Mutex::new(ThreadPoolState::new())),
+            });
+            #[cfg(not(target_arch = "wasm32"))]
             let paralellism = thread::available_parallelism()
                 .map(|parallelism| parallelism.get())
                 .unwrap_or(pref!(thread_pool_fallback_workers) as usize)
                 .min(pref!(thread_pool_workers_max) as usize);
+            #[cfg(not(target_arch = "wasm32"))]
             let pool = rayon::ThreadPoolBuilder::new()
                 .thread_name(move |i| format!("GlobalPool#{i}"))
                 .num_threads(paralellism)
                 .build()
                 .unwrap();
+            #[cfg(not(target_arch = "wasm32"))]
             Arc::new(Self {
                 pool,
                 state: Arc::new(Mutex::new(ThreadPoolState::new())),
@@ -102,7 +136,7 @@ impl ThreadPool {
 
         let state = self.state.clone();
 
-        self.pool.spawn(move || {
+        let job = move || {
             {
                 let mut state = state.lock().unwrap();
                 if !state.is_active() {
@@ -118,7 +152,11 @@ impl ThreadPool {
                 let mut state = state.lock().unwrap();
                 state.decrement_active();
             }
-        });
+        };
+        #[cfg(target_arch = "wasm32")]
+        WORKER_DEFERRED_WORK.with(|queue| queue.borrow_mut().push_back(Box::new(job)));
+        #[cfg(not(target_arch = "wasm32"))]
+        self.pool.spawn(job);
     }
 
     /// Prevent further work from being spawned,
@@ -129,6 +167,10 @@ impl ThreadPool {
             let mut state = self.state.lock().unwrap();
             state.switch_to_inactive();
         }
+        #[cfg(target_arch = "wasm32")]
+        return;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
         let mut rounds = 0;
         loop {
             rounds += 1;
@@ -147,6 +189,7 @@ impl ThreadPool {
                 }
             }
             thread::sleep(Duration::from_millis(100));
+        }
         }
     }
 }

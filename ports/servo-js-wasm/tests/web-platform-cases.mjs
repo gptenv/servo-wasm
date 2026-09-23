@@ -72,4 +72,57 @@ export const webPlatformCases = [
       } finally { host.remove(); }
     })()`,
   },
+  {
+    name: 'canvas 2D fills, transforms, and exact getImageData readback',
+    source: `(() => {
+      const c = document.createElement('canvas'); c.width = 8; c.height = 8;
+      const ctx = c.getContext('2d');
+      if (!ctx) return false;
+      ctx.fillStyle = 'rgb(255, 0, 0)'; ctx.fillRect(0, 0, 4, 4);
+      ctx.fillStyle = '#00ff00'; ctx.translate(4, 4); ctx.fillRect(0, 0, 4, 4);
+      const px = (x, y) => Array.from(ctx.getImageData(x, y, 1, 1).data).join(',');
+      return px(1, 1) === '255,0,0,255' && px(6, 6) === '0,255,0,255' && px(6, 1) === '0,0,0,0';
+    })()`,
+  },
+  {
+    name: 'canvas 2D clipping and putImageData',
+    source: `(() => {
+      const c = document.createElement('canvas'); c.width = 10; c.height = 10;
+      const ctx = c.getContext('2d');
+      ctx.beginPath(); ctx.rect(0, 0, 5, 10); ctx.clip();
+      ctx.fillStyle = 'blue'; ctx.fillRect(0, 0, 10, 10);
+      const inside = ctx.getImageData(2, 5, 1, 1).data;
+      const outside = ctx.getImageData(7, 5, 1, 1).data;
+      const img = ctx.createImageData(1, 1); img.data.set([10, 20, 30, 255]);
+      ctx.putImageData(img, 8, 8);
+      return inside[2] === 255 && inside[3] === 255 && outside[3] === 0 &&
+        Array.from(ctx.getImageData(8, 8, 1, 1).data).join(',') === '10,20,30,255';
+    })()`,
+  },
+  {
+    name: 'canvas 2D drawImage between canvases, patterns, and gradients',
+    source: `(() => {
+      const src = document.createElement('canvas'); src.width = 2; src.height = 2;
+      const s = src.getContext('2d'); s.fillStyle = 'rgb(0, 0, 255)'; s.fillRect(0, 0, 2, 2);
+      const dst = document.createElement('canvas'); dst.width = 6; dst.height = 6;
+      const d = dst.getContext('2d');
+      d.drawImage(src, 0, 0);
+      d.fillStyle = d.createPattern(src, 'repeat'); d.fillRect(4, 4, 2, 2);
+      const g = d.createLinearGradient(2, 0, 4, 0);
+      g.addColorStop(0, '#f00'); g.addColorStop(1, '#f00');
+      d.fillStyle = g; d.fillRect(2, 0, 2, 2);
+      const px = (x, y) => Array.from(d.getImageData(x, y, 1, 1).data).join(',');
+      return px(1, 1) === '0,0,255,255' && px(5, 5) === '0,0,255,255' &&
+        px(3, 1) === '255,0,0,255' && px(1, 4) === '0,0,0,0';
+    })()`,
+  },
+  {
+    name: 'canvas toDataURL encodes a PNG',
+    source: `(() => {
+      const c = document.createElement('canvas'); c.width = 3; c.height = 3;
+      const ctx = c.getContext('2d'); ctx.fillStyle = '#123456'; ctx.fillRect(0, 0, 3, 3);
+      const url = c.toDataURL();
+      return url.startsWith('data:image/png;base64,iVBORw0KGgo') && url.length > 40;
+    })()`,
+  },
 ];

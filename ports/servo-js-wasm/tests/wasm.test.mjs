@@ -625,9 +625,19 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     assert.equal(runtime.pendingFetchCount(), 0);
   };
   const checkPage = async (expression) => {
+    const logStart = fetchErrors.length;
     assert.equal(runtime.evaluatePage(`(${expression}) ? 42 : 0`), true);
     await settle();
-    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+    const settledResult = runtime.pageResult();
+    if (settledResult?.Ok?.Number === 42) return;
+    let lateTurns = 0;
+    while (!runtime.pageResult() && lateTurns < 50 && !runtime.trapped) {
+      runtime.pump();
+      lateTurns++;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.fail(JSON.stringify({ settledResult, lateResult: runtime.pageResult(), lateTurns,
+      trapped: String(runtime.trapped ?? ''), log: fetchErrors.slice(logStart) }));
   };
 
   await t.test('settling budgets and concurrent calls fail explicitly', async () => {
@@ -740,6 +750,24 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   for (const { name, source } of webPlatformCases) {
     await t.test(name, async () => checkPage(source));
   }
+
+  await t.test('canvas drawImage decodes an <img> through the deferred Worker pool', async () => {
+    assert.equal(runtime.evaluatePage(`(() => {
+      const src = document.createElement('canvas'); src.width = 2; src.height = 2;
+      const s = src.getContext('2d'); s.fillStyle = 'rgb(0, 128, 0)'; s.fillRect(0, 0, 2, 2);
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement('canvas'); c.width = 2; c.height = 2;
+        const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0);
+        document.body.dataset.imgPixel = Array.from(ctx.getImageData(1, 1, 1, 1).data).join(',');
+      };
+      img.onerror = () => { document.body.dataset.imgPixel = 'error'; };
+      img.src = src.toDataURL();
+      return 1;
+    })()`), true);
+    await settle();
+    await checkPage('document.body.dataset.imgPixel === "0,128,0,255"');
+  });
 
   await t.test('promise microtasks precede timers and canceled timers stay canceled', async () => {
     runtime.evaluatePage('globalThis.taskOrder = ["sync"];' +

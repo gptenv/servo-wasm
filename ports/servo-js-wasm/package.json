@@ -1,0 +1,11 @@
+{
+  "name": "servo-js-wasm-tests",
+  "private": true,
+  "type": "module",
+  "description": "Test and diagnostic commands for the Servo Cloudflare Worker WASM port. Build the artifact first with ./mach (see docs/claude-handoff.md).",
+  "scripts": {
+    "test": "node --stack-size=2000 --test tests/wasm.test.mjs",
+    "bench:cpu": "node --stack-size=2000 tests/cpu-benchmark.mjs",
+    "workerd": "cd workerd-smoke && npx --yes wrangler@4.136.3 dev --local --ip 127.0.0.1 --port 8799"
+  }
+}

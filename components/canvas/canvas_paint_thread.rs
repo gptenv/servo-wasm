@@ -327,6 +327,57 @@ impl CanvasPaintThread {
     }
 }
 
+/// Worker WASM replacement for the canvas paint thread: the same
+/// [`CanvasPaintThread`] and rasterizer, owned by the script thread and driven
+/// synchronously instead of from a spawned OS thread via the constellation.
+/// Script must call [`WorkerCanvasPaintThread::process_pending`] before
+/// blocking on any reply sent by a queued [`CanvasCommand`].
+#[cfg(target_arch = "wasm32")]
+pub struct WorkerCanvasPaintThread {
+    paint_thread: CanvasPaintThread,
+    sender: GenericSender<CanvasMsg>,
+    receiver: servo_base::generic_channel::RoutedReceiver<CanvasMsg>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl WorkerCanvasPaintThread {
+    pub fn new(paint_api: CrossProcessPaintApi) -> Self {
+        let (sender, receiver) = generic_channel::channel::<CanvasMsg>().unwrap();
+        Self {
+            paint_thread: CanvasPaintThread::new(paint_api),
+            sender,
+            receiver: receiver.route_preserving_errors(),
+        }
+    }
+
+    pub fn create_canvas(
+        &mut self,
+        size: Size2D<u64>,
+    ) -> Option<(GenericSender<CanvasMsg>, CanvasId)> {
+        let canvas_id = self.paint_thread.create_canvas(size)?;
+        Some((self.sender.clone(), canvas_id))
+    }
+
+    /// Execute every queued canvas command. Returns whether any ran.
+    pub fn process_pending(&mut self) -> bool {
+        let mut processed = false;
+        while let Ok(message) = self.receiver.try_recv() {
+            processed = true;
+            match message {
+                Ok((canvas_id, command)) => {
+                    if self.paint_thread.canvases.contains_key(&canvas_id) {
+                        self.paint_thread.process_command(command, canvas_id);
+                    } else {
+                        warn!("Dropping {command} for destroyed canvas {canvas_id:?}");
+                    }
+                },
+                Err(error) => warn!("CanvasPaintThread message error: {error:?}"),
+            }
+        }
+        processed
+    }
+}
+
 #[cfg_attr(
     feature = "vello",
     expect(

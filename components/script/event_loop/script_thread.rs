@@ -1434,9 +1434,16 @@ impl ScriptThread {
         // queue; otherwise a due timer with no unrelated message would never
         // be observed by the cooperative pump.
         #[cfg(target_arch = "wasm32")]
-        self.timer_scheduler
-            .borrow_mut()
-            .dispatch_completed_timers();
+        {
+            self.timer_scheduler
+                .borrow_mut()
+                .dispatch_completed_timers();
+            // Each Worker pump is one event-loop iteration. The native path
+            // resets the task queue's per-iteration throttle budget in
+            // `TaskQueue::select()`, which the non-blocking Worker path never
+            // calls; without this, throttled tasks stay held back forever.
+            let _ = self.task_queue.select();
+        }
         let fully_active = self.get_fully_active_document_ids();
         let mut event = if nonblocking {
             let Some(event) = self.receivers.try_recv(&self.task_queue, &fully_active) else {

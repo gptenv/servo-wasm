@@ -293,12 +293,15 @@ impl ServoInner {
         }
 
         #[cfg(target_arch = "wasm32")]
-        self.worker_pump_progress.set(
-            self.constellation
+        {
+            let ran_deferred = servo_base::threadpool::run_worker_deferred_work();
+            let pumped = self
+                .constellation
                 .borrow_mut()
                 .as_mut()
-                .is_some_and(Constellation::pump),
-        );
+                .is_some_and(Constellation::pump);
+            self.worker_pump_progress.set(ran_deferred || pumped);
+        }
 
         {
             let paint = self.paint.borrow();

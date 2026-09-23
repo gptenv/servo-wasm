@@ -148,6 +148,12 @@ impl VelloCPUDrawTarget {
 }
 
 fn worker_thread_count(size: &Size2D<u16>) -> u16 {
+    // Worker WASM has one thread; vello_cpu's multi-threaded dispatcher needs more.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = size;
+        return 0;
+    }
     // TODO: Somewhat arbitrary chosen, should be based on a benchmark,
     // measuring where we start to benefit from multithreading
     const SMALL_CANVAS_SIZE: u32 = 512 * 512;
@@ -165,9 +171,11 @@ impl GenericDrawTarget for VelloCPUDrawTarget {
 
     fn new(size: Size2D<u32>) -> Self {
         let size = size.cast();
+        // Not `..Default::default()`: with vello_cpu's `multithreading` feature
+        // that unwraps `available_parallelism()`, which panics on wasm32.
         let settings = RenderSettings {
+            level: vello_cpu::Level::try_detect().unwrap_or(vello_cpu::Level::baseline()),
             num_threads: worker_thread_count(&size),
-            ..Default::default()
         };
         let ctx = vello_cpu::RenderContext::new_with(size.width, size.height, settings);
         Self {

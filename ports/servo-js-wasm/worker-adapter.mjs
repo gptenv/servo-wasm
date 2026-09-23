@@ -157,9 +157,29 @@ class ServoWorkerRuntime {
   #activityVersion = 0;
   #activityWaiters = new Set();
   #settling = false;
+  #trap = null;
+  #evaluationPending = false;
 
   constructor(instance, fetchImpl, log, maxResponseBytes, maxSubrequests) {
-    this.instance = instance;
+    // A WASM trap does not unwind Rust state (held RefCell borrows, partial
+    // updates), so after the first trap every later export call would fail
+    // with a misleading secondary panic. Refuse them explicitly instead.
+    const exports = {};
+    for (const [name, value] of Object.entries(instance.exports)) {
+      exports[name] = typeof value !== 'function' ? value : (...args) => {
+        if (this.#trap) {
+          throw new Error('Servo runtime is unusable after an earlier WASM trap; ' +
+            'create a new runtime', { cause: this.#trap });
+        }
+        try {
+          return value(...args);
+        } catch (error) {
+          if (error instanceof WebAssembly.RuntimeError) this.#trap = error;
+          throw error;
+        }
+      };
+    }
+    this.instance = { exports };
     this.#fetchImpl = fetchImpl;
     this.#log = log;
     this.#maxResponseBytes = maxResponseBytes;
@@ -466,7 +486,9 @@ class ServoWorkerRuntime {
   evaluatePage(source) {
     const [ptr, len] = this.#write(source);
     try {
-      return this.instance.exports.servo_worker_evaluate_page(ptr, len) === 1;
+      const accepted = this.instance.exports.servo_worker_evaluate_page(ptr, len) === 1;
+      if (accepted) this.#evaluationPending = true;
+      return accepted;
     } finally {
       this.#free(ptr, len);
     }
@@ -537,6 +559,17 @@ class ServoWorkerRuntime {
       }
 
       const timerDelay = this.nextTimerDelayMs();
+      if (this.#evaluationPending && this.instance.exports.servo_worker_page_result_len()) {
+        this.#evaluationPending = false;
+      }
+      if (this.#evaluationPending) {
+        // An accepted evaluation has not produced its result yet. Its result
+        // can arrive after pumps that report no progress, so these turns are
+        // not evidence of quiescence; an exhausted budget reports unsettled.
+        quietTurns = 0;
+        await this.#wait(0);
+        continue;
+      }
       if (this.#inFlightFetches.size === 0 && this.#fetchQueue.length === 0 &&
           timerDelay === null) {
         await this.#wait(0);
@@ -571,6 +604,7 @@ class ServoWorkerRuntime {
 
   reset() {
     this.#generation++;
+    this.#evaluationPending = false;
     for (const controller of this.#fetchControllers.values()) controller.abort();
     this.#fetchControllers.clear();
     this.#inFlightFetches.clear();
@@ -578,6 +612,11 @@ class ServoWorkerRuntime {
     this.#inlinePage = null;
     this.#notifyActivity();
     return this.instance.exports.servo_worker_reset() === 1;
+  }
+
+  /** The WebAssembly.RuntimeError that made this runtime unusable, if any. */
+  get trapped() {
+    return this.#trap;
   }
 
   pendingFetchCount() {

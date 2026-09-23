@@ -1,5 +1,6 @@
 import servoWasm from '../../../target/wasm32-unknown-unknown/production-stripped/servo_js_wasm.wasm';
 import { createServoWorkerRuntime } from '../worker-adapter.mjs';
+import { webPlatformCases } from '../tests/web-platform-cases.mjs';
 
 const FIXTURE_URL = 'https://example.test/';
 const FIXTURE_HTML = '<!doctype html><html><head><title>workerd fixture</title>' +
@@ -14,6 +15,7 @@ const FIXTURE_HTML = '<!doctype html><html><head><title>workerd fixture</title>'
 export default {
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === '/cases') return runCases(Number(url.searchParams.get('rounds') ?? 3));
     if (url.pathname !== '/') return new Response('not found', { status: 404 });
 
     let streamCanceled = false;
@@ -53,3 +55,36 @@ export default {
     });
   },
 };
+
+// Runs the shared fixture corpus (DOM, CSS, canvas) repeatedly in real workerd,
+// reporting results that arrive only after the adapter reported settlement and
+// any trap or host stack exhaustion.
+async function runCases(rounds) {
+  const runtime = await createServoWorkerRuntime(servoWasm, {
+    url: 'about:blank', fetchImpl: async () => new Response('{}'),
+  });
+  runtime.loadHtml('<!doctype html><body><p>cases</p></body>', { url: 'https://cases.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+  const failures = [];
+  let passed = 0;
+  try {
+    for (let round = 0; round < rounds; round++) {
+      for (const { name, source } of webPlatformCases) {
+        runtime.evaluatePage(`(${source}) ? 42 : 0`);
+        const status = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+        let result = runtime.pageResult();
+        let lateTurns = 0;
+        while (!result && lateTurns < 50) {
+          runtime.pump();
+          lateTurns++;
+          result = runtime.pageResult();
+        }
+        if (result?.Ok?.Number === 42 && lateTurns === 0) passed++;
+        else failures.push({ round, name, settled: status.settled, lateTurns, result });
+      }
+    }
+  } catch (error) {
+    failures.push({ fatal: `${error?.name}: ${error?.message}` });
+  }
+  return Response.json({ passed, failures }, { status: failures.length ? 500 : 200 });
+}
