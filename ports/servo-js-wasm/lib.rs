@@ -141,10 +141,10 @@ pub unsafe extern "C" fn servo_worker_bootstrap(
 
 /// Fonts compiled into the module so text always has a font; see fonts/README.md.
 const BUNDLED_FONTS: [&[u8]; 4] = [
-    include_bytes!("fonts/LiberationSans-Regular.ttf"),
-    include_bytes!("fonts/LiberationSans-Bold.ttf"),
-    include_bytes!("fonts/LiberationSerif-Regular.ttf"),
-    include_bytes!("fonts/LiberationMono-Regular.ttf"),
+    include_bytes!("fonts/NotoSans-Regular.ttf"),
+    include_bytes!("fonts/NotoSans-Bold.ttf"),
+    include_bytes!("fonts/NotoSerif-Regular.ttf"),
+    include_bytes!("fonts/NotoSansMono-Regular.ttf"),
 ];
 
 /// Largest font file a host may register (large enough for a full CJK font).

@@ -112,10 +112,11 @@ implemented: layout does not produce a display list on the Worker today.
 
 ## Fonts
 
-The Worker has no system fonts. Liberation Sans (regular and bold), Liberation
-Serif and Liberation Mono are compiled in and registered at bootstrap; they back
-the `sans-serif`, `serif` and `monospace` generic families and are
-metric-compatible with Arial, Times New Roman and Courier New. Text is shaped
+The Worker has no system fonts. Noto Sans (regular and bold), Noto Serif and
+Noto Sans Mono are compiled in and registered at bootstrap; they back the
+`sans-serif`, `serif` and `monospace` generic families. They are not
+metric-compatible with Arial/Helvetica, so pages naming those fonts lay out
+slightly differently than in a browser that has them. Text is shaped
 with HarfRust (a pure-Rust HarfBuzz port) and measured with skrifa.
 
 `runtime.registerFont(bytes)` (export `servo_worker_register_font(ptr, len)`)

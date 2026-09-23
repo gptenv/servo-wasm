@@ -21,11 +21,10 @@ use crate::font::PlatformFontMethods;
 use crate::platform::font::PlatformFont;
 
 /// Family names of the fonts bundled into the Worker build, used for the CSS
-/// generic families (metric-compatible with Arial, Times New Roman and
-/// Courier New).
-const SANS_SERIF: &str = "liberation sans";
-const SERIF: &str = "liberation serif";
-const MONOSPACE: &str = "liberation mono";
+/// generic families.
+const SANS_SERIF: &str = "noto sans";
+const SERIF: &str = "noto serif";
+const MONOSPACE: &str = "noto sans mono";
 
 struct Face {
     family: String,

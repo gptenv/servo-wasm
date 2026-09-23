@@ -366,8 +366,9 @@ and canvas `measureText`/`fillText` panicked ("couldn't find font") and trapped
 the instance. Now:
 
 - `fonts_traits::worker_fonts` is an in-memory registry; faces appear as local
-  fonts (`worker-font:<n>`). Liberation Sans/Serif/Mono (OFL 1.1, ~1.5 MB) are
-  bundled and back the generic families; hosts add more with `registerFont()`.
+  fonts (`worker-font:<n>`). Noto Sans (regular, bold), Noto Serif and Noto
+  Sans Mono (OFL 1.1, ~2.6 MB; the user's preferred font) are bundled and back
+  the generic families; hosts add more with `registerFont()`.
 - `platform/wasm` implements `PlatformFont` on skrifa (charmap, advances,
   bounds, metrics) and the font list on the registry; missing glyphs fall back
   to every registered family.
@@ -378,7 +379,7 @@ the instance. Now:
   pattern as canvas and storage) and refreshes when fonts are registered.
 
 Verified: 41/41 Node tests and 39/39 workerd case runs; 16 px sans-serif text
-lays out at 18.4 px line height, matching Chrome/Firefox with Arial. Artifact
+lays out with real font metrics (18.4 px line height with Liberation Sans, as Chrome/Firefox give for Arial; the bundled fonts were then switched to Noto, whose taller line height is expected). Artifact
 60,349,728 bytes (about 6.7 MB below the 64 MiB limit). Font sanitization
 (fontsan) remains unavailable on wasm32.
 

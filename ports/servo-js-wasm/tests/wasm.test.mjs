@@ -752,7 +752,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   }
 
   await t.test('host fonts register, and invalid font data is rejected', () => {
-    const mono = readFileSync(new URL('../fonts/LiberationMono-Regular.ttf', import.meta.url));
+    const mono = readFileSync(new URL('../fonts/NotoSansMono-Regular.ttf', import.meta.url));
     assert.equal(runtime.registerFont(mono), 1);
     assert.throws(() => runtime.registerFont(new Uint8Array([1, 2, 3, 4])), TypeError);
     assert.throws(() => runtime.registerFont(new Uint8Array()), RangeError);
