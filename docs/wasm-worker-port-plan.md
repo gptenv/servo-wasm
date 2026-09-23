@@ -334,18 +334,30 @@ Related root causes found and fixed while doing it:
   arrived; it now waits for outstanding evaluations. The adapter also refuses
   all calls after a WASM trap instead of producing misleading secondary panics.
 
-Verified: 36/36 Node tests (`npm test` in ports/servo-js-wasm, which also sets
+Verified at that point: 36/36 Node tests (`npm test` in ports/servo-js-wasm, which also sets
 the larger stack Node's defaults need; real workerd did not overflow), exact
 five-import allowlist, artifact 57,836,481 bytes. Local workerd `/cases` runs the
 shared fixture corpus repeatedly.
 
-**Open: other blocking `recv()` sites.** The canvas and image-key hangs share one
-pattern: script blocks on a reply from a component that only runs after the
-current script turn. Remaining script sites of this kind include `alert`,
-`confirm`, `prompt` (window.rs), `outerWidth`/`screenX` (`client_window`),
-`screen.*` (screen.rs), `history.length` and history state (history.rs), and
-`window.open` (windowproxy.rs). These need characterizing and Worker-safe
-answers before arbitrary real pages can be loaded reliably.
+**Blocking `recv()` sites: first batch fixed.** The canvas and image-key hangs
+share one pattern: script blocks on a reply from a component that only runs
+after the current script turn. Probing common APIs on a real `https:` page found
+nine that hung the Worker forever and one that trapped it. All now answer
+without waiting, as a headless browser would:
+
+| API | Worker answer |
+| --- | --- |
+| `screen.*`, `outerWidth`/`outerHeight`, `screenX`/`screenY` | the viewport (no physical screen or window) |
+| `alert` / `confirm` / `prompt` | dismissed via the spec's "cannot show simple dialogs" step: no-op, `false`, `null` |
+| `window.open` | popup blocked: `null` |
+| `history.length` | `1` (session history lives in the constellation) |
+| `localStorage` / `sessionStorage` | previously panicked (storage thread absent) and trapped; now Servo's own web-storage manager with in-memory SQLite, driven in-process |
+
+Still unaudited from the same pattern: history traversal state
+(`CoreResourceMsg::GetHistoryState` in history.rs, used by back/forward), window
+features that clone storage for auxiliary contexts, and the less common sites
+listed by `grep -rn "\.recv()" components/script/dom`. `history.length` is not
+tracked across in-page navigations.
 
 **Build memory.** This machine has 15 GB and no swap. Building the `script` crate
 alone at this profile needs several GB; with other large apps open, even

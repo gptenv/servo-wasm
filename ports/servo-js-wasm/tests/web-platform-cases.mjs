@@ -125,4 +125,25 @@ export const webPlatformCases = [
       return url.startsWith('data:image/png;base64,iVBORw0KGgo') && url.length > 40;
     })()`,
   },
+  {
+    name: 'no-UI Worker answers: dialogs dismissed, popups blocked, screen is the viewport',
+    source: `(() => {
+      return alert('x') === undefined && confirm('x') === false && prompt('x', 'd') === null &&
+        window.open('about:blank') === null && history.length === 1 &&
+        screen.width === window.innerWidth && screen.availHeight === window.innerHeight &&
+        window.outerWidth === window.innerWidth && window.screenX === 0;
+    })()`,
+  },
+  {
+    name: 'localStorage and sessionStorage round-trip in memory',
+    source: `(() => {
+      localStorage.clear(); sessionStorage.clear();
+      localStorage.setItem('k', 'v'); sessionStorage.setItem('s', '1');
+      const ok = localStorage.getItem('k') === 'v' && localStorage.length === 1 &&
+        localStorage.key(0) === 'k' && sessionStorage.getItem('s') === '1' &&
+        localStorage.getItem('s') === null && Object.keys(localStorage).includes('k');
+      localStorage.removeItem('k');
+      return ok && localStorage.getItem('k') === null && localStorage.length === 0;
+    })()`,
+  },
 ];

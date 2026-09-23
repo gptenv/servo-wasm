@@ -112,3 +112,28 @@ pub enum WebStorageThreadMsg {
     /// Measure memory used by this thread and send the report over the provided channel.
     CollectMemoryReport(ReportsChan),
 }
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static WORKER_WEBSTORAGE_PUMPS: std::cell::RefCell<Vec<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Register a Worker WASM web-storage service that runs in-process instead of
+/// on its own thread. It must handle every message already queued when called.
+#[cfg(target_arch = "wasm32")]
+pub fn register_worker_webstorage_pump(pump: Box<dyn FnMut()>) {
+    WORKER_WEBSTORAGE_PUMPS.with(|pumps| pumps.borrow_mut().push(pump));
+}
+
+/// Run queued web-storage messages so their replies exist. Script calls this
+/// after sending, before blocking on a reply; on native targets the storage
+/// thread handles messages concurrently and this does nothing.
+pub fn process_worker_webstorage() {
+    #[cfg(target_arch = "wasm32")]
+    WORKER_WEBSTORAGE_PUMPS.with(|pumps| {
+        for pump in pumps.borrow_mut().iter_mut() {
+            pump();
+        }
+    });
+}

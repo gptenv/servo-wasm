@@ -924,6 +924,11 @@ impl Window {
 
     /// <https://html.spec.whatwg.org/multipage/#cannot-show-simple-dialogs>
     fn cannot_show_simple_dialogs(&self) -> bool {
+        // Step 4 ("optionally, return true") on a Worker: there is no user to
+        // show a dialog to, and waiting for the embedder would never finish.
+        #[cfg(target_arch = "wasm32")]
+        return true;
+
         // Step 1: If the active sandboxing flag set of window's associated Document has
         // the sandboxed modals flag set, then return true.
         if self
@@ -2604,12 +2609,26 @@ impl Window {
         self.viewport_details.get().hidpi_scale_factor
     }
 
+    /// The viewport size in whole CSS pixels. A Worker has no physical screen
+    /// or window, so this is also its screen and outer-window size.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn worker_screen_size(&self) -> servo_geometry::DeviceIndependentIntSize {
+        let size = self.viewport_details.get().size;
+        Size2D::new(size.width.round() as i32, size.height.round() as i32)
+    }
+
     fn client_window(&self) -> DeviceIndependentIntRect {
-        let (sender, receiver) = generic_channel::channel().expect("Failed to create IPC channel!");
-
-        self.send_to_embedder(EmbedderMsg::GetWindowRect(self.webview_id(), sender));
-
-        receiver.recv().unwrap_or_default()
+        // The embedder only answers after this script turn ends on a Worker,
+        // so a blocking request would never complete.
+        #[cfg(target_arch = "wasm32")]
+        return DeviceIndependentIntRect::from_size(self.worker_screen_size());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (sender, receiver) =
+                generic_channel::channel().expect("Failed to create IPC channel!");
+            self.send_to_embedder(EmbedderMsg::GetWindowRect(self.webview_id(), sender));
+            receiver.recv().unwrap_or_default()
+        }
     }
 
     /// Prepares to tick animations and then does a reflow which also advances the

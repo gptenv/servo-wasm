@@ -110,6 +110,14 @@ gradients and `toDataURL`/`toBlob`. `getContext("webgl")` returns `null`. Canvas
 text needs fonts, which the Worker does not have yet. Page screenshots are not
 implemented: layout does not produce a display list on the Worker today.
 
+## No-UI browser behavior
+
+The Worker has no screen, window chrome or user. `screen.*`, `outerWidth`,
+`outerHeight`, `screenX` and `screenY` report the viewport; `alert`, `confirm`
+and `prompt` are dismissed (`undefined`, `false`, `null`); `window.open` returns
+`null`; `history.length` is `1`. `localStorage` and `sessionStorage` work and are
+kept in memory for the lifetime of the WASM instance only.
+
 ## Limits and intentionally incomplete behavior
 
 The default host limits are six simultaneous fetches, fifty pending requests and

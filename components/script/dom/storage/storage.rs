@@ -59,7 +59,10 @@ impl Storage {
     }
 
     fn send_storage_msg(&self, msg: WebStorageThreadMsg) -> SendResult {
-        GenericSend::send(self.global().storage_threads(), msg)
+        let result = GenericSend::send(self.global().storage_threads(), msg);
+        // Worker WASM runs web storage in-process; produce the reply now.
+        storage_traits::webstorage_thread::process_worker_webstorage();
+        result
     }
 }
 

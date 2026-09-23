@@ -352,6 +352,11 @@ impl HistoryMethods<crate::DomTypeHolder> for History {
         if !self.window.Document().is_fully_active() {
             return Err(Error::Security(None));
         }
+        // Session history lives in the constellation, which cannot answer
+        // while this script turn runs inside its Worker pump. A Worker page is
+        // loaded for one visit, so report a single entry rather than hang.
+        #[cfg(target_arch = "wasm32")]
+        return Ok(1);
 
         let Some((sender, recv)) =
             generic_channel::channel(self.global().time_profiler_chan().clone())

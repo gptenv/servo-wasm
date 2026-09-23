@@ -59,9 +59,7 @@ pub fn new_storage_threads(
             let idb = generic_channel::channel::<IndexedDBThreadMsg>()
                 .expect("create Worker indexedDB channel")
                 .0;
-            let web = generic_channel::channel::<WebStorageThreadMsg>()
-                .expect("create Worker web-storage channel")
-                .0;
+            let web = crate::webstorage::new_worker_webstorage();
             let cache = generic_channel::channel::<CacheStorageThreadMessage>()
                 .expect("create Worker cache-storage channel")
                 .0;

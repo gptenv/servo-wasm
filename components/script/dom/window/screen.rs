@@ -33,14 +33,26 @@ impl Screen {
 
     /// Retrives [`ScreenMetrics`] from the embedder.
     fn screen_metrics(&self) -> ScreenMetrics {
-        let (sender, receiver) = generic_channel::channel().expect("Failed to create IPC channel!");
-
-        self.window.send_to_embedder(EmbedderMsg::GetScreenMetrics(
-            self.window.webview_id(),
-            sender,
-        ));
-
-        receiver.recv().unwrap_or_default()
+        // A Worker has no screen, and the embedder cannot answer until this
+        // script turn ends; report the viewport, like a headless browser.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let size = self.window.worker_screen_size();
+            return ScreenMetrics {
+                screen_size: size,
+                available_size: size,
+            };
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (sender, receiver) =
+                generic_channel::channel().expect("Failed to create IPC channel!");
+            self.window.send_to_embedder(EmbedderMsg::GetScreenMetrics(
+                self.window.webview_id(),
+                sender,
+            ));
+            receiver.recv().unwrap_or_default()
+        }
     }
 }
 

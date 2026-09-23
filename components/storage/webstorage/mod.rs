@@ -66,6 +66,25 @@ impl WebStorageThreadFactory for GenericSender<WebStorageThreadMsg> {
     }
 }
 
+/// Worker WASM web storage: the same manager, with in-memory SQLite, driven on
+/// the script thread through `storage_traits::webstorage_thread` instead of a
+/// spawned thread. Data lives only as long as the WASM instance.
+#[cfg(target_arch = "wasm32")]
+pub fn new_worker_webstorage() -> GenericSender<WebStorageThreadMsg> {
+    let (chan, port) = generic_channel::channel().unwrap();
+    let mut manager = WebStorageManager::new(port, None);
+    let mut running = true;
+    storage_traits::webstorage_thread::register_worker_webstorage_pump(Box::new(move || {
+        while running {
+            let Ok(message) = manager.port.try_recv() else {
+                break;
+            };
+            running = manager.handle_message(message);
+        }
+    }));
+    chan
+}
+
 #[derive(Deserialize, MallocSizeOf, Serialize)]
 pub struct StorageOrigins {
     // TODO: Consider grouping by eTLD+1
@@ -238,7 +257,17 @@ impl WebStorageManager {
 impl WebStorageManager {
     fn start(&mut self) {
         loop {
-            match self.port.recv().unwrap() {
+            let message = self.port.recv().unwrap();
+            if !self.handle_message(message) {
+                break;
+            }
+        }
+    }
+
+    /// Handle one message; returns false once the manager should stop.
+    fn handle_message(&mut self, message: WebStorageThreadMsg) -> bool {
+        {
+            match message {
                 WebStorageThreadMsg::Length(sender, storage_type, webview_id, url) => {
                     self.length(sender, storage_type, webview_id, url)
                 },
@@ -289,10 +318,11 @@ impl WebStorageManager {
                 WebStorageThreadMsg::Exit(sender) => {
                     // Nothing to do since we save localstorage set eagerly.
                     let _ = sender.send(());
-                    break;
+                    return false;
                 },
             }
         }
+        true
     }
 
     fn collect_memory_reports(&self) -> Vec<Report> {
