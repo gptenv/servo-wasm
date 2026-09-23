@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomFillSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { inflateSync } from 'node:zlib';
 import test from 'node:test';
 import { createServoWorkerRuntime } from '../worker-adapter.mjs';
 import { webPlatformCases } from './web-platform-cases.mjs';
@@ -70,6 +71,49 @@ instance = new WebAssembly.Instance(wasm, {
   },
 });
 instance.exports.__wasm_call_ctors();
+
+// Decode an 8-bit RGBA PNG into {width, height, pixel(x, y) -> [r, g, b, a]}.
+function decodePng(bytes) {
+  const data = Buffer.from(bytes);
+  assert.deepEqual([...data.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10], 'PNG signature');
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  const idat = [];
+  while (offset < data.length) {
+    const length = data.readUInt32BE(offset);
+    const type = data.toString('latin1', offset + 4, offset + 8);
+    const chunk = data.subarray(offset + 8, offset + 8 + length);
+    if (type === 'IHDR') {
+      width = chunk.readUInt32BE(0);
+      height = chunk.readUInt32BE(4);
+      assert.equal(chunk[8], 8, 'bit depth');
+      assert.equal(chunk[9], 6, 'RGBA color type');
+    }
+    if (type === 'IDAT') idat.push(chunk);
+    offset += 12 + length;
+  }
+  const raw = inflateSync(Buffer.concat(idat));
+  const stride = width * 4;
+  const rows = [];
+  let previous = new Uint8Array(stride);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)];
+    const row = Uint8Array.from(raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)));
+    for (let i = 0; i < stride; i++) {
+      const a = i >= 4 ? row[i - 4] : 0;
+      const b = previous[i];
+      const c = i >= 4 ? previous[i - 4] : 0;
+      const predictor = [0, a, b, (a + b) >> 1,
+        (() => { const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+          return pa <= pb && pa <= pc ? a : pb <= pc ? b : c; })()][filter];
+      row[i] = (row[i] + predictor) & 255;
+    }
+    rows.push(row);
+    previous = row;
+  }
+  return { width, height, pixel: (x, y) => [...rows[y].subarray(x * 4, x * 4 + 4)] };
+}
 
 function evaluate(source) {
   const bytes = new TextEncoder().encode(source);
@@ -838,4 +882,46 @@ test('host subrequest budget counts redirects and survives reset', async () => {
   await settle();
   assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
   assert.equal(requests.length, 2, 'reset must not replenish the invocation subrequest budget');
+});
+
+test('screenshots rasterize backgrounds, borders, text, images and canvas', async () => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 400,
+    height: 300,
+    fetchImpl: async () => new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:rgb(10, 20, 30)">
+    <div id="box" style="position:absolute;left:20px;top:20px;width:100px;height:50px;
+      background:rgb(0, 200, 0);border:5px solid rgb(0, 0, 255)"></div>
+    <canvas id="canvas" width="40" height="40" style="position:absolute;left:200px;top:20px"></canvas>
+    <img id="image" width="40" height="40" style="position:absolute;left:260px;top:20px">
+    <div style="position:absolute;left:20px;top:150px;font:24px sans-serif;color:white">Hello</div>
+    <script>
+      const canvas = document.getElementById('canvas').getContext('2d');
+      canvas.fillStyle = 'rgb(255, 0, 0)';
+      canvas.fillRect(0, 0, 40, 40);
+      const source = document.createElement('canvas');
+      source.width = 2; source.height = 2;
+      const context = source.getContext('2d');
+      context.fillStyle = 'rgb(255, 255, 0)';
+      context.fillRect(0, 0, 2, 2);
+      document.getElementById('image').src = source.toDataURL();
+    </script></body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const png = decodePng(await runtime.screenshot());
+  assert.equal(png.width, 400);
+  assert.equal(png.height, 300);
+  assert.deepEqual(png.pixel(390, 290), [10, 20, 30, 255], 'page background');
+  assert.deepEqual(png.pixel(70, 50), [0, 200, 0, 255], 'box background');
+  assert.deepEqual(png.pixel(22, 50), [0, 0, 255, 255], 'box border');
+  assert.deepEqual(png.pixel(220, 40), [255, 0, 0, 255], 'canvas content');
+  assert.deepEqual(png.pixel(280, 40), [255, 255, 0, 255], 'image content');
+  let inked = 0;
+  for (let y = 150; y < 185; y++) {
+    for (let x = 20; x < 90; x++) {
+      if (png.pixel(x, y)[0] > 128) inked++;
+    }
+  }
+  assert.ok(inked > 50, `text should draw glyphs (inked ${inked} pixels)`);
 });

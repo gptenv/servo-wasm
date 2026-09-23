@@ -223,6 +223,20 @@ pub struct SerializableDisplayListPayload {
     pub spatial_tree: Vec<u8>,
 }
 
+/// Identifier for an image, font or font instance key made without a WebRender
+/// instance. Native Servo only does this after a painter is gone, when a
+/// constant is fine; the Worker has no painter at all, and its CPU renderer
+/// needs every resource key to be distinct.
+pub fn fallback_resource_key() -> u32 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        static NEXT_KEY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+        return NEXT_KEY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    0
+}
+
 /// A mechanism to send messages from ScriptThread to the parent process' WebRender instance.
 #[derive(Clone, Deserialize, MallocSizeOf, Serialize)]
 pub struct CrossProcessPaintApi(GenericCallback<PaintMessage>);
@@ -380,7 +394,10 @@ impl CrossProcessPaintApi {
         // instance, so waiting for its reply would deadlock. Return the same
         // placeholder key it would produce without a painter.
         #[cfg(target_arch = "wasm32")]
-        return Some(ImageKey::new(PainterId::from(webview_id).into(), 0));
+        return Some(ImageKey::new(
+            PainterId::from(webview_id).into(),
+            fallback_resource_key(),
+        ));
         #[cfg(not(target_arch = "wasm32"))]
         {
             let (sender, receiver) = generic_channel::channel().unwrap();
@@ -504,8 +521,12 @@ impl CrossProcessPaintApi {
         // See `generate_image_key_blocking`: blocking on Worker Paint deadlocks.
         #[cfg(target_arch = "wasm32")]
         return (
-            vec![FontKey::new(painter_id.into(), 0); number_of_font_keys],
-            vec![FontInstanceKey::new(painter_id.into(), 0); number_of_font_instance_keys],
+            (0..number_of_font_keys)
+                .map(|_| FontKey::new(painter_id.into(), fallback_resource_key()))
+                .collect(),
+            (0..number_of_font_instance_keys)
+                .map(|_| FontInstanceKey::new(painter_id.into(), fallback_resource_key()))
+                .collect(),
         );
         #[cfg(not(target_arch = "wasm32"))]
         {

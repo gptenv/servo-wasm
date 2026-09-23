@@ -1,12 +1,12 @@
 # Servo WASM Worker Port: Completion Plan
 
-Status: active port; DOM/JS/CSS, streaming fetch cancellation, timers, inline HTML, page reset, repeated loads, canvas 2D (including text), image loading and font-based text layout verified locally (2026-09-23). Next goal: page screenshots.
+Status: active port; DOM/JS/CSS, streaming fetch cancellation, timers, inline HTML, page reset, repeated loads, canvas 2D (including text), image loading, font-based text layout and viewport screenshots verified locally, including in workerd (2026-09-23).
 
 Target: a raw `wasm32-unknown-unknown` Servo module instantiated directly by a Cloudflare Worker. The MCP server and OAuth layer remain a separate repository and are intentionally out of scope for this port.
 
 ## 1. Current state
 
-The port builds as a raw `wasm32-unknown-unknown` module with no WASI or wasm-bindgen imports. The current production-stripped artifact is **60,349,728 bytes** (about 57.6 MiB), below the 64 MiB target (the same limit applies on Workers Free and Paid). The Worker bundle remains about **54,637 KiB** uncompressed (see the smoke-test README for the latest exact dry-run measurement). It imports exactly these five host functions:
+The port builds as a raw `wasm32-unknown-unknown` module with no WASI or wasm-bindgen imports. The current production-stripped artifact is **61,592,697 bytes** (about 58.7 MiB), below the 64 MiB target (the same limit applies on Workers Free and Paid). The Worker bundle remains about **54,637 KiB** uncompressed (see the smoke-test README for the latest exact dry-run measurement). It imports exactly these five host functions:
 
 - `worker_fetch_request`
 - `worker_getrandom`
@@ -14,7 +14,7 @@ The port builds as a raw `wasm32-unknown-unknown` module with no WASI or wasm-bi
 - `worker_monotonic_now_ns`
 - `worker_unix_time_now_ns`
 
-The Worker adapter instantiates the module, creates a Servo instance, installs the fetch bridge, and advances the cooperative event loop. Deterministic raw-WASM integration coverage includes navigation and subresource fetches, JS `fetch()` success and 404 responses, in-memory POST bodies and clean rejection of oversized bodies, response headers, responses over 1 MiB via chunked delivery, bounded response size, failed fetches, navigation and JS fetch redirects, rejection of cross-origin script-fetch redirects before forwarding credentials, CSSOM parsing and cross-origin stylesheet-rule access control, a resolved CSS color, inline scripts, `setTimeout`, cross-origin page-global separation, aborting an in-flight host fetch on page reset, and four sequential page loads with a bounded linear-memory check. The expanded suite has **41 passing tests including subtests** against the production-stripped artifact (run `npm test` in `ports/servo-js-wasm`), including canvas 2D pixel readback and `<img>` decoding. A host-facing timer deadline export and `pumpUntilSettled()` use Worker `scheduler.wait()` where available, with a cancellable timer fallback. The pump reports internal browser event progress and wakes on response headers/chunks, preventing false idle and allowing page code to consume or abort a response before its body completes.
+The Worker adapter instantiates the module, creates a Servo instance, installs the fetch bridge, and advances the cooperative event loop. Deterministic raw-WASM integration coverage includes navigation and subresource fetches, JS `fetch()` success and 404 responses, in-memory POST bodies and clean rejection of oversized bodies, response headers, responses over 1 MiB via chunked delivery, bounded response size, failed fetches, navigation and JS fetch redirects, rejection of cross-origin script-fetch redirects before forwarding credentials, CSSOM parsing and cross-origin stylesheet-rule access control, a resolved CSS color, inline scripts, `setTimeout`, cross-origin page-global separation, aborting an in-flight host fetch on page reset, and four sequential page loads with a bounded linear-memory check. The expanded suite has **43 passing tests including subtests** against the production-stripped artifact (run `npm test` in `ports/servo-js-wasm`), including canvas 2D pixel readback and `<img>` decoding. A host-facing timer deadline export and `pumpUntilSettled()` use Worker `scheduler.wait()` where available, with a cancellable timer fallback. The pump reports internal browser event progress and wakes on response headers/chunks, preventing false idle and allowing page code to consume or abort a response before its body completes.
 
 The latest batch adds a checked **version-1 host ABI**, `loadHtml(html, {url})`, deterministic initial `about:blank` bootstrapping before the async factory returns, reset-then-load navigation coalescing, and cancellation of active/queued host fetches from page `AbortController`s. Response delivery enforces header/chunk/terminal ordering. Mid-body failures now reject body consumers instead of succeeding with truncated content, and already-errored/canceled streams ignore duplicate failure transitions and late chunks. Tests cover these cases, unread response/redirect-body cleanup, subrequest limits across redirects and resets, and invalid/concurrent settling calls. A small original web-platform-style corpus covers templates, selectors, DOM fragments/clones, event propagation, CSS rule mutation/computed-style invalidation, shadow DOM, and microtask/timer ordering. It is not the upstream WPT runner or a claim of complete web conformance. The exact contract is in [WORKER-ABI.md](../ports/servo-js-wasm/WORKER-ABI.md).
 
@@ -290,6 +290,7 @@ Every layer should run after a clean target build at least once in CI. Increment
 - [x] Stylo WASM clock fork/patch is reproducible and pinned.
 - [x] Raw Worker adapter can fetch deterministic HTML, parse its DOM/CSSOM, execute an inline script, and return a page-evaluation result.
 - [ ] `about:blank` and multiple sequential full-page loads pump to stable completion with bounded retained memory.
+- [x] Viewport screenshots render on the CPU (Node and workerd); shadows, dashed borders, scroll positions and full-page capture remain.
 - [ ] Page scripts, DOM mutation, promises, and exceptions work broadly; inline scripts, DOM reads, and `setTimeout` have a deterministic smoke test.
 - [ ] Worker fetch request/response/error/cancel protocol is complete; navigation, subresources, in-memory POST, headers, chunks, same-origin redirects, abort before/after headers, queued aborts, body failure, response ordering and reset cancellation are covered. Streaming request bodies, full CORS/cookie/manual-redirect behavior, reader/clone cancellation and the wider redirect matrix remain. Simple permitted CORS reads work; unsupported credential/preflight paths fail closed.
 - [x] ABI version mismatch is rejected; immediate navigation after factory creation and supplied inline HTML are tested.
@@ -382,6 +383,26 @@ Verified: 41/41 Node tests and 39/39 workerd case runs; 16 px sans-serif text
 lays out with real font metrics (18.4 px line height with Liberation Sans, as Chrome/Firefox give for Arial; the bundled fonts were then switched to Noto, whose taller line height is expected). Artifact
 60,349,728 bytes (about 6.7 MB below the 64 MiB limit). Font sanitization
 (fontsan) remains unavailable on wasm32.
+
+**Screenshots.** The Worker has no WebRender painter, so a CPU renderer interprets
+display lists instead:
+
+- `update_the_rendering` was disabled on wasm32; it now runs once per host frame
+  request (`servo_worker_request_frame`). Layout's display list build then
+  panicked in WebRender's `zeitstempel::now()` (std `Instant` on wasm32), fixed in
+  `gptenv/webrender-wasm` `defce4362`. `servo_base::worker_trace` breadcrumbs,
+  printed by the panic hook, located it in a stripped build.
+- Worker Paint keeps each pipeline's latest display list and the images, fonts
+  and font instances layout registers (`components/paint/worker_frame.rs`);
+  resource keys were all `0` on the Worker and now come from a counter.
+- `components/paint/worker_render.rs` draws them with vello_cpu and encodes PNG
+  via `pixels`; see WORKER-ABI.md for coverage and gaps.
+- Canvas frames reach Paint (the Worker canvas uses the page's paint API), and
+  Paint answers canvas frame-delay requests immediately; previously a page with
+  a canvas never rendered again after its first frame.
+
+Verified with pixel-exact Node tests (43/43) and in workerd (a 640×360 page renders
+in ~80 ms). Artifact 61,592,697 bytes.
 
 **Build memory.** This machine has 15 GB and no swap. Building the `script` crate
 alone at this profile needs several GB; with other large apps open, even

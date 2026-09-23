@@ -21,9 +21,12 @@ use webrender_api::{
 pub(crate) struct CapturedDisplayList {
     pub(crate) info: PaintDisplayListInfo,
     pub(crate) display_list: BuiltDisplayList,
+    /// Capture order, to find the most recent top-level document.
+    pub(crate) sequence: u64,
 }
 
 thread_local! {
+    static NEXT_SEQUENCE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static DISPLAY_LISTS: RefCell<FxHashMap<WebRenderPipelineId, CapturedDisplayList>> =
         RefCell::new(FxHashMap::default());
 }
@@ -47,10 +50,15 @@ pub(crate) fn capture_display_list(
         descriptor,
     );
     let pipeline_id = info.pipeline_id;
+    let sequence = NEXT_SEQUENCE.with(|next| next.replace(next.get() + 1));
     DISPLAY_LISTS.with(|lists| {
         lists.borrow_mut().insert(
             pipeline_id,
-            CapturedDisplayList { info, display_list },
+            CapturedDisplayList {
+                info,
+                display_list,
+                sequence,
+            },
         )
     });
 }
@@ -61,9 +69,163 @@ pub(crate) fn remove_pipeline(pipeline_id: PipelineId) {
     DISPLAY_LISTS.with(|lists| lists.borrow_mut().remove(&pipeline_id));
 }
 
+/// The most recently captured display list that is not an iframe's content.
+pub(crate) fn root_pipeline(
+    lists: &FxHashMap<WebRenderPipelineId, CapturedDisplayList>,
+) -> Option<WebRenderPipelineId> {
+    let mut children = rustc_hash::FxHashSet::default();
+    for captured in lists.values() {
+        let mut iter = captured.display_list.iter();
+        while let Some(item) = iter.next() {
+            if let webrender_api::DisplayItem::Iframe(iframe) = item.item() {
+                children.insert(iframe.pipeline_id);
+            }
+        }
+    }
+    lists
+        .iter()
+        .filter(|(pipeline, _)| !children.contains(*pipeline))
+        .max_by_key(|(_, captured)| captured.sequence)
+        .map(|(pipeline, _)| *pipeline)
+}
+
 /// Run `f` with the captured display lists.
 pub(crate) fn with_display_lists<R>(
     f: impl FnOnce(&FxHashMap<WebRenderPipelineId, CapturedDisplayList>) -> R,
 ) -> R {
     DISPLAY_LISTS.with(|lists| f(&lists.borrow()))
+}
+
+/// Pixel data registered for an image key, as WebRender would receive it.
+pub(crate) struct WorkerImage {
+    pub(crate) descriptor: webrender_api::ImageDescriptor,
+    pub(crate) data: std::sync::Arc<Vec<u8>>,
+}
+
+pub(crate) struct WorkerFontInstance {
+    pub(crate) font_key: webrender_api::FontKey,
+    /// Font size in device pixels.
+    pub(crate) size: f32,
+    pub(crate) variations: Vec<webrender_api::FontVariation>,
+}
+
+#[derive(Default)]
+pub(crate) struct WorkerResources {
+    pub(crate) images: FxHashMap<webrender_api::ImageKey, WorkerImage>,
+    pub(crate) fonts: FxHashMap<webrender_api::FontKey, vello_cpu::peniko::FontData>,
+    pub(crate) font_instances: FxHashMap<webrender_api::FontInstanceKey, WorkerFontInstance>,
+}
+
+thread_local! {
+    static RESOURCES: RefCell<WorkerResources> = RefCell::new(WorkerResources::default());
+    static RESOURCE_GENERATION: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Changes whenever an image, font or font instance arrives, so a host can
+/// tell whether a frame triggered resource loads that a later frame will show.
+pub(crate) fn resource_generation() -> u32 {
+    RESOURCE_GENERATION.with(std::cell::Cell::get)
+}
+
+fn bump_resource_generation() {
+    RESOURCE_GENERATION.with(|generation| generation.set(generation.get().wrapping_add(1)));
+}
+
+pub(crate) fn with_resources<R>(f: impl FnOnce(&WorkerResources) -> R) -> R {
+    RESOURCES.with(|resources| f(&resources.borrow()))
+}
+
+pub(crate) fn update_images(updates: impl IntoIterator<Item = paint_api::ImageUpdate>) {
+    use paint_api::{ImageUpdate, SerializableImageData};
+    bump_resource_generation();
+    RESOURCES.with(|resources| {
+        let images = &mut resources.borrow_mut().images;
+        for update in updates {
+            match update {
+                ImageUpdate::AddImage(key, descriptor, data, _) |
+                ImageUpdate::UpdateImage(key, descriptor, data, _) => match data {
+                    SerializableImageData::Raw(bytes) => {
+                        images.insert(
+                            key,
+                            WorkerImage {
+                                descriptor,
+                                data: std::sync::Arc::new(bytes.to_vec()),
+                            },
+                        );
+                    },
+                    // External images (WebGL, media, WebGPU) do not exist on the Worker.
+                    SerializableImageData::External(_) => {
+                        images.remove(&key);
+                    },
+                },
+                ImageUpdate::UpdateImageForAnimation(key, descriptor) => {
+                    if let Some(image) = images.get_mut(&key) {
+                        image.descriptor = descriptor;
+                    }
+                },
+                ImageUpdate::DeleteImage(key) => {
+                    images.remove(&key);
+                },
+            }
+        }
+    });
+}
+
+pub(crate) fn add_font(key: webrender_api::FontKey, data: &[u8], index: u32) {
+    let font = vello_cpu::peniko::FontData::new(
+        vello_cpu::peniko::Blob::new(std::sync::Arc::new(data.to_vec())),
+        index,
+    );
+    RESOURCES.with(|resources| resources.borrow_mut().fonts.insert(key, font));
+    bump_resource_generation();
+}
+
+/// Local fonts on the Worker live in the font registry; their handle path is
+/// the registry identifier (`worker-font:<n>`).
+pub(crate) fn add_system_font(key: webrender_api::FontKey, handle: webrender_api::NativeFontHandle) {
+    let Some(data) = handle
+        .path
+        .to_str()
+        .and_then(|path| path.strip_prefix(fonts_traits::worker_fonts::PATH_PREFIX))
+        .and_then(|index| index.parse::<usize>().ok())
+        .and_then(fonts_traits::worker_fonts::get)
+    else {
+        log::warn!("Worker renderer: unknown system font {:?}", handle.path);
+        return;
+    };
+    add_font(key, data.as_ref(), handle.index);
+}
+
+pub(crate) fn add_font_instance(
+    instance_key: webrender_api::FontInstanceKey,
+    font_key: webrender_api::FontKey,
+    size: f32,
+    variations: Vec<webrender_api::FontVariation>,
+) {
+    bump_resource_generation();
+    RESOURCES.with(|resources| {
+        resources.borrow_mut().font_instances.insert(
+            instance_key,
+            WorkerFontInstance {
+                font_key,
+                size,
+                variations,
+            },
+        )
+    });
+}
+
+pub(crate) fn remove_fonts(
+    keys: Vec<webrender_api::FontKey>,
+    instance_keys: Vec<webrender_api::FontInstanceKey>,
+) {
+    RESOURCES.with(|resources| {
+        let mut resources = resources.borrow_mut();
+        for key in keys {
+            resources.fonts.remove(&key);
+        }
+        for key in instance_keys {
+            resources.font_instances.remove(&key);
+        }
+    });
 }

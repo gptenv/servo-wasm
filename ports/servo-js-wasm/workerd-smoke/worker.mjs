@@ -16,6 +16,7 @@ export default {
   async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname === '/cases') return runCases(Number(url.searchParams.get('rounds') ?? 3));
+    if (url.pathname === '/screenshot') return screenshot();
     if (url.pathname !== '/') return new Response('not found', { status: 404 });
 
     let streamCanceled = false;
@@ -87,4 +88,25 @@ async function runCases(rounds) {
     failures.push({ fatal: `${error?.name}: ${error?.message}` });
   }
   return Response.json({ passed, failures }, { status: failures.length ? 500 : 200 });
+}
+
+// Renders a small fixture page to PNG inside workerd.
+async function screenshot() {
+  const runtime = await createServoWorkerRuntime(servoWasm, {
+    url: 'about:blank', width: 640, height: 360, fetchImpl: async () => new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;font-family:sans-serif;background:#f1f5f9">
+    <header style="background:linear-gradient(90deg,#4c1d95,#db2777);color:white;padding:16px 24px">
+      <h1 style="margin:0">Rendered inside workerd</h1></header>
+    <p style="padding:0 24px">Servo layout, HarfRust shaping, Noto Sans and a vello_cpu rasterizer.</p>
+    <canvas id="c" width="200" height="60" style="margin-left:24px;border-radius:8px"></canvas>
+    <script>const c = document.getElementById('c').getContext('2d');
+      c.fillStyle = '#0ea5e9'; c.fillRect(0, 0, 200, 60);
+      c.fillStyle = 'white'; c.font = 'bold 22px sans-serif'; c.fillText('canvas 2D', 40, 38);</script>
+    </body>`, { url: 'https://workerd.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+  const started = Date.now();
+  const png = await runtime.screenshot();
+  return new Response(png, { headers: {
+    'content-type': 'image/png', 'x-render-ms': String(Date.now() - started) } });
 }

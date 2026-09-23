@@ -60,5 +60,13 @@ wr_malloc_size_of = { workspace = true }
 [dev-dependencies]
 surfman = { workspace = true }
 
+# The Worker WASM target has no WebRender painter; it rasterizes captured
+# display lists on the CPU with the same vello_cpu backend as canvas 2D.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+bytemuck = { workspace = true }
+fonts_traits = { workspace = true }
+pixels = { workspace = true }
+vello_cpu = { workspace = true }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 surfman = { workspace = true }

@@ -9189,6 +9189,7 @@ name = "servo-paint"
 version = "0.6.0"
 dependencies = [
  "bitflags 2.13.2",
+ "bytemuck",
  "crossbeam-channel",
  "dpi",
  "euclid",
@@ -9203,10 +9204,12 @@ dependencies = [
  "servo-config",
  "servo-constellation-traits",
  "servo-embedder-traits",
+ "servo-fonts-traits",
  "servo-geometry",
  "servo-malloc-size-of",
  "servo-media-thread",
  "servo-paint-api",
+ "servo-pixels",
  "servo-profile-traits",
  "servo-timers",
  "servo-tracing",
@@ -9218,6 +9221,7 @@ dependencies = [
  "stylo_traits",
  "surfman",
  "tracing",
+ "vello_cpu 0.2.0",
  "webrender",
  "webrender_api",
  "wr_malloc_size_of",

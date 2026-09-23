@@ -1137,6 +1137,19 @@ impl Servo {
         script::request_worker_rendering();
     }
 
+    /// Rasterize the page's latest rendering to a PNG on the CPU. Request a frame
+    /// with [`Self::worker_request_rendering`] and pump first.
+    #[cfg(target_arch = "wasm32")]
+    pub fn worker_render_png(&self) -> Result<Vec<u8>, String> {
+        self.0.paint.borrow().worker_render_png()
+    }
+
+    /// Changes whenever the Worker renderer receives an image or font.
+    #[cfg(target_arch = "wasm32")]
+    pub fn worker_resource_generation(&self) -> u32 {
+        self.0.paint.borrow().worker_resource_generation()
+    }
+
     /// Number of display items captured for the Worker renderer.
     #[cfg(target_arch = "wasm32")]
     pub fn worker_captured_item_count(&self) -> usize {

@@ -273,6 +273,18 @@ impl Paint {
         })
     }
 
+    /// See `worker_frame::resource_generation`.
+    #[cfg(target_arch = "wasm32")]
+    pub fn worker_resource_generation(&self) -> u32 {
+        crate::worker_frame::resource_generation()
+    }
+
+    /// Rasterize the latest top-level document on the CPU and encode it as PNG.
+    #[cfg(target_arch = "wasm32")]
+    pub fn worker_render_png(&self) -> Result<Vec<u8>, String> {
+        crate::worker_render::render_png()
+    }
+
     pub fn register_rendering_context(
         &mut self,
         rendering_context: Rc<dyn RenderingContext>,
@@ -560,6 +572,9 @@ impl Paint {
             PaintMessage::UpdateImages(painter_id, updates) => {
                 if let Some(mut painter) = self.maybe_painter_mut(painter_id) {
                     painter.update_images(updates);
+                } else {
+                    #[cfg(target_arch = "wasm32")]
+                    crate::worker_frame::update_images(updates);
                 }
             },
             PaintMessage::DelayNewFrameForCanvas(
@@ -570,6 +585,15 @@ impl Paint {
             ) => {
                 if let Some(mut painter) = self.maybe_painter_mut(webview_id.into()) {
                     painter.delay_new_frames_for_canvas(pipeline_id, canvas_epoch, image_keys);
+                } else if cfg!(target_arch = "wasm32") {
+                    // The Worker's canvases send their frames synchronously,
+                    // ahead of this request, so the document need not wait;
+                    // without this it would never render again.
+                    let _ = self.embedder_to_constellation_sender.send(
+                        EmbedderToConstellationMessage::NoLongerWaitingOnAsynchronousImageUpdates(
+                            vec![pipeline_id],
+                        ),
+                    );
                 }
             },
             PaintMessage::AddFont(painter_id, font_key, data, index) => {
@@ -577,6 +601,9 @@ impl Paint {
 
                 if let Some(mut painter) = self.maybe_painter_mut(painter_id) {
                     painter.add_font(font_key, data, index);
+                } else {
+                    #[cfg(target_arch = "wasm32")]
+                    crate::worker_frame::add_font(font_key, &data, index);
                 }
             },
             PaintMessage::AddSystemFont(painter_id, font_key, native_handle) => {
@@ -584,6 +611,9 @@ impl Paint {
 
                 if let Some(mut painter) = self.maybe_painter_mut(painter_id) {
                     painter.add_system_font(font_key, native_handle);
+                } else {
+                    #[cfg(target_arch = "wasm32")]
+                    crate::worker_frame::add_system_font(font_key, native_handle);
                 }
             },
             PaintMessage::AddFontInstance(
@@ -599,11 +629,22 @@ impl Paint {
 
                 if let Some(mut painter) = self.maybe_painter_mut(painter_id) {
                     painter.add_font_instance(font_instance_key, font_key, size, flags, variations);
+                } else {
+                    #[cfg(target_arch = "wasm32")]
+                    crate::worker_frame::add_font_instance(
+                        font_instance_key,
+                        font_key,
+                        size,
+                        variations,
+                    );
                 }
             },
             PaintMessage::RemoveFonts(painter_id, keys, instance_keys) => {
                 if let Some(mut painter) = self.maybe_painter_mut(painter_id) {
                     painter.remove_fonts(keys, instance_keys);
+                } else {
+                    #[cfg(target_arch = "wasm32")]
+                    crate::worker_frame::remove_fonts(keys, instance_keys);
                 }
             },
             PaintMessage::GenerateFontKeys(
@@ -972,7 +1013,7 @@ impl Paint {
     ) {
         let painter_id = webview_id.into();
         let image_key = self.maybe_painter(painter_id).map_or_else(
-            || ImageKey::new(painter_id.into(), 0),
+            || ImageKey::new(painter_id.into(), paint_api::fallback_resource_key()),
             |painter| painter.webrender_api.generate_image_key(),
         );
         let _ = result_sender.send(image_key);
@@ -992,7 +1033,7 @@ impl Paint {
         let image_keys = (0..pref!(image_key_batch_size))
             .map(|_| {
                 painter.as_ref().map_or_else(
-                    || ImageKey::new(painter_id.into(), 0),
+                    || ImageKey::new(painter_id.into(), paint_api::fallback_resource_key()),
                     |painter| painter.webrender_api.generate_image_key(),
                 )
             })
@@ -1018,7 +1059,7 @@ impl Paint {
         let font_keys = (0..number_of_font_keys)
             .map(|_| {
                 painter.as_ref().map_or_else(
-                    || FontKey::new(painter_id.into(), 0),
+                    || FontKey::new(painter_id.into(), paint_api::fallback_resource_key()),
                     |painter| painter.webrender_api.generate_font_key(),
                 )
             })
@@ -1026,7 +1067,7 @@ impl Paint {
         let font_instance_keys = (0..number_of_font_instance_keys)
             .map(|_| {
                 painter.as_ref().map_or_else(
-                    || FontInstanceKey::new(painter_id.into(), 0),
+                    || FontInstanceKey::new(painter_id.into(), paint_api::fallback_resource_key()),
                     |painter| painter.webrender_api.generate_font_instance_key(),
                 )
             })

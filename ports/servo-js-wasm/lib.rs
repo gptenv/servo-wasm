@@ -153,6 +153,56 @@ pub extern "C" fn servo_worker_request_frame() -> i32 {
     })
 }
 
+thread_local! {
+    static LAST_FRAME_PNG: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Rasterize the latest rendering (after `servo_worker_request_frame` and
+/// pumping) to a PNG held in a result buffer. Returns its length, or zero on
+/// failure (the reason is logged through `worker_log_error`).
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_render_png() -> u32 {
+    let result = BROWSER.with(|browser| match browser.borrow().as_ref() {
+        Some(browser) => browser.servo.worker_render_png(),
+        None => Err("Servo has not been bootstrapped".to_owned()),
+    });
+    match result {
+        Ok(png) => LAST_FRAME_PNG.with(|slot| {
+            let len = png.len() as u32;
+            *slot.borrow_mut() = png;
+            len
+        }),
+        Err(error) => {
+            LAST_FRAME_PNG.with(|slot| slot.borrow_mut().clear());
+            let message = format!("Worker render failed: {error}");
+            unsafe { host_log_error(message.as_ptr(), message.len()) };
+            0
+        },
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_frame_png_ptr() -> *const u8 {
+    LAST_FRAME_PNG.with(|slot| slot.borrow().as_ptr())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_frame_png_len() -> usize {
+    LAST_FRAME_PNG.with(|slot| slot.borrow().len())
+}
+
+/// Changes whenever the Worker renderer receives an image or font; compare it
+/// before and after a frame to know whether another frame would show more.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_frame_resource_generation() -> u32 {
+    BROWSER.with(|browser| {
+        browser
+            .borrow()
+            .as_ref()
+            .map_or(0, |browser| browser.servo.worker_resource_generation())
+    })
+}
+
 /// Number of display items captured for the Worker renderer (diagnostic).
 #[unsafe(no_mangle)]
 pub extern "C" fn servo_worker_frame_item_count() -> u32 {

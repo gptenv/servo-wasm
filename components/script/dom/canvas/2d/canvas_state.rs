@@ -229,7 +229,7 @@ impl CanvasState {
         debug!("Creating new canvas rendering context.");
         let size = adjust_canvas_size(size);
         #[cfg(target_arch = "wasm32")]
-        let (canvas_thread_sender, canvas_id) = create_worker_canvas(size)?;
+        let (canvas_thread_sender, canvas_id) = create_worker_canvas(global, size)?;
         #[cfg(not(target_arch = "wasm32"))]
         let (canvas_thread_sender, canvas_id) = {
             let (sender, receiver) =
@@ -2565,6 +2565,7 @@ thread_local! {
 
 #[cfg(target_arch = "wasm32")]
 fn create_worker_canvas(
+    global: &GlobalScope,
     size: Size2D<u64>,
 ) -> Option<(
     servo_base::generic_channel::GenericSender<servo_canvas_traits::canvas::CanvasMsg>,
@@ -2574,11 +2575,13 @@ fn create_worker_canvas(
         paint_thread
             .borrow_mut()
             .get_or_insert_with(|| {
-                // No compositor displays canvas images on a Worker; readback
-                // reads the rasterizer directly.
-                servo_canvas::canvas_paint_thread::WorkerCanvasPaintThread::new(
-                    paint_api::CrossProcessPaintApi::dummy(),
-                )
+                // Canvas frames go to Paint like on native, where the Worker
+                // renderer picks them up for screenshots.
+                let paint_api = global
+                    .downcast::<crate::dom::window::Window>()
+                    .map(|window| window.paint_api().clone())
+                    .unwrap_or_else(paint_api::CrossProcessPaintApi::dummy);
+                servo_canvas::canvas_paint_thread::WorkerCanvasPaintThread::new(paint_api)
             })
             .create_canvas(size)
     })

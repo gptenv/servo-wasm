@@ -35,6 +35,8 @@ mod webrender_external_images;
 mod webview_renderer;
 #[cfg(target_arch = "wasm32")]
 mod worker_frame;
+#[cfg(target_arch = "wasm32")]
+mod worker_render;
 
 /// Data used to initialize the `Paint` subsystem.
 pub struct InitialPaintState {
