@@ -924,11 +924,6 @@ impl Window {
 
     /// <https://html.spec.whatwg.org/multipage/#cannot-show-simple-dialogs>
     fn cannot_show_simple_dialogs(&self) -> bool {
-        // Step 4 ("optionally, return true") on a Worker: there is no user to
-        // show a dialog to, and waiting for the embedder would never finish.
-        #[cfg(target_arch = "wasm32")]
-        return true;
-
         // Step 1: If the active sandboxing flag set of window's associated Document has
         // the sandboxed modals flag set, then return true.
         if self
@@ -954,6 +949,12 @@ impl Window {
         // whenever the method was invoked.)
         // TODO: The embedder currently cannot block an alert before it is sent to the embedder. This
         // requires changes to the API.
+        //
+        // A Worker has no user to show a dialog to, and script cannot wait for
+        // the embedder there (it only runs after this script turn), so return true.
+        if cfg!(target_arch = "wasm32") {
+            return true;
+        }
 
         // Step 5: Return false.
         false

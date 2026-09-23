@@ -8,6 +8,8 @@ mod font_descriptor;
 mod font_identifier;
 mod font_template;
 mod system_font_service_proxy;
+#[cfg(target_arch = "wasm32")]
+pub mod worker_fonts;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;

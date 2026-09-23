@@ -112,7 +112,7 @@ test('SpiderMonkey smoke export runs in wasm', () => {
 });
 
 test('Worker lifecycle exports are present and initially idle', () => {
-  assert.equal(instance.exports.servo_worker_abi_version(), 1);
+  assert.equal(instance.exports.servo_worker_abi_version(), 2);
   assert.equal(typeof instance.exports.servo_worker_reset, 'function');
   assert.equal(typeof instance.exports.servo_worker_pump_status, 'function');
   assert.equal(typeof instance.exports.servo_worker_pending_fetch_count, 'function');
@@ -750,6 +750,13 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   for (const { name, source } of webPlatformCases) {
     await t.test(name, async () => checkPage(source));
   }
+
+  await t.test('host fonts register, and invalid font data is rejected', () => {
+    const mono = readFileSync(new URL('../fonts/LiberationMono-Regular.ttf', import.meta.url));
+    assert.equal(runtime.registerFont(mono), 1);
+    assert.throws(() => runtime.registerFont(new Uint8Array([1, 2, 3, 4])), TypeError);
+    assert.throws(() => runtime.registerFont(new Uint8Array()), RangeError);
+  });
 
   await t.test('canvas drawImage decodes an <img> through the deferred Worker pool', async () => {
     assert.equal(runtime.evaluatePage(`(() => {

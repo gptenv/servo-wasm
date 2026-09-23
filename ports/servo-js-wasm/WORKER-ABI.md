@@ -1,7 +1,7 @@
-# Raw Worker ABI, version 1
+# Raw Worker ABI, version 2
 
 The JavaScript adapter and WASM artifact are a matched pair. The adapter checks
-`servo_worker_abi_version() === 1` before running constructors or bootstrap. Rebuild
+`servo_worker_abi_version() === 2` before running constructors or bootstrap. Rebuild
 the artifact whenever the interface or serialized request representation changes.
 This is a project-internal protocol, not an MCP protocol or a stable upstream Servo API.
 
@@ -17,8 +17,8 @@ Exactly five function imports exist, all in `env`:
 | `worker_monotonic_now_ns()` | Return monotonic nanoseconds as a JavaScript `bigint`. |
 | `worker_unix_time_now_ns()` | Return Unix-epoch nanoseconds as a JavaScript `bigint`. |
 
-The fetch import carries either `{version:1, kind:"fetch", request:...}` or
-`{version:1, kind:"cancel", request_ids:[...]}`. IDs serialize as UUID strings.
+The fetch import carries either `{version:2, kind:"fetch", request:...}` or
+`{version:2, kind:"cancel", request_ids:[...]}`. IDs serialize as UUID strings.
 The request uses Servo's `RequestBuilder` serialization (including URL, method,
 byte-string headers, destination, mode, credentials and redirect policy). A body
 is currently supported only via `body.worker_bytes`, limited to 256 KiB.
@@ -107,13 +107,31 @@ Servo's real image cache; decoding work is queued and run by the pump, not a
 thread pool. Canvas 2D is rasterized in-process by `vello_cpu` (single-threaded
 on wasm32), including `getImageData`, `putImageData`, `drawImage`, patterns,
 gradients and `toDataURL`/`toBlob`. `getContext("webgl")` returns `null`. Canvas
-text needs fonts, which the Worker does not have yet. Page screenshots are not
+text uses the fonts below. Page screenshots are not
 implemented: layout does not produce a display list on the Worker today.
+
+## Fonts
+
+The Worker has no system fonts. Liberation Sans (regular and bold), Liberation
+Serif and Liberation Mono are compiled in and registered at bootstrap; they back
+the `sans-serif`, `serif` and `monospace` generic families and are
+metric-compatible with Arial, Times New Roman and Courier New. Text is shaped
+with HarfRust (a pure-Rust HarfBuzz port) and measured with skrifa.
+
+`runtime.registerFont(bytes)` (export `servo_worker_register_font(ptr, len)`)
+adds a TTF/OTF/TTC/OTC file of up to 32 MiB and returns its face count, or throws
+for data that is not a font. Registered fonts are usable by name and as fallback
+for characters the requested font lacks (for example CJK or emoji). Register
+them before loading pages that need them. Fonts are held in WASM memory, which
+counts toward the 128 MB isolate limit. Web fonts (`@font-face`) are not
+sanitized on this target (the native sanitizer is C); they are parsed only by
+the memory-safe Rust parsers.
 
 ## No-UI browser behavior
 
 The Worker has no screen, window chrome or user. `screen.*`, `outerWidth`,
-`outerHeight`, `screenX` and `screenY` report the viewport; `alert`, `confirm`
+`outerHeight`, `screenX` and `screenY` report the viewport (so the viewport width
+passed at bootstrap is also what media queries and screenshots see as the screen); `alert`, `confirm`
 and `prompt` are dismissed (`undefined`, `false`, `null`); `window.open` returns
 `null`; `history.length` is `1`. `localStorage` and `sessionStorage` work and are
 kept in memory for the lifetime of the WASM instance only.

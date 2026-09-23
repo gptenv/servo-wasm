@@ -13,7 +13,7 @@ const MAX_REDIRECTS = 10;
 const MAX_OUTGOING_CONNECTIONS = 6;
 const MAX_PENDING_FETCHES = 50;
 const FREE_TIER_SUBREQUESTS = 50;
-const WORKER_ABI_VERSION = 1;
+const WORKER_ABI_VERSION = 2;
 const encoder = new TextEncoder();
 
 function bytesToString(bytes) {
@@ -612,6 +612,28 @@ class ServoWorkerRuntime {
     this.#inlinePage = null;
     this.#notifyActivity();
     return this.instance.exports.servo_worker_reset() === 1;
+  }
+
+  /**
+   * Register a font file (TTF/OTF/TTC/OTC bytes, up to 32 MiB) for this
+   * runtime, e.g. CJK or emoji fonts. Returns the number of faces added.
+   * Register fonts before loading pages that need them.
+   */
+  registerFont(bytes) {
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    if (data.length === 0 || data.length > 32 * 1024 * 1024) {
+      throw new RangeError('Font data must be between 1 byte and 32 MiB');
+    }
+    const ptr = this.instance.exports.servo_js_alloc(data.length);
+    if (!ptr) throw new Error('Servo wasm allocation failed');
+    try {
+      new Uint8Array(this.instance.exports.memory.buffer, ptr, data.length).set(data);
+      const faces = this.instance.exports.servo_worker_register_font(ptr, data.length);
+      if (!faces) throw new TypeError('Font data is not a supported font file');
+      return faces;
+    } finally {
+      this.instance.exports.servo_js_free(ptr, data.length);
+    }
   }
 
   /** The WebAssembly.RuntimeError that made this runtime unusable, if any. */

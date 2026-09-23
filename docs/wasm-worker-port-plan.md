@@ -1,12 +1,12 @@
 # Servo WASM Worker Port: Completion Plan
 
-Status: active port; DOM/JS/CSS, streaming fetch cancellation, timers, inline HTML, page reset, repeated loads, canvas 2D and image loading verified locally (2026-09-23). Next goal: page screenshots.
+Status: active port; DOM/JS/CSS, streaming fetch cancellation, timers, inline HTML, page reset, repeated loads, canvas 2D (including text), image loading and font-based text layout verified locally (2026-09-23). Next goal: page screenshots.
 
 Target: a raw `wasm32-unknown-unknown` Servo module instantiated directly by a Cloudflare Worker. The MCP server and OAuth layer remain a separate repository and are intentionally out of scope for this port.
 
 ## 1. Current state
 
-The port builds as a raw `wasm32-unknown-unknown` module with no WASI or wasm-bindgen imports. The current production-stripped artifact is **57,836,481 bytes** (about 55.2 MiB), below the 64 MiB target (the same limit applies on Workers Free and Paid). The Worker bundle remains about **54,637 KiB** uncompressed (see the smoke-test README for the latest exact dry-run measurement). It imports exactly these five host functions:
+The port builds as a raw `wasm32-unknown-unknown` module with no WASI or wasm-bindgen imports. The current production-stripped artifact is **60,349,728 bytes** (about 57.6 MiB), below the 64 MiB target (the same limit applies on Workers Free and Paid). The Worker bundle remains about **54,637 KiB** uncompressed (see the smoke-test README for the latest exact dry-run measurement). It imports exactly these five host functions:
 
 - `worker_fetch_request`
 - `worker_getrandom`
@@ -14,7 +14,7 @@ The port builds as a raw `wasm32-unknown-unknown` module with no WASI or wasm-bi
 - `worker_monotonic_now_ns`
 - `worker_unix_time_now_ns`
 
-The Worker adapter instantiates the module, creates a Servo instance, installs the fetch bridge, and advances the cooperative event loop. Deterministic raw-WASM integration coverage includes navigation and subresource fetches, JS `fetch()` success and 404 responses, in-memory POST bodies and clean rejection of oversized bodies, response headers, responses over 1 MiB via chunked delivery, bounded response size, failed fetches, navigation and JS fetch redirects, rejection of cross-origin script-fetch redirects before forwarding credentials, CSSOM parsing and cross-origin stylesheet-rule access control, a resolved CSS color, inline scripts, `setTimeout`, cross-origin page-global separation, aborting an in-flight host fetch on page reset, and four sequential page loads with a bounded linear-memory check. The expanded suite has **36 passing tests including subtests** against the production-stripped artifact (run `npm test` in `ports/servo-js-wasm`), including canvas 2D pixel readback and `<img>` decoding. A host-facing timer deadline export and `pumpUntilSettled()` use Worker `scheduler.wait()` where available, with a cancellable timer fallback. The pump reports internal browser event progress and wakes on response headers/chunks, preventing false idle and allowing page code to consume or abort a response before its body completes.
+The Worker adapter instantiates the module, creates a Servo instance, installs the fetch bridge, and advances the cooperative event loop. Deterministic raw-WASM integration coverage includes navigation and subresource fetches, JS `fetch()` success and 404 responses, in-memory POST bodies and clean rejection of oversized bodies, response headers, responses over 1 MiB via chunked delivery, bounded response size, failed fetches, navigation and JS fetch redirects, rejection of cross-origin script-fetch redirects before forwarding credentials, CSSOM parsing and cross-origin stylesheet-rule access control, a resolved CSS color, inline scripts, `setTimeout`, cross-origin page-global separation, aborting an in-flight host fetch on page reset, and four sequential page loads with a bounded linear-memory check. The expanded suite has **41 passing tests including subtests** against the production-stripped artifact (run `npm test` in `ports/servo-js-wasm`), including canvas 2D pixel readback and `<img>` decoding. A host-facing timer deadline export and `pumpUntilSettled()` use Worker `scheduler.wait()` where available, with a cancellable timer fallback. The pump reports internal browser event progress and wakes on response headers/chunks, preventing false idle and allowing page code to consume or abort a response before its body completes.
 
 The latest batch adds a checked **version-1 host ABI**, `loadHtml(html, {url})`, deterministic initial `about:blank` bootstrapping before the async factory returns, reset-then-load navigation coalescing, and cancellation of active/queued host fetches from page `AbortController`s. Response delivery enforces header/chunk/terminal ordering. Mid-body failures now reject body consumers instead of succeeding with truncated content, and already-errored/canceled streams ignore duplicate failure transitions and late chunks. Tests cover these cases, unread response/redirect-body cleanup, subrequest limits across redirects and resets, and invalid/concurrent settling calls. A small original web-platform-style corpus covers templates, selectors, DOM fragments/clones, event propagation, CSS rule mutation/computed-style invalidation, shadow DOM, and microtask/timer ordering. It is not the upstream WPT runner or a claim of complete web conformance. The exact contract is in [WORKER-ABI.md](../ports/servo-js-wasm/WORKER-ABI.md).
 
@@ -358,6 +358,29 @@ Still unaudited from the same pattern: history traversal state
 features that clone storage for auxiliary contexts, and the less common sites
 listed by `grep -rn "\.recv()" components/script/dom`. `history.length` is not
 tracked across in-page navigations.
+
+**Fonts and text (Worker ABI version 2).** The wasm font backend was a
+placeholder: it never read font bytes (every glyph 10 px wide, glyph ID =
+code point) and its shaper returned no glyphs, so no text had glyphs or height,
+and canvas `measureText`/`fillText` panicked ("couldn't find font") and trapped
+the instance. Now:
+
+- `fonts_traits::worker_fonts` is an in-memory registry; faces appear as local
+  fonts (`worker-font:<n>`). Liberation Sans/Serif/Mono (OFL 1.1, ~1.5 MB) are
+  bundled and back the generic families; hosts add more with `registerFont()`.
+- `platform/wasm` implements `PlatformFont` on skrifa (charmap, advances,
+  bounds, metrics) and the font list on the registry; missing glyphs fall back
+  to every registered family.
+- Text is shaped with HarfRust (already linked via usvg), adapted from Servo's
+  earlier HarfRust backend (unmerged branch `origin/wr-skrifa`), so Servo's
+  normal shaping path is used on wasm32 instead of a byte-wise ASCII path.
+- The real `SystemFontService` runs in-process (same drain-before-`recv()`
+  pattern as canvas and storage) and refreshes when fonts are registered.
+
+Verified: 41/41 Node tests and 39/39 workerd case runs; 16 px sans-serif text
+lays out at 18.4 px line height, matching Chrome/Firefox with Arial. Artifact
+60,349,728 bytes (about 6.7 MB below the 64 MiB limit). Font sanitization
+(fontsan) remains unavailable on wasm32.
 
 **Build memory.** This machine has 15 GB and no swap. Building the `script` crate
 alone at this profile needs several GB; with other large apps open, even

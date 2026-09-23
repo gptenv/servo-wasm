@@ -11,12 +11,10 @@ use app_units::Au;
 use euclid::default::Point2D;
 use euclid::num::Zero;
 use itertools::Either;
-#[cfg(not(target_arch = "wasm32"))]
 use log::{debug, error};
 use malloc_size_of_derive::MallocSizeOf;
 use servo_base::text::Utf32CodeUnits;
 
-#[cfg(not(target_arch = "wasm32"))]
 use crate::GlyphShapingResult;
 use crate::{ShapedGlyph, ShapingOptions};
 
@@ -264,7 +262,6 @@ impl ShapedText {
     /// characters left-to-right or right-to-left. Each character can produce
     /// multiple glyphs and multiple characters can produce one glyph. HarfBuzz just
     /// guarantees that the resulting character offsets are in monotone order.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_shaped_glyph_data(
         text: &str,
         options: &ShapingOptions,
@@ -400,7 +397,6 @@ impl ShapedText {
             .push(GlyphEntry::complex(self.detailed_glyphs.len() - 1));
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn extend_previous_glyph_by_character(&mut self) {
         let detailed_glyph_index = self.ensure_last_glyph_is_detailed();
         let detailed_glyph = self
@@ -411,7 +407,6 @@ impl ShapedText {
         self.character_count += Utf32CodeUnits(1);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn add_glyph_for_current_character(
         &mut self,
         shaped_glyph: &ShapedGlyph,
@@ -435,7 +430,6 @@ impl ShapedText {
     /// If the last glyph added to this [`ShapedText`] was a simple glyph, convert it to a
     /// detailed one. In either case, return the index into [`Self::detailed_glyphs`] for
     /// the most recently added glyph.
-    #[cfg(not(target_arch = "wasm32"))]
     fn ensure_last_glyph_is_detailed(&mut self) -> usize {
         let last_glyph = self
             .glyphs

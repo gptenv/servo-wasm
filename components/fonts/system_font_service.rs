@@ -85,14 +85,37 @@ impl SystemFontService {
     ) -> SystemFontServiceProxySender {
         let (sender, receiver) = generic_channel::channel().unwrap();
 
-        // A raw Worker has no native thread runtime. Keep the channel
-        // disconnected on wasm until this service is moved onto the Worker
-        // pump; callers then receive a normal send failure instead of
-        // trapping during Servo construction or blocking forever.
+        // A Worker has no threads: run the service in-process. Proxies drain
+        // it (`fonts_traits::worker_fonts::process_service`) before blocking
+        // on a reply, and it re-reads the font registry when fonts are added.
         #[cfg(target_arch = "wasm32")]
         {
-            drop(receiver);
-            let _ = (paint_api, memory_profiler_sender);
+            let _ = memory_profiler_sender;
+            let mut service = SystemFontService {
+                port: receiver,
+                local_families: Default::default(),
+                paint_api,
+                webrender_fonts: HashMap::new(),
+                font_instances: HashMap::new(),
+                generic_fonts: Default::default(),
+                free_font_keys: Default::default(),
+                free_font_instance_keys: Default::default(),
+            };
+            let mut seen_generation = None;
+            let mut running = true;
+            fonts_traits::worker_fonts::set_service_pump(Box::new(move || {
+                let generation = fonts_traits::worker_fonts::generation();
+                if seen_generation != Some(generation) {
+                    seen_generation = Some(generation);
+                    service.refresh_local_families();
+                }
+                while running {
+                    let Ok(message) = service.port.try_recv() else {
+                        break;
+                    };
+                    running = service.handle_message(message);
+                }
+            }));
             return SystemFontServiceProxySender(sender);
         }
 
@@ -129,7 +152,15 @@ impl SystemFontService {
     fn run(&mut self) {
         loop {
             let msg = self.port.recv().unwrap();
+            if !self.handle_message(msg) {
+                break;
+            }
+        }
+    }
 
+    /// Handle one message; returns false once the service should stop.
+    fn handle_message(&mut self, msg: SystemFontServiceMessage) -> bool {
+        {
             let _span = profile_traits::trace_span!("SystemFontServiceMessage").entered();
             match msg {
                 SystemFontServiceMessage::GetFontTemplates(
@@ -182,10 +213,11 @@ impl SystemFontService {
                 SystemFontServiceMessage::Ping => (),
                 SystemFontServiceMessage::Exit(result) => {
                     let _ = result.send(());
-                    break;
+                    return false;
                 },
             }
         }
+        true
     }
 
     fn collect_memory_report(&self, report_sender: ReportsChan) {

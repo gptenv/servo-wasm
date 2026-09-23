@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 bytes = { workspace = true }
 dpi = { workspace = true }
+fonts_traits = { workspace = true }
 http = { workspace = true }
 hyper_serde = { workspace = true }
 js = { workspace = true, default-features = false, features = ["libz-rs"] }

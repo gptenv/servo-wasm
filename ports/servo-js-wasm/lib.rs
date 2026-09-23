@@ -55,7 +55,7 @@ struct WorkerFetchEntry {
     response_started: bool,
 }
 
-const WORKER_ABI_VERSION: u32 = 1;
+const WORKER_ABI_VERSION: u32 = 2;
 
 #[derive(serde::Serialize)]
 struct WorkerHostMessage<'a> {
@@ -123,6 +123,7 @@ pub unsafe extern "C" fn servo_worker_bootstrap(
         Ok(context) => Rc::new(context) as Rc<dyn RenderingContext>,
         Err(_) => return 0,
     };
+    register_bundled_fonts();
     let servo = ServoBuilder::default().build();
     let builder = WebViewBuilder::new(&servo, rendering_context.clone());
     let builder = builder.url(url);
@@ -136,6 +137,39 @@ pub unsafe extern "C" fn servo_worker_bootstrap(
         });
     });
     1
+}
+
+/// Fonts compiled into the module so text always has a font; see fonts/README.md.
+const BUNDLED_FONTS: [&[u8]; 4] = [
+    include_bytes!("fonts/LiberationSans-Regular.ttf"),
+    include_bytes!("fonts/LiberationSans-Bold.ttf"),
+    include_bytes!("fonts/LiberationSerif-Regular.ttf"),
+    include_bytes!("fonts/LiberationMono-Regular.ttf"),
+];
+
+/// Largest font file a host may register (large enough for a full CJK font).
+const MAX_HOST_FONT_BYTES: usize = 32 * 1024 * 1024;
+
+fn register_bundled_fonts() {
+    for font in BUNDLED_FONTS {
+        if let Err(error) = fonts_traits::worker_fonts::register(font.to_vec()) {
+            let message = format!("Bundled font failed to register: {error}");
+            unsafe { host_log_error(message.as_ptr(), message.len()) };
+        }
+    }
+}
+
+/// Register a host-supplied font file (TTF/OTF, or a TTC/OTC collection) for
+/// all pages in this instance. Returns the number of faces added, or zero if
+/// the bytes are not a font. Fonts registered after a page has laid out text
+/// apply to later font lookups.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_register_font(ptr: *const u8, len: usize) -> u32 {
+    if ptr.is_null() || len == 0 || len > MAX_HOST_FONT_BYTES {
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+    fonts_traits::worker_fonts::register(bytes).unwrap_or(0)
 }
 
 /// Load another page in the existing Worker webview.

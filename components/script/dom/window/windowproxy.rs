@@ -332,8 +332,9 @@ impl WindowProxy {
         // A Worker has one browsing context and the constellation cannot answer
         // while script runs inside its pump: block the popup, as `window.open`
         // is allowed to do, instead of waiting forever.
-        #[cfg(target_arch = "wasm32")]
-        return None;
+        if cfg!(target_arch = "wasm32") {
+            return None;
+        }
         let (response_sender, response_receiver) = generic_channel::channel().unwrap();
         let window = self
             .currently_active

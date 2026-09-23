@@ -35,12 +35,8 @@ mod platform {
 
     use crate::FontDataAndIndex;
 
-    /// A local-font descriptor retained for protocol compatibility on Worker.
-    ///
-    /// Workers do not expose an operating-system font registry or filesystem.
-    /// Fonts used by the wasm port therefore arrive as web fonts or explicitly
-    /// registered byte buffers; this descriptor is kept only for messages that
-    /// can also be produced by native Servo.
+    /// A face in the Worker font registry (see `crate::worker_fonts`), since
+    /// Workers have no operating-system fonts or filesystem.
     #[derive(Clone, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize)]
     pub struct LocalFontIdentifier {
         pub path: Atom,
@@ -64,9 +60,17 @@ mod platform {
             }
         }
 
-        /// System font bytes cannot be discovered from a Worker.
+        /// Bytes of a face in the Worker font registry (`worker-font:<index>`).
         pub fn font_data_and_index(&self) -> Option<FontDataAndIndex> {
-            None
+            let index = self
+                .path
+                .strip_prefix(crate::worker_fonts::PATH_PREFIX)?
+                .parse::<usize>()
+                .ok()?;
+            Some(FontDataAndIndex {
+                data: crate::worker_fonts::get(index)?,
+                index: self.index(),
+            })
         }
 
         pub fn face_index_for_freetype(&self) -> u32 {

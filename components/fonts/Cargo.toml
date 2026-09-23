@@ -70,6 +70,12 @@ webrender_api = { workspace = true }
 fontsan = { workspace = true }
 harfbuzz-sys = { workspace = true, default-features = false, features = ["bundled"] }
 
+# Pure-Rust HarfBuzz port used for text shaping on the Worker WASM target,
+# where the native HarfBuzz C++ build is not linked. The version matches the
+# one usvg already brings into that build.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+harfrust = "0.12"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 byteorder = { workspace = true }
 harfbuzz-sys = { workspace = true, features = ["coretext"] }

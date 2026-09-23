@@ -146,4 +146,42 @@ export const webPlatformCases = [
       return ok && localStorage.getItem('k') === null && localStorage.length === 0;
     })()`,
   },
+  {
+    name: 'text layout uses real font metrics (bundled fonts)',
+    source: `(() => {
+      const span = document.createElement('span');
+      span.style.font = '16px sans-serif';
+      span.textContent = 'Hello, world';
+      const mono = document.createElement('span');
+      mono.style.font = '16px monospace';
+      document.body.append(span, mono);
+      try {
+        const box = span.getBoundingClientRect();
+        mono.textContent = 'iii';
+        const narrow = mono.getBoundingClientRect().width;
+        mono.textContent = 'WWW';
+        const wide = mono.getBoundingClientRect().width;
+        return box.width > 50 && box.width < 150 && box.height > 10 &&
+          narrow > 0 && Math.abs(narrow - wide) < 0.01;
+      } finally { span.remove(); mono.remove(); }
+    })()`,
+  },
+  {
+    name: 'canvas text: measureText, fillText ink, and non-ASCII shaping',
+    source: `(() => {
+      const c = document.createElement('canvas'); c.width = 80; c.height = 24;
+      const ctx = c.getContext('2d');
+      ctx.font = '16px sans-serif';
+      const hello = ctx.measureText('Hello').width;
+      const narrow = ctx.measureText('iii').width;
+      const wide = ctx.measureText('WWW').width;
+      const accented = ctx.measureText('Crème brûlée').width;
+      ctx.fillStyle = '#000';
+      ctx.fillText('Hello', 2, 18);
+      const data = ctx.getImageData(0, 0, 80, 24).data;
+      let inked = 0;
+      for (let i = 3; i < data.length; i += 4) if (data[i]) inked++;
+      return hello > 20 && hello < 60 && wide > narrow && accented > hello && inked > 20;
+    })()`,
+  },
 ];
