@@ -33,6 +33,8 @@ mod web_content_animation;
 #[cfg(feature = "webgl")]
 mod webrender_external_images;
 mod webview_renderer;
+#[cfg(target_arch = "wasm32")]
+mod worker_frame;
 
 /// Data used to initialize the `Paint` subsystem.
 pub struct InitialPaintState {

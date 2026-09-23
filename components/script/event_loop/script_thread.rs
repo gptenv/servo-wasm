@@ -559,6 +559,18 @@ impl ScriptThreadFactory for ScriptThread {
 }
 
 #[cfg(target_arch = "wasm32")]
+thread_local! {
+    static WORKER_RENDERING_REQUESTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Ask the Worker script thread to run "update the rendering" on its next
+/// pump, so layout produces a display list for the Worker renderer.
+#[cfg(target_arch = "wasm32")]
+pub fn request_worker_rendering() {
+    WORKER_RENDERING_REQUESTED.with(|requested| requested.set(true));
+}
+
+#[cfg(target_arch = "wasm32")]
 pub struct WorkerScriptThreadHandle {
     script_thread: Rc<ScriptThread>,
     cx: JSContext,
@@ -1209,12 +1221,15 @@ impl ScriptThread {
 
             // TODO: Should this be broken and to match the specification more closely? For instance see
             // https://html.spec.whatwg.org/multipage/#flush-autofocus-candidates.
+            servo_base::worker_trace::set("rendering: input events");
             self.process_pending_input_events(cx, *pipeline_id);
 
             // > 8. For each doc of docs, run the resize steps for doc. [CSSOMVIEW]
+            servo_base::worker_trace::set("rendering: resize steps");
             let resized = document.window().run_the_resize_steps(cx);
 
             // > 9. For each doc of docs, run the scroll steps for doc.
+            servo_base::worker_trace::set("rendering: scroll steps");
             document.run_the_scroll_steps(cx);
 
             // > 10. For each doc of docs, evaluate media queries and report changes for doc.
@@ -1223,6 +1238,7 @@ impl ScriptThread {
             // of the platform theme (`prefers-color-scheme`) or other media features.
             // The window tracks those via `pending_media_query_evaluation`, so we only
             // pay the cost when something has actually changed.
+            servo_base::worker_trace::set("rendering: media queries");
             let media_features_changed = document.window().take_pending_media_query_evaluation();
             if resized || media_features_changed {
                 document
@@ -1243,6 +1259,7 @@ impl ScriptThread {
                 // > 11. For each doc of docs, update animations and send events for doc, passing
                 // > in relative high resolution time given frameTimestamp and doc's relevant
                 // > global object as the timestamp [WEBANIMATIONS]
+                servo_base::worker_trace::set("rendering: animations");
                 document.update_animations_and_send_events(cx);
 
                 // TODO(#31866): Implement "run the fullscreen steps" from
@@ -1254,6 +1271,7 @@ impl ScriptThread {
                 // > 14. For each doc of docs, run the animation frame callbacks for doc, passing
                 // > in the relative high resolution time given frameTimestamp and doc's
                 // > relevant global object as the timestamp.
+                servo_base::worker_trace::set("rendering: animation frame callbacks");
                 document.run_the_animation_frame_callbacks(cx);
             }
 
@@ -1277,6 +1295,7 @@ impl ScriptThread {
             // > For each doc of docs, if the focused area of doc is not a focusable area, then run the
             // > focusing steps for doc's viewport, and set doc's relevant global object's navigation API's
             // > focus changed during ongoing navigation to false.
+            servo_base::worker_trace::set("rendering: focus fixup");
             document.focus_handler().perform_focus_fixup_rule(cx);
 
             // TODO: Perform pending transition operations from
@@ -1286,6 +1305,7 @@ impl ScriptThread {
             // > passing in the relative high resolution time given now and
             // > doc's relevant global object as the timestamp. [INTERSECTIONOBSERVER]
             // TODO(stevennovaryo): The time attribute should be relative to the time origin of the global object
+            servo_base::worker_trace::set("rendering: intersection observers");
             document.update_intersection_observer_steps(cx, CrossProcessInstant::now());
 
             // See <https://github.com/whatwg/html/issues/12704>.
@@ -1301,6 +1321,7 @@ impl ScriptThread {
 
             // > Step 22: For each doc of docs, update the rendering or user interface of
             // > doc and its node navigable to reflect the current state.
+            servo_base::worker_trace::set("rendering: document update");
             if document.update_the_rendering(cx).0.needs_frame() {
                 painters_generating_frames.insert(document.webview_id().into());
             }
@@ -1443,6 +1464,14 @@ impl ScriptThread {
             // `TaskQueue::select()`, which the non-blocking Worker path never
             // calls; without this, throttled tasks stay held back forever.
             let _ = self.task_queue.select();
+
+            // The Worker updates the rendering only when its host asks for a
+            // frame (see `request_worker_rendering`): layout work is costly and
+            // there is no display to refresh otherwise.
+            if WORKER_RENDERING_REQUESTED.with(|requested| requested.replace(false)) {
+                self.update_the_rendering(cx);
+                return true;
+            }
         }
         let fully_active = self.get_fully_active_document_ids();
         let mut event = if nonblocking {

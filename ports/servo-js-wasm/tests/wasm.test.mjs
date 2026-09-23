@@ -751,6 +751,13 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     await t.test(name, async () => checkPage(source));
   }
 
+  await t.test('a frame request makes layout build a display list for the Worker renderer', async () => {
+    const exports = runtime.instance.exports;
+    assert.equal(exports.servo_worker_request_frame(), 1);
+    await settle();
+    assert.ok(exports.servo_worker_frame_item_count() > 0, 'no display items were captured');
+  });
+
   await t.test('host fonts register, and invalid font data is rejected', () => {
     const mono = readFileSync(new URL('../fonts/NotoSansMono-Regular.ttf', import.meta.url));
     assert.equal(runtime.registerFont(mono), 1);

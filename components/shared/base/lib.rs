@@ -18,6 +18,7 @@ mod rope;
 pub mod text;
 pub mod threadboost;
 pub mod threadpool;
+pub mod worker_trace;
 mod unicode_block;
 
 use std::fs::File;

@@ -1055,17 +1055,22 @@ impl LayoutThread {
         });
         let mut reflow_statistics = Default::default();
 
+        servo_base::worker_trace::set("layout: restyle and build trees");
         let (mut reflow_phases_run, iframe_sizes, changed_web_fonts) = self
             .restyle_and_build_trees(&mut reflow_request, document, root_element, &image_resolver);
+        servo_base::worker_trace::set("layout: stacking context tree");
         if self.build_stacking_context_tree_for_reflow(&reflow_request) {
             reflow_phases_run.insert(ReflowPhasesRun::BuiltStackingContextTree);
         }
+        servo_base::worker_trace::set("layout: display list");
         if self.build_display_list(&reflow_request, &image_resolver, &mut reflow_statistics) {
             reflow_phases_run.insert(ReflowPhasesRun::BuiltDisplayList);
         }
+        servo_base::worker_trace::set("layout: scroll nodes");
         if self.handle_update_scroll_node_request(&reflow_request) {
             reflow_phases_run.insert(ReflowPhasesRun::UpdatedScrollNodeOffset);
         }
+        servo_base::worker_trace::set("layout: accessibility tree");
         if self.handle_accessibility_tree_update(
             &root_element.as_node(),
             &mut reflow_request,
@@ -1523,6 +1528,7 @@ impl LayoutThread {
             },
         };
 
+        servo_base::worker_trace::set("layout: display list builder");
         let built_display_list = DisplayListBuilder::build(
             stacking_context_tree,
             fragment_tree,
@@ -1548,6 +1554,7 @@ impl LayoutThread {
             stacking_context_tree.paint_info.lcp_candidate = None;
         }
 
+        servo_base::worker_trace::set("layout: send display list");
         self.paint_api.send_display_list(
             self.webview_id,
             &stacking_context_tree.paint_info,

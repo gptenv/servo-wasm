@@ -3275,6 +3275,7 @@ impl Document {
     ) -> (ReflowPhasesRun, ReflowStatistics) {
         assert!(!self.is_render_blocked());
         // Step 21. For each doc of docs, mark paint timing for doc.
+        servo_base::worker_trace::set("document: mark paint timing");
         self.mark_paint_timing();
 
         // Step 22: For each doc of docs, update the rendering or user interface of
@@ -3315,6 +3316,7 @@ impl Document {
             );
         }
 
+        servo_base::worker_trace::set("document: reflow");
         let (reflow_phases, statistics) = self.window().reflow(cx, ReflowGoal::UpdateTheRendering);
         let phases = phases.union(reflow_phases);
 

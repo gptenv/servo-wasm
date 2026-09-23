@@ -139,6 +139,31 @@ pub unsafe extern "C" fn servo_worker_bootstrap(
     1
 }
 
+/// Ask the page to update its rendering on the next pump, so layout builds a
+/// display list for the Worker renderer. Returns 1 if a browser exists.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_request_frame() -> i32 {
+    BROWSER.with(|browser| {
+        let binding = browser.borrow();
+        let Some(browser) = binding.as_ref() else {
+            return 0;
+        };
+        browser.servo.worker_request_rendering();
+        1
+    })
+}
+
+/// Number of display items captured for the Worker renderer (diagnostic).
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_frame_item_count() -> u32 {
+    BROWSER.with(|browser| {
+        browser
+            .borrow()
+            .as_ref()
+            .map_or(0, |browser| browser.servo.worker_captured_item_count() as u32)
+    })
+}
+
 /// Fonts compiled into the module so text always has a font; see fonts/README.md.
 const BUNDLED_FONTS: [&[u8]; 4] = [
     include_bytes!("fonts/NotoSans-Regular.ttf"),
@@ -296,7 +321,12 @@ fn install_worker_panic_hook() {
     static INSTALLED: Once = Once::new();
     INSTALLED.call_once(|| {
         std::panic::set_hook(Box::new(|info| {
-            let message = info.to_string();
+            let phase = servo_base::worker_trace::get();
+            let message = if phase.is_empty() {
+                info.to_string()
+            } else {
+                format!("{info} (during: {phase})")
+            };
             unsafe { host_log_error(message.as_ptr(), message.len()) };
         }));
     });

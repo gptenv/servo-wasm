@@ -70,6 +70,8 @@ mod window_named_properties;
 mod xpath;
 
 pub use event_loop::script_thread::ScriptThread;
+#[cfg(target_arch = "wasm32")]
+pub use event_loop::script_thread::request_worker_rendering;
 pub(crate) use script_bindings::DomTypes;
 pub(crate) use script_bindings::reflector::{DomObject, MutDomObject, Reflector};
 

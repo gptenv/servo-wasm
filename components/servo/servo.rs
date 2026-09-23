@@ -1130,6 +1130,19 @@ impl Servo {
         self.0.worker_pump_progress.get()
     }
 
+    /// Ask script to update the rendering on its next Worker pump, producing a
+    /// display list for the Worker renderer.
+    #[cfg(target_arch = "wasm32")]
+    pub fn worker_request_rendering(&self) {
+        script::request_worker_rendering();
+    }
+
+    /// Number of display items captured for the Worker renderer.
+    #[cfg(target_arch = "wasm32")]
+    pub fn worker_captured_item_count(&self) -> usize {
+        self.0.paint.borrow().worker_captured_item_count()
+    }
+
     /// Return the next browser timer deadline for a cooperative Worker host.
     #[cfg(target_arch = "wasm32")]
     pub fn worker_next_timer_deadline_ns(&self) -> Option<u64> {

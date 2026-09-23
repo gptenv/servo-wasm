@@ -254,6 +254,25 @@ impl Paint {
         registry.register(&mut webxr_main_thread)
     }
 
+    /// Number of display items captured for the Worker renderer, across all
+    /// pipelines.
+    #[cfg(target_arch = "wasm32")]
+    pub fn worker_captured_item_count(&self) -> usize {
+        crate::worker_frame::with_display_lists(|lists| {
+            lists
+                .values()
+                .map(|captured| {
+                    let mut iter = captured.display_list.iter();
+                    let mut count = 0;
+                    while iter.next().is_some() {
+                        count += 1;
+                    }
+                    count
+                })
+                .sum()
+        })
+    }
+
     pub fn register_rendering_context(
         &mut self,
         rendering_context: Rc<dyn RenderingContext>,
@@ -458,6 +477,8 @@ impl Paint {
                 }
             },
             PaintMessage::PipelineExited(webview_id, pipeline_id, pipeline_exit_source) => {
+                #[cfg(target_arch = "wasm32")]
+                crate::worker_frame::remove_pipeline(pipeline_id);
                 if let Some(mut painter) = self.maybe_painter_mut(webview_id.into()) {
                     painter.notify_pipeline_exited(webview_id, pipeline_id, pipeline_exit_source);
                 }
@@ -508,6 +529,15 @@ impl Paint {
                 if let Some(mut painter) = self.maybe_painter_mut(webview_id.into()) {
                     painter.handle_new_display_list(
                         webview_id,
+                        display_list_descriptor,
+                        display_list_info_receiver,
+                        display_list_data_receiver,
+                    );
+                } else {
+                    // The Worker has no WebRender painter; keep the display
+                    // list for its CPU renderer.
+                    #[cfg(target_arch = "wasm32")]
+                    crate::worker_frame::capture_display_list(
                         display_list_descriptor,
                         display_list_info_receiver,
                         display_list_data_receiver,
