@@ -18,6 +18,14 @@ pub struct AsyncRuntimeHolder {
     runtime: Option<Runtime>,
 }
 
+#[cfg(target_arch = "wasm32")]
+struct WorkerAsyncRuntime;
+
+#[cfg(target_arch = "wasm32")]
+impl AsyncRuntime for WorkerAsyncRuntime {
+    fn shutdown(&mut self) {}
+}
+
 impl AsyncRuntimeHolder {
     pub(crate) fn new(runtime: Runtime) -> Self {
         Self {
@@ -40,6 +48,11 @@ impl AsyncRuntime for AsyncRuntimeHolder {
 static ASYNC_RUNTIME_HANDLE: OnceLock<Handle> = OnceLock::new();
 
 pub fn init_async_runtime() -> Box<dyn AsyncRuntime> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return Box::new(WorkerAsyncRuntime);
+    }
+
     // Initialize a tokio runtime.
     #[cfg(not(target_arch = "wasm32"))]
     let runtime = Builder::new_multi_thread()

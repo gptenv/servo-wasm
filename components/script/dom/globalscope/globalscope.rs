@@ -15,7 +15,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use content_security_policy::CspList;
 use crossbeam_channel::Sender;
@@ -56,6 +56,7 @@ use script_bindings::cell::{DomRefCell, RefMut};
 use script_bindings::interfaces::GlobalScopeHelpers;
 use script_bindings::reflector::DomObject;
 use script_bindings::settings_stack::run_a_script;
+use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::generic_channel;
 use servo_base::generic_channel::{GenericCallback, GenericSend};
 use servo_base::id::{
@@ -201,7 +202,8 @@ pub(crate) struct GlobalScope {
     worker_map: DomRefCell<HashMapTracedValues<ServiceWorkerId, Dom<ServiceWorker>, FxBuildHasher>>,
 
     /// Timers (milliseconds) used by the Console API.
-    console_timers: DomRefCell<HashMap<DOMString, Instant>>,
+    #[no_trace]
+    console_timers: DomRefCell<HashMap<DOMString, CrossProcessInstant>>,
 
     /// For providing instructions to an optional devtools server.
     #[no_trace]
@@ -2076,7 +2078,7 @@ impl GlobalScope {
         }
         match timers.entry(label) {
             Entry::Vacant(entry) => {
-                entry.insert(Instant::now());
+                entry.insert(CrossProcessInstant::now());
                 Ok(())
             },
             Entry::Occupied(_) => Err(()),
@@ -2091,7 +2093,7 @@ impl GlobalScope {
             .borrow()
             .get(label)
             .ok_or(())
-            .map(|&start| (Instant::now() - start).as_millis() as u64)
+            .map(|&start| (CrossProcessInstant::now() - start).whole_milliseconds() as u64)
     }
 
     /// Computes the delta time since a label has been created and stops
@@ -2103,7 +2105,7 @@ impl GlobalScope {
             .borrow_mut()
             .remove(label)
             .ok_or(())
-            .map(|start| (Instant::now() - start).as_millis() as u64)
+            .map(|start| (CrossProcessInstant::now() - start).whole_milliseconds() as u64)
     }
 
     /// Get an `&IpcSender<ScriptToDevtoolsControlMsg>` to send messages

@@ -41,6 +41,21 @@ impl CrossProcessInstant {
     pub fn epoch() -> Self {
         Self { value: 0 }
     }
+
+    /// Return the current Unix wall-clock time in nanoseconds on the Worker
+    /// target. This is kept beside the monotonic clock bridge so callers do
+    /// not accidentally reach `std::time::SystemTime` on raw wasm.
+    #[cfg(target_arch = "wasm32")]
+    #[allow(unsafe_code)]
+    pub fn unix_time_now_ns() -> u64 {
+        #[link(wasm_import_module = "env")]
+        unsafe extern "C" {
+            #[link_name = "worker_unix_time_now_ns"]
+            fn worker_unix_time_now_ns() -> u64;
+        }
+
+        unsafe { worker_unix_time_now_ns() }
+    }
 }
 
 impl Sub for CrossProcessInstant {

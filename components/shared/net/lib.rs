@@ -936,6 +936,34 @@ enum ToFetchThreadMessage {
 
 pub type BoxedFetchCallback = Box<dyn FnMut(FetchResponseMsg) + Send + 'static>;
 
+/// Worker-side replacement for the native fetch dispatcher. The raw wasm
+/// target cannot create Servo's native fetch thread, so the host owns the
+/// actual request and calls the supplied callback with response messages.
+#[cfg(target_arch = "wasm32")]
+pub type WorkerFetchRequestHandler =
+    Box<dyn FnMut(RequestBuilder, Option<ResponseInit>, BoxedFetchCallback)>;
+
+#[cfg(target_arch = "wasm32")]
+pub type WorkerFetchCancelHandler = Box<dyn FnMut(Vec<RequestId>)>;
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static WORKER_FETCH_REQUEST_HANDLER:
+        std::cell::RefCell<Option<WorkerFetchRequestHandler>> = const { std::cell::RefCell::new(None) };
+    static WORKER_FETCH_CANCEL_HANDLER:
+        std::cell::RefCell<Option<WorkerFetchCancelHandler>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn set_worker_fetch_request_handler(handler: WorkerFetchRequestHandler) {
+    WORKER_FETCH_REQUEST_HANDLER.with(|slot| *slot.borrow_mut() = Some(handler));
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn set_worker_fetch_cancel_handler(handler: WorkerFetchCancelHandler) {
+    WORKER_FETCH_CANCEL_HANDLER.with(|slot| *slot.borrow_mut() = Some(handler));
+}
+
 /// A thread to handle fetches in a Servo process. This thread is responsible for
 /// listening for new fetch requests as well as updates on those operations and forwarding
 /// them to crossbeam channels.
@@ -1096,12 +1124,37 @@ pub fn fetch_async(
     response_init: Option<ResponseInit>,
     callback: BoxedFetchCallback,
 ) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        WORKER_FETCH_REQUEST_HANDLER.with(|handler| {
+            if let Some(handler) = handler.borrow_mut().as_mut() {
+                handler(request, response_init, callback);
+            } else {
+                log::error!("Worker fetch request handler is not installed");
+            }
+        });
+        return;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     FetchThread::fetch_async(core_resource_thread, request, response_init, callback);
 }
 
 /// Instruct the resource thread to cancel an existing request. Does nothing if the
 /// request has already completed or has not been fetched yet.
 pub fn cancel_async_fetch(request_ids: Vec<RequestId>, core_resource_thread: &CoreResourceThread) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = core_resource_thread;
+        WORKER_FETCH_CANCEL_HANDLER.with(|handler| {
+            if let Some(handler) = handler.borrow_mut().as_mut() {
+                handler(request_ids);
+            }
+        });
+        return;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     FetchThread::cancel_async_fetch(request_ids, core_resource_thread);
 }
 

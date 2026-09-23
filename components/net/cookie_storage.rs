@@ -20,7 +20,7 @@ use net_traits::{CookieSource, SiteDescriptor};
 use serde::{Deserialize, Serialize};
 use servo_url::ServoUrl;
 
-use crate::cookie::ServoCookie;
+use crate::cookie::{ServoCookie, worker_system_time};
 
 #[derive(Clone, Debug, Deserialize, Serialize, MallocSizeOf)]
 pub struct CookieStorage {
@@ -313,7 +313,7 @@ fn reg_host(url: &str) -> String {
 }
 
 fn is_cookie_expired(cookie: &ServoCookie) -> bool {
-    matches!(cookie.expiry_time, Some(date_time) if date_time <= SystemTime::now())
+    matches!(cookie.expiry_time, Some(date_time) if date_time <= worker_system_time())
 }
 
 fn evict_one_cookie(is_secure_cookie: bool, cookies: &mut Vec<ServoCookie>) -> bool {

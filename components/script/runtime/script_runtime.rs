@@ -16,7 +16,6 @@ use std::ops::{Deref, DerefMut};
 use std::os::raw::c_void;
 use std::ptr::NonNull;
 use std::rc::Weak;
-use std::time::Instant;
 use std::{os, ptr};
 
 use background_hang_monitor_api::ScriptHangAnnotation;
@@ -60,6 +59,7 @@ use profile_traits::time::ProfilerCategory;
 use script_bindings::reflector::DomObject;
 use script_bindings::script_runtime::{mark_runtime_dead, runtime_is_alive, temp_cx};
 use script_bindings::settings_stack::run_a_script;
+use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_config::opts::{self, DiagnosticsLoggingOption};
 use servo_config::pref;
 use servo_url::ServoUrl;
@@ -941,8 +941,8 @@ unsafe extern "C" fn get_size(obj: *mut JSObject) -> usize {
     })
 }
 
-thread_local!(static GC_CYCLE_START: Cell<Option<Instant>> = const { Cell::new(None) });
-thread_local!(static GC_SLICE_START: Cell<Option<Instant>> = const { Cell::new(None) });
+thread_local!(static GC_CYCLE_START: Cell<Option<CrossProcessInstant>> = const { Cell::new(None) });
+thread_local!(static GC_SLICE_START: Cell<Option<CrossProcessInstant>> = const { Cell::new(None) });
 
 #[expect(unsafe_code)]
 unsafe extern "C" fn gc_slice_callback(
@@ -952,20 +952,20 @@ unsafe extern "C" fn gc_slice_callback(
 ) {
     match progress {
         GCProgress::GC_CYCLE_BEGIN => GC_CYCLE_START.with(|start| {
-            start.set(Some(Instant::now()));
+            start.set(Some(CrossProcessInstant::now()));
             println!("GC cycle began");
         }),
         GCProgress::GC_SLICE_BEGIN => GC_SLICE_START.with(|start| {
-            start.set(Some(Instant::now()));
+            start.set(Some(CrossProcessInstant::now()));
             println!("GC slice began");
         }),
         GCProgress::GC_SLICE_END => GC_SLICE_START.with(|start| {
-            let duration = start.get().unwrap().elapsed();
+            let duration = CrossProcessInstant::now() - start.get().unwrap();
             start.set(None);
             println!("GC slice ended: duration={:?}", duration);
         }),
         GCProgress::GC_CYCLE_END => GC_CYCLE_START.with(|start| {
-            let duration = start.get().unwrap().elapsed();
+            let duration = CrossProcessInstant::now() - start.get().unwrap();
             start.set(None);
             println!("GC cycle ended: duration={:?}", duration);
         }),

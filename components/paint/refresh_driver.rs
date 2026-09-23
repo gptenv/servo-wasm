@@ -6,14 +6,19 @@ use std::cell::{Cell, LazyCell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crossbeam_channel::{RecvTimeoutError, Sender};
+#[cfg(not(target_arch = "wasm32"))]
+use crossbeam_channel::RecvTimeoutError;
+use crossbeam_channel::Sender;
 use embedder_traits::{EventLoopWaker, RefreshDriver};
 use log::warn;
 use servo_constellation_traits::EmbedderToConstellationMessage;
-use timers::{BoxedTimerCallback, TimerEventRequest, TimerScheduler};
+use timers::{BoxedTimerCallback, TimerEventRequest};
+#[cfg(not(target_arch = "wasm32"))]
+use timers::{TimerEventRequest, TimerScheduler};
 
 use crate::painter::Painter;
 use crate::webview_renderer::WebViewRenderer;
@@ -195,44 +200,62 @@ enum TimerThreadMessage {
 /// behave respecting wakeup timeouts -- a bit too much to ask at the moment.
 pub(crate) struct TimerRefreshDriver {
     sender: Sender<TimerThreadMessage>,
+    #[cfg(not(target_arch = "wasm32"))]
     join_handle: Option<JoinHandle<()>>,
 }
 
 impl Default for TimerRefreshDriver {
     fn default() -> Self {
-        let (sender, receiver) = crossbeam_channel::unbounded::<TimerThreadMessage>();
-        let join_handle = thread::Builder::new()
-            .name(String::from("PaintTimerThread"))
-            .spawn(move || {
-                let mut scheduler = TimerScheduler::default();
+        #[cfg(target_arch = "wasm32")]
+        {
+            let (sender, _receiver) = crossbeam_channel::unbounded();
+            return Self { sender };
+        }
 
-                loop {
-                    let recv_result = match scheduler.next_deadline() {
-                        Some(deadline) => receiver.recv_deadline(deadline),
-                        None => receiver.recv().map_err(|_| RecvTimeoutError::Disconnected),
-                    };
-                    match recv_result {
-                        Ok(TimerThreadMessage::Request(request)) => {
-                            scheduler.schedule_timer(request);
-                        },
-                        Err(RecvTimeoutError::Timeout) => scheduler.dispatch_completed_timers(),
-                        Ok(TimerThreadMessage::Quit) | Err(RecvTimeoutError::Disconnected) => {
-                            return;
-                        },
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (sender, receiver) = crossbeam_channel::unbounded::<TimerThreadMessage>();
+            let join_handle = thread::Builder::new()
+                .name(String::from("PaintTimerThread"))
+                .spawn(move || {
+                    let mut scheduler = TimerScheduler::default();
+
+                    loop {
+                        let recv_result = match scheduler.next_deadline() {
+                            Some(deadline) => receiver.recv_deadline(deadline),
+                            None => receiver.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                        };
+                        match recv_result {
+                            Ok(TimerThreadMessage::Request(request)) => {
+                                scheduler.schedule_timer(request);
+                            },
+                            Err(RecvTimeoutError::Timeout) => scheduler.dispatch_completed_timers(),
+                            Ok(TimerThreadMessage::Quit) | Err(RecvTimeoutError::Disconnected) => {
+                                return;
+                            },
+                        }
                     }
-                }
-            })
-            .expect("Could not create RefreshDriver timer thread.");
+                })
+                .expect("Could not create RefreshDriver timer thread.");
 
-        Self {
-            sender,
-            join_handle: Some(join_handle),
+            Self {
+                sender,
+                join_handle: Some(join_handle),
+            }
         }
     }
 }
 
 impl TimerRefreshDriver {
     pub(crate) fn queue_timer(&self, duration: Duration, callback: BoxedTimerCallback) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = duration;
+            let _ = callback;
+            return;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         let _ = self
             .sender
             .send(TimerThreadMessage::Request(TimerEventRequest {
@@ -251,9 +274,12 @@ impl RefreshDriver for TimerRefreshDriver {
 
 impl Drop for TimerRefreshDriver {
     fn drop(&mut self) {
-        let _ = self.sender.send(TimerThreadMessage::Quit);
-        if let Some(join_handle) = self.join_handle.take() {
-            let _ = join_handle.join();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = self.sender.send(TimerThreadMessage::Quit);
+            if let Some(join_handle) = self.join_handle.take() {
+                let _ = join_handle.join();
+            }
         }
     }
 }

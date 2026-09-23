@@ -36,6 +36,19 @@ use tokio::sync::{OwnedRwLockWriteGuard, RwLock as TokioRwLock};
 use crate::disk_cache::DiskCache;
 use crate::fetch::methods::{Data, DoneChannel};
 
+#[cfg(target_arch = "wasm32")]
+fn worker_system_time() -> SystemTime {
+    SystemTime::UNIX_EPOCH
+        + Duration::from_nanos(
+            servo_base::cross_process_instant::CrossProcessInstant::unix_time_now_ns(),
+        )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn worker_system_time() -> SystemTime {
+    SystemTime::now()
+}
+
 /// A duration in seconds.
 ///
 /// This is the same as std::time::Duration except that we do not care about nanosecond precision.
@@ -404,7 +417,7 @@ fn calculate_response_age(response: &Response) -> ApproxDuration {
 fn get_response_expiry(response: &Response) -> ApproxDuration {
     // Calculating Freshness Lifetime <https://tools.ietf.org/html/rfc7234#section-4.2.1>
     let age = calculate_response_age(response);
-    let now = SystemTime::now();
+    let now = worker_system_time();
     if let Some(directives) = response.headers.typed_get::<CacheControl>() {
         if directives.no_cache() {
             // Requires validation on first use.
@@ -593,7 +606,7 @@ fn create_cached_response(
 
     let expires = cached_resource.expires;
     let adjusted_expires = get_expiry_adjustment_from_request_headers(request, expires);
-    let Ok(time_since_validated) = SystemTime::now().duration_since(cached_resource.last_validated)
+    let Ok(time_since_validated) = worker_system_time().duration_since(cached_resource.last_validated)
     else {
         return None;
     };
@@ -992,7 +1005,7 @@ pub fn refresh(
         cached_resource.expires = get_response_expiry(constructed_response);
         cached_resource.stale_while_revalidate =
             get_stale_while_revalidate(&constructed_response.headers);
-        cached_resource.last_validated = SystemTime::now();
+        cached_resource.last_validated = worker_system_time();
     }
 
     constructed_response
@@ -1227,7 +1240,7 @@ impl<'a> CachedResourcesOrGuard<'a> {
             expires: expiry,
             stale_while_revalidate,
             revalidating: StdArc::new(AtomicBool::new(false)),
-            last_validated: SystemTime::now(),
+            last_validated: worker_system_time(),
         };
 
         match self {

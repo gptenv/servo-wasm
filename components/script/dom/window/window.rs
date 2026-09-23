@@ -13,7 +13,7 @@ use std::io::{Write, stderr, stdout};
 use std::ptr::NonNull;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use app_units::Au;
 use base64::Engine;
@@ -247,7 +247,7 @@ enum LayoutBlocker {
     /// The first load event hasn't been fired and we have not started to parse the `<body>` yet.
     WaitingForParse,
     /// The body is being parsed the `<body>` starting at the `Instant` specified.
-    Parsing(Instant),
+    Parsing(CrossProcessInstant),
     /// The body finished parsing and the `load` event has been fired or parsing took so
     /// long, that we are going to do layout anyway. Note that subsequent changes to the body
     /// can trigger parsing again, but the `Window` stays in this state.
@@ -2852,7 +2852,9 @@ impl Window {
         // and it started more than `INITIAL_REFLOW_DELAY` ago.
         if !matches!(
             self.layout_blocker.get(),
-            LayoutBlocker::Parsing(instant) if instant + INITIAL_REFLOW_DELAY < Instant::now()
+            LayoutBlocker::Parsing(instant)
+                if (CrossProcessInstant::now() - instant).whole_milliseconds()
+                    >= INITIAL_REFLOW_DELAY.as_millis() as i128
         ) {
             return;
         }
@@ -2870,7 +2872,7 @@ impl Window {
         }
 
         self.layout_blocker
-            .set(LayoutBlocker::Parsing(Instant::now()));
+            .set(LayoutBlocker::Parsing(CrossProcessInstant::now()));
     }
 
     /// Inform the [`Window`] that layout is allowed either because `load` has happened
@@ -2897,6 +2899,15 @@ impl Window {
         // iframe size updates.
         //
         // See <https://github.com/servo/servo/issues/14719>
+        // Cloudflare Workers currently use the headless DOM/JS path. There is
+        // no display compositor attached to this target yet, and forcing a
+        // synchronous display reflow here reaches desktop-only renderer timing
+        // code. Keep page evaluation independent from the future screenshot
+        // pipeline; the rendering path will be enabled when its Worker backend
+        // is wired.
+        #[cfg(target_arch = "wasm32")]
+        return;
+
         let document = self.Document();
         if !document.is_render_blocked() && document.update_the_rendering(cx).0.needs_frame() {
             self.paint_api()

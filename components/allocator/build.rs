@@ -86,5 +86,8 @@ fn build_trimmed_wasi_libc(wasm_lib_dir: &Path, build_dir: &Path) {
         .args(worker_libc_trimmed_objects())
         .status()
         .expect("run ar to trim wasi-sysroot libc.a");
-    assert!(status.success(), "ar d failed while trimming wasi-sysroot libc.a");
+    assert!(
+        status.success(),
+        "ar d failed while trimming wasi-sysroot libc.a"
+    );
 }

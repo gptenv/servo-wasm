@@ -258,42 +258,54 @@ impl Paint {
         &mut self,
         rendering_context: Rc<dyn RenderingContext>,
     ) -> PainterId {
-        if let Some(painter_id) = self.painters.iter().find_map(|painter| {
-            let painter = painter.borrow();
-            if Rc::ptr_eq(&painter.rendering_context, &rendering_context) {
-                Some(painter.painter_id)
-            } else {
-                None
-            }
-        }) {
-            return painter_id;
+        #[cfg(target_arch = "wasm32")]
+        {
+            // Worker mode is currently DOM/script-only. Keep a stable painter
+            // identity for WebView and constellation messages without entering
+            // the native WebRender initialization path.
+            let _ = rendering_context;
+            return PainterId::next();
         }
 
-        let painter = Painter::new(rendering_context.clone(), self);
-        let painter_id = painter.painter_id;
-        self.painters.push(Rc::new(RefCell::new(painter)));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(painter_id) = self.painters.iter().find_map(|painter| {
+                let painter = painter.borrow();
+                if Rc::ptr_eq(&painter.rendering_context, &rendering_context) {
+                    Some(painter.painter_id)
+                } else {
+                    None
+                }
+            }) {
+                return painter_id;
+            }
 
-        // These are only used to serve WebGL external images, which handles their
-        // absence from the map
-        let Some(connection) = rendering_context.connection() else {
-            warn!("The rendering context has no surfman connection, WebGL will be unavailable");
-            return painter_id;
-        };
-        let Ok(adapter) = connection.create_adapter().inspect_err(|error| {
-            warn!("Could not create a surfman adapter, WebGL will be unavailable: {error:?}")
-        }) else {
-            return painter_id;
-        };
+            let painter = Painter::new(rendering_context.clone(), self);
+            let painter_id = painter.painter_id;
+            self.painters.push(Rc::new(RefCell::new(painter)));
 
-        self.painter_surfman_details_map.insert(
-            painter_id,
-            PainterSurfmanDetails {
-                connection,
-                adapter,
-            },
-        );
+            // These are only used to serve WebGL external images, which handles their
+            // absence from the map
+            let Some(connection) = rendering_context.connection() else {
+                warn!("The rendering context has no surfman connection, WebGL will be unavailable");
+                return painter_id;
+            };
+            let Ok(adapter) = connection.create_adapter().inspect_err(|error| {
+                warn!("Could not create a surfman adapter, WebGL will be unavailable: {error:?}")
+            }) else {
+                return painter_id;
+            };
 
-        painter_id
+            self.painter_surfman_details_map.insert(
+                painter_id,
+                PainterSurfmanDetails {
+                    connection,
+                    adapter,
+                },
+            );
+
+            painter_id
+        }
     }
 
     fn remove_painter(&mut self, painter_id: PainterId) {
@@ -591,17 +603,26 @@ impl Paint {
     }
 
     pub fn remove_webview(&mut self, webview_id: WebViewId) {
-        let painter_id = webview_id.into();
-
+        #[cfg(target_arch = "wasm32")]
         {
-            let mut painter = self.painter_mut(painter_id);
-            painter.remove_webview(webview_id);
-            if !painter.is_empty() {
-                return;
-            }
+            let _ = webview_id;
+            return;
         }
 
-        self.remove_painter(painter_id);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let painter_id = webview_id.into();
+
+            {
+                let mut painter = self.painter_mut(painter_id);
+                painter.remove_webview(webview_id);
+                if !painter.is_empty() {
+                    return;
+                }
+            }
+
+            self.remove_painter(painter_id);
+        }
     }
 
     fn collect_memory_report(&self, sender: profile_traits::mem::ReportsChan) {
@@ -686,6 +707,13 @@ impl Paint {
     }
 
     pub fn add_webview(&self, webview: Box<dyn WebViewTrait>, viewport_details: ViewportDetails) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (webview, viewport_details);
+            return;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         self.painter_mut(webview.id().into())
             .add_webview(webview, viewport_details);
     }

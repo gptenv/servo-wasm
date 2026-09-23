@@ -6,7 +6,8 @@ use std::array::from_ref;
 use std::cell::Cell;
 use std::f64::consts::PI;
 use std::mem;
-use std::time::{Duration, Instant};
+use std::str::FromStr;
+use std::time::Duration;
 
 use embedder_traits::{
     Cursor, EmbedderMsg, ImeEvent, InputEvent, InputEventId, InputEventOutcome, InputEventResult,
@@ -39,6 +40,7 @@ use script_bindings::num::Finite;
 use script_bindings::root::{Dom, DomRoot, DomSlice};
 use script_bindings::str::DOMString;
 use script_traits::{ConstellationInputEvent, MouseButtons};
+use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_config::pref;
 use servo_constellation_traits::{KeyboardScroll, ScriptToConstellationMessage};
 use style::Atom;
@@ -86,7 +88,8 @@ use crate::realms::enter_auto_realm;
 /// > the count resets is specific to the environment configuration.
 #[derive(Default, JSTraceable, MallocSizeOf)]
 struct ClickCountingInfo {
-    time: Option<Instant>,
+    #[no_trace]
+    time: Option<CrossProcessInstant>,
     #[no_trace]
     point: Option<Point2D<f32, CSSPixel>>,
     #[no_trace]
@@ -114,9 +117,10 @@ impl ClickCountingInfo {
         // Calculate distance between this click and the previous click.
         let line = point_in_frame - previous_point;
         let distance = (line.dot(line) as f64).sqrt();
-        if previous_button != button ||
-            Instant::now().duration_since(previous_time) > double_click_timeout ||
-            distance > double_click_distance_threshold as f64
+        if previous_button != button
+            || (CrossProcessInstant::now() - previous_time).whole_nanoseconds()
+                > double_click_timeout.as_nanos() as i128
+            || distance > double_click_distance_threshold as f64
         {
             self.count = 0;
             self.time = None;
@@ -129,7 +133,7 @@ impl ClickCountingInfo {
         button: MouseButton,
         point: Point2D<f32, CSSPixel>,
     ) -> usize {
-        self.time = Some(Instant::now());
+        self.time = Some(CrossProcessInstant::now());
         self.point = Some(point);
         self.button = Some(button);
         self.count += 1;

@@ -13,6 +13,8 @@ use script_bindings::cell::DomRefCell;
 use script_bindings::match_domstring_ascii;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
 use script_bindings::str::DOMString;
+#[cfg(target_arch = "wasm32")]
+use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_url::ServoUrl;
 
 use crate::dom::bindings::callback::ExceptionHandling;
@@ -181,12 +183,19 @@ impl ReportingObserver {
             url,
             body,
             destination,
-            timestamp: Finite::wrap(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as f64,
-            ),
+            timestamp: Finite::wrap({
+                #[cfg(target_arch = "wasm32")]
+                {
+                    (CrossProcessInstant::unix_time_now_ns() / 1_000_000) as f64
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as f64
+                }
+            }),
             attempts: 0,
         }
     }

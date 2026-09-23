@@ -118,6 +118,8 @@ use euclid::default::Size2D as UntypedSize2D;
 use fonts::SystemFontServiceProxy;
 use ipc_channel::router::ROUTER;
 use keyboard_types::{Key, KeyState, Modifiers, NamedKey};
+#[cfg(target_arch = "wasm32")]
+use layout_api::ScriptThreadHandle;
 use layout_api::{LayoutFactory, ScriptThreadFactory};
 use log::{debug, error, info, trace, warn};
 use media::WindowGLContext;
@@ -167,10 +169,12 @@ use servo_constellation_traits::{
     TraversalDirection, UserContentManagerAction, WindowSizeType, WorkerAnimationFrameTick,
 };
 use servo_url::{Host, ImmutableOrigin, ServoUrl};
+
 use storage_traits::StorageThreads;
 use storage_traits::cache_storage::CacheStorageThreadMessage;
 use storage_traits::client_storage::ClientStorageThreadMessage;
 use storage_traits::indexeddb::{IndexedDBThreadMsg, SyncOperation};
+
 use storage_traits::webstorage_thread::{WebStorageThreadMsg, WebStorageType};
 #[cfg(feature = "webgpu")]
 use webgpu::canvas_context::WebGpuExternalImageMap;
@@ -498,7 +502,10 @@ pub struct Constellation<STF, SWF> {
 
     /// A vector of [`JoinHandle`]s used to ensure full termination of threaded [`EventLoop`]s
     /// which are runnning in the same process.
+    #[cfg(not(target_arch = "wasm32"))]
     event_loop_join_handles: Vec<JoinHandle<()>>,
+    #[cfg(target_arch = "wasm32")]
+    script_thread_handles: Vec<Box<dyn ScriptThreadHandle>>,
 
     /// A list of URLs that can access privileged internal APIs.
     pub(crate) privileged_urls: Vec<ServoUrl>,
@@ -597,8 +604,168 @@ where
     STF: ScriptThreadFactory,
     SWF: ServiceWorkerManagerFactory,
 {
-    /// Create a new constellation thread.
+    /// Build a constellation without starting its event loop.
+    ///
+    /// The Worker target owns this value and advances it from the embedder's
+    /// event loop; native targets wrap it in the historical dedicated thread.
     #[servo_tracing::instrument(skip(state, layout_factory))]
+    pub fn new(
+        embedder_to_constellation_receiver: Receiver<EmbedderToConstellationMessage>,
+        state: InitialConstellationState,
+        layout_factory: Arc<dyn LayoutFactory>,
+        random_pipeline_closure_probability: Option<f32>,
+        random_pipeline_closure_seed: Option<usize>,
+        hard_fail: bool,
+    ) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        servo_base::threadboost::boost_thread(ThreadPriority::Elevated, BoostAffinity::Boost);
+        let (script_ipc_sender, script_ipc_receiver) =
+            generic_channel::channel().expect("ipc channel failure");
+        let script_receiver = script_ipc_receiver.route_preserving_errors();
+
+        let (namespace_ipc_sender, namespace_ipc_receiver) =
+            generic_channel::channel().expect("ipc channel failure");
+        let namespace_receiver = namespace_ipc_receiver.route_preserving_errors();
+
+        let (background_hang_monitor_ipc_sender, background_hang_monitor_ipc_receiver) =
+            generic_channel::channel().expect("ipc channel failure");
+        let background_hang_monitor_receiver =
+            background_hang_monitor_ipc_receiver.route_preserving_errors();
+
+        // If we are in multiprocess mode,
+        // a dedicated per-process hang monitor will be initialized later inside the content process.
+        // See run_content_process in servo/lib.rs
+
+        #[cfg(target_arch = "wasm32")]
+        let (
+            background_monitor_register,
+            background_monitor_register_join_handle,
+            background_monitor_control_sender,
+        ) = (None, None, None);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let (
+            background_monitor_register,
+            background_monitor_register_join_handle,
+            background_monitor_control_sender,
+        ) = if opts::get().multiprocess {
+            (None, None, None)
+        } else {
+            let (
+                background_hang_monitor_control_ipc_sender,
+                background_hang_monitor_control_ipc_receiver,
+            ) = generic_channel::channel().expect("ipc channel failure");
+            let (register, join_handle) = HangMonitorRegister::init(
+                background_hang_monitor_ipc_sender.clone(),
+                background_hang_monitor_control_ipc_receiver,
+                opts::get().background_hang_monitor,
+            );
+            (
+                Some(register),
+                Some(join_handle),
+                Some(background_hang_monitor_control_ipc_sender),
+            )
+        };
+
+        // Native Servo gives the constellation its own thread-local
+        // namespace. The Worker constellation runs on the embedder's
+        // single thread, where the embedder namespace is already
+        // installed; installing a second namespace would panic.
+        #[cfg(not(target_arch = "wasm32"))]
+        PipelineNamespace::install(CONSTELLATION_PIPELINE_NAMESPACE_ID);
+
+        #[cfg(feature = "webgpu")]
+        let webrender_wgpu = WebRenderWGPU {
+            webrender_external_image_id_manager: state.webrender_external_image_id_manager,
+            wgpu_image_map: state.wgpu_image_map,
+        };
+
+        #[cfg(target_arch = "wasm32")]
+        let broken_image_icon_data = Vec::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        let broken_image_icon_data = resources::read_bytes(Resource::BrokenImageIcon);
+
+        let constellation: Constellation<STF, SWF> = Constellation {
+            event_loops: Default::default(),
+            namespace_receiver,
+            namespace_ipc_sender,
+            script_sender: script_ipc_sender,
+            background_hang_monitor_sender: background_hang_monitor_ipc_sender,
+            background_hang_monitor_receiver,
+            background_monitor_register,
+            background_monitor_register_join_handle,
+            background_monitor_control_sender,
+            script_receiver,
+            embedder_to_constellation_receiver,
+            layout_factory,
+            embedder_proxy: state.embedder_proxy,
+            constellation_to_embedder_proxy: state.constellation_to_embedder_proxy,
+            paint_proxy: state.paint_proxy,
+            webviews: Default::default(),
+            devtools_sender: state.devtools_sender,
+            script_to_devtools_callback: Default::default(),
+            #[cfg(feature = "bluetooth")]
+            bluetooth_ipc_sender: state.bluetooth_thread,
+            public_resource_threads: state.public_resource_threads,
+            private_resource_threads: state.private_resource_threads,
+            public_storage_threads: state.public_storage_threads,
+            private_storage_threads: state.private_storage_threads,
+            system_font_service: state.system_font_service,
+            sw_managers: Default::default(),
+            browsing_context_group_set: Default::default(),
+            browsing_context_group_next_id: Default::default(),
+            message_ports: Default::default(),
+            message_port_routers: Default::default(),
+            broadcast_channels: Default::default(),
+            pipeline_interests: Default::default(),
+            pipelines: Default::default(),
+            worker_animation_frame_providers: Default::default(),
+            browsing_contexts: Default::default(),
+            next_pipeline_namespace_id: Cell::new(FIRST_CONTENT_PIPELINE_NAMESPACE_ID),
+            time_profiler_chan: state.time_profiler_chan,
+            mem_profiler_chan: state.mem_profiler_chan.clone(),
+            phantom: PhantomData,
+            webdriver_load_status_sender: None,
+            #[cfg(feature = "webgpu")]
+            webrender_wgpu,
+            shutting_down: false,
+            handled_warnings: VecDeque::new(),
+            random_pipeline_closure: random_pipeline_closure_probability.map(|probability| {
+                let rng = random_pipeline_closure_seed
+                    .map(|seed| SmallRng::seed_from_u64(seed as u64))
+                    .unwrap_or_else(make_rng);
+                warn!("Randomly closing pipelines using seed {random_pipeline_closure_seed:?}.");
+                (rng, probability)
+            }),
+            #[cfg(feature = "webgl")]
+            webgl_threads: state.webgl_threads,
+            webxr_registry: state.webxr_registry,
+            canvas: OnceCell::new(),
+            pending_approval_navigations: Default::default(),
+            pressed_mouse_buttons: MouseButtons::empty(),
+            active_keyboard_modifiers: Modifiers::empty(),
+            hard_fail,
+            active_media_session: None,
+            screen_wake_lock_count: 0,
+            wake_lock_provider: state.wake_lock_provider,
+            #[cfg(feature = "multiprocess")]
+            broken_image_icon_data: broken_image_icon_data.clone(),
+            #[cfg(feature = "multiprocess")]
+            process_manager: crate::process_manager::ProcessManager::new(state.mem_profiler_chan),
+            async_runtime: state.async_runtime,
+            #[cfg(not(target_arch = "wasm32"))]
+            event_loop_join_handles: Default::default(),
+            #[cfg(target_arch = "wasm32")]
+            script_thread_handles: Default::default(),
+            privileged_urls: state.privileged_urls,
+            image_cache_factory: Arc::new(ImageCacheFactoryImpl::new(broken_image_icon_data)),
+            user_contents_for_manager_id: Default::default(),
+        };
+
+        constellation
+    }
+
+    /// Start the native constellation thread.
     pub fn start(
         embedder_to_constellation_receiver: Receiver<EmbedderToConstellationMessage>,
         state: InitialConstellationState,
@@ -610,133 +777,14 @@ where
         thread::Builder::new()
             .name("Constellation".to_owned())
             .spawn(move || {
-                servo_base::threadboost::boost_thread(ThreadPriority::Elevated, BoostAffinity::Boost);
-                let (script_ipc_sender, script_ipc_receiver) =
-                    generic_channel::channel().expect("ipc channel failure");
-                let script_receiver = script_ipc_receiver.route_preserving_errors();
-
-                let (namespace_ipc_sender, namespace_ipc_receiver) =
-                    generic_channel::channel().expect("ipc channel failure");
-                let namespace_receiver = namespace_ipc_receiver.route_preserving_errors();
-
-                let (background_hang_monitor_ipc_sender, background_hang_monitor_ipc_receiver) =
-                    generic_channel::channel().expect("ipc channel failure");
-                let background_hang_monitor_receiver =
-                    background_hang_monitor_ipc_receiver.route_preserving_errors();
-
-                // If we are in multiprocess mode,
-                // a dedicated per-process hang monitor will be initialized later inside the content process.
-                // See run_content_process in servo/lib.rs
-
-                let (
-                    background_monitor_register,
-                    background_monitor_register_join_handle,
-                    background_monitor_control_sender
-                ) = if opts::get().multiprocess {
-                    (None, None, None)
-                } else {
-                    let (
-                        background_hang_monitor_control_ipc_sender,
-                        background_hang_monitor_control_ipc_receiver,
-                    ) = generic_channel::channel().expect("ipc channel failure");
-                    let (register, join_handle) = HangMonitorRegister::init(
-                        background_hang_monitor_ipc_sender.clone(),
-                        background_hang_monitor_control_ipc_receiver,
-                        opts::get().background_hang_monitor,
-                    );
-                    (
-                        Some(register),
-                        Some(join_handle),
-                        Some(background_hang_monitor_control_ipc_sender),
-                    )
-                };
-
-                PipelineNamespace::install(CONSTELLATION_PIPELINE_NAMESPACE_ID);
-
-                #[cfg(feature = "webgpu")]
-                let webrender_wgpu = WebRenderWGPU {
-                    webrender_external_image_id_manager: state.webrender_external_image_id_manager,
-                    wgpu_image_map: state.wgpu_image_map,
-                };
-
-                let broken_image_icon_data = resources::read_bytes(Resource::BrokenImageIcon);
-
-                let mut constellation: Constellation<STF, SWF> = Constellation {
-                    event_loops: Default::default(),
-                    namespace_receiver,
-                    namespace_ipc_sender,
-                    script_sender: script_ipc_sender,
-                    background_hang_monitor_sender: background_hang_monitor_ipc_sender,
-                    background_hang_monitor_receiver,
-                    background_monitor_register,
-                    background_monitor_register_join_handle,
-                    background_monitor_control_sender,
-                    script_receiver,
+                let mut constellation = Self::new(
                     embedder_to_constellation_receiver,
+                    state,
                     layout_factory,
-                    embedder_proxy: state.embedder_proxy,
-                    constellation_to_embedder_proxy: state.constellation_to_embedder_proxy,
-                    paint_proxy: state.paint_proxy,
-                    webviews: Default::default(),
-                    devtools_sender: state.devtools_sender,
-                    script_to_devtools_callback: Default::default(),
-                    #[cfg(feature = "bluetooth")]
-                    bluetooth_ipc_sender: state.bluetooth_thread,
-                    public_resource_threads: state.public_resource_threads,
-                    private_resource_threads: state.private_resource_threads,
-                    public_storage_threads: state.public_storage_threads,
-                    private_storage_threads: state.private_storage_threads,
-                    system_font_service: state.system_font_service,
-                    sw_managers: Default::default(),
-                    browsing_context_group_set: Default::default(),
-                    browsing_context_group_next_id: Default::default(),
-                    message_ports: Default::default(),
-                    message_port_routers: Default::default(),
-                    broadcast_channels: Default::default(),
-                    pipeline_interests: Default::default(),
-                    pipelines: Default::default(),
-                    worker_animation_frame_providers: Default::default(),
-                    browsing_contexts: Default::default(),
-                    next_pipeline_namespace_id: Cell::new(FIRST_CONTENT_PIPELINE_NAMESPACE_ID),
-                    time_profiler_chan: state.time_profiler_chan,
-                    mem_profiler_chan: state.mem_profiler_chan.clone(),
-                    phantom: PhantomData,
-                    webdriver_load_status_sender: None,
-                    #[cfg(feature = "webgpu")]
-                    webrender_wgpu,
-                    shutting_down: false,
-                    handled_warnings: VecDeque::new(),
-                    random_pipeline_closure: random_pipeline_closure_probability.map(|probability| {
-                        let rng = random_pipeline_closure_seed
-                            .map(|seed| SmallRng::seed_from_u64(seed as u64))
-                            .unwrap_or_else(make_rng);
-                        warn!("Randomly closing pipelines using seed {random_pipeline_closure_seed:?}.");
-                        (rng, probability)
-                    }),
-                    #[cfg(feature = "webgl")]
-                    webgl_threads: state.webgl_threads,
-                    webxr_registry: state.webxr_registry,
-                    canvas: OnceCell::new(),
-                    pending_approval_navigations: Default::default(),
-                    pressed_mouse_buttons: MouseButtons::empty(),
-                    active_keyboard_modifiers: Modifiers::empty(),
+                    random_pipeline_closure_probability,
+                    random_pipeline_closure_seed,
                     hard_fail,
-                    active_media_session: None,
-                    screen_wake_lock_count: 0,
-                    wake_lock_provider: state.wake_lock_provider,
-                    #[cfg(feature = "multiprocess")]
-                    broken_image_icon_data: broken_image_icon_data.clone(),
-                    #[cfg(feature = "multiprocess")]
-                    process_manager: crate::process_manager::ProcessManager::new(state.mem_profiler_chan),
-                    async_runtime: state.async_runtime,
-                    event_loop_join_handles: Default::default(),
-                    privileged_urls: state.privileged_urls,
-                    image_cache_factory: Arc::new(ImageCacheFactoryImpl::new(
-                        broken_image_icon_data,
-                    )),
-                    user_contents_for_manager_id: Default::default(),
-                };
-
+                );
                 constellation.run();
             })
             .expect("Thread spawning failed");
@@ -753,15 +801,53 @@ where
         self.event_loops.push(Rc::downgrade(event_loop));
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn add_event_loop_join_handle(&mut self, join_handle: JoinHandle<()>) {
         self.event_loop_join_handles.push(join_handle);
     }
 
-    fn clean_up_finished_script_event_loops(&mut self) {
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn add_script_thread_handle(&mut self, handle: Box<dyn ScriptThreadHandle>) {
+        self.script_thread_handles.push(handle);
+    }
+
+    /// Return the next Worker timer deadline across all live script event loops.
+    pub fn worker_next_timer_deadline_ns(&self) -> Option<u64> {
+        self.script_thread_handles
+            .iter()
+            .filter_map(|handle| handle.next_timer_deadline_ns())
+            .min()
+    }
+
+    fn clean_up_finished_script_event_loops(&mut self) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        let processed = self
+            .script_thread_handles
+            .iter_mut()
+            .fold(false, |processed, handle| handle.pump() || processed);
+        #[cfg(not(target_arch = "wasm32"))]
+        let processed = false;
+        #[cfg(not(target_arch = "wasm32"))]
         self.event_loop_join_handles
             .retain(|join_handle| !join_handle.is_finished());
         self.event_loops
             .retain(|event_loop| event_loop.upgrade().is_some());
+        processed
+    }
+
+    /// Process all currently queued constellation work without blocking.
+    pub fn pump(&mut self) -> bool {
+        if self.shutting_down {
+            return false;
+        }
+        let mut processed = false;
+        self.maybe_close_random_pipeline();
+        while self.handle_request_inner(true) {
+            processed = true;
+            self.maybe_close_random_pipeline();
+        }
+        self.finish_completed_session_history_traversal_requests();
+        processed | self.clean_up_finished_script_event_loops()
     }
 
     /// The main event loop for the constellation.
@@ -770,9 +856,9 @@ where
             // Randomly close a pipeline if --random-pipeline-closure-probability is set
             // This is for testing the hardening of the constellation.
             self.maybe_close_random_pipeline();
-            self.handle_request();
+            self.handle_request_inner(false);
             self.finish_completed_session_history_traversal_requests();
-            self.clean_up_finished_script_event_loops();
+            let _ = self.clean_up_finished_script_event_loops();
         }
         self.handle_shutdown();
 
@@ -965,6 +1051,16 @@ where
         load_data: &LoadData,
         is_private: bool,
     ) -> Result<Rc<EventLoop>, SendError> {
+        // A Worker has one OS/WASM thread and SpiderMonkey runtime. Servo's native
+        // model creates another ScriptThread for a new origin; that would create
+        // a second SpiderMonkey runtime on this thread, which is unsupported.
+        // ScriptThreads already own multiple pipelines, so route Worker pipelines
+        // through the existing event loop and keep their globals/documents separate.
+        #[cfg(target_arch = "wasm32")]
+        if let Some(event_loop) = self.event_loops().into_iter().next() {
+            return Ok(event_loop);
+        }
+
         let registered_domain_name = if load_data
             .creation_sandboxing_flag_set
             .contains(SandboxingFlagSet::SANDBOXED_ORIGIN_BROWSING_CONTEXT_FLAG)
@@ -1197,7 +1293,7 @@ where
 
     /// Handles loading pages, navigation, and granting access to `Paint`.
     #[servo_tracing::instrument(skip_all)]
-    fn handle_request(&mut self) {
+    fn handle_request_inner(&mut self, nonblocking: bool) -> bool {
         #[expect(clippy::large_enum_variant)]
         #[derive(Debug)]
         enum Request {
@@ -1231,7 +1327,14 @@ where
         let request = {
             let oper = {
                 let _span = profile_traits::trace_span!("handle_request::select").entered();
-                sel.select()
+                if nonblocking {
+                    match sel.try_select() {
+                        Ok(operation) => operation,
+                        Err(_) => return false,
+                    }
+                } else {
+                    sel.select()
+                }
             };
             let index = oper.index();
 
@@ -1264,7 +1367,10 @@ where
 
         let request = match request {
             Ok(request) => request,
-            Err(err) => return error!("Deserialization failed ({}).", err),
+            Err(err) => {
+                error!("Deserialization failed ({}).", err);
+                return true;
+            },
         };
 
         match request {
@@ -1283,6 +1389,7 @@ where
             #[cfg(not(feature = "multiprocess"))]
             Request::RemoveProcess(_) => {},
         }
+        true
     }
 
     #[servo_tracing::instrument(skip_all)]
@@ -1319,6 +1426,29 @@ where
                 }
 
                 let ctx_id = BrowsingContextId::from(webview_id);
+                #[cfg(target_arch = "wasm32")]
+                {
+                    // A Worker host must be able to replace a stalled navigation
+                    // (including reset). Native load_url intentionally ignores a
+                    // load while a session-history change is pending. Retire the
+                    // superseded top-level pipelines before applying this host load;
+                    // script-initiated and iframe navigation keep their own policy.
+                    let superseded: Vec<_> = self
+                        .webviews
+                        .get(&webview_id)
+                        .into_iter()
+                        .flat_map(|webview| &webview.pending_changes)
+                        .filter(|change| change.browsing_context_id == ctx_id)
+                        .map(|change| change.new_pipeline_id)
+                        .collect();
+                    for pipeline in superseded {
+                        self.close_pipeline(
+                            pipeline,
+                            DiscardBrowsingContext::No,
+                            ExitPipelineMode::Normal,
+                        );
+                    }
+                }
                 let pipeline_id = match self.browsing_contexts.get(&ctx_id) {
                     Some(ctx) => ctx.pipeline_id,
                     None => {
@@ -2732,11 +2862,15 @@ where
     fn handle_shutdown(&mut self) {
         debug!("Handling shutdown.");
 
+        #[cfg(not(target_arch = "wasm32"))]
         for join_handle in self.event_loop_join_handles.drain(..) {
             if join_handle.join().is_err() {
                 error!("Failed to join on a script-thread.");
             }
         }
+
+        #[cfg(target_arch = "wasm32")]
+        self.script_thread_handles.clear();
 
         // In single process mode, join on the background hang monitor worker thread.
         drop(self.background_monitor_register.take());

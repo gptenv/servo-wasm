@@ -84,6 +84,18 @@ impl SystemFontService {
         memory_profiler_sender: ProfilerChan,
     ) -> SystemFontServiceProxySender {
         let (sender, receiver) = generic_channel::channel().unwrap();
+
+        // A raw Worker has no native thread runtime. Keep the channel
+        // disconnected on wasm until this service is moved onto the Worker
+        // pump; callers then receive a normal send failure instead of
+        // trapping during Servo construction or blocking forever.
+        #[cfg(target_arch = "wasm32")]
+        {
+            drop(receiver);
+            let _ = (paint_api, memory_profiler_sender);
+            return SystemFontServiceProxySender(sender);
+        }
+
         let memory_reporter_sender = sender.clone();
 
         thread::Builder::new()

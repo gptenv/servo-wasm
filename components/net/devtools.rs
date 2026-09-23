@@ -20,6 +20,19 @@ use net_traits::response::{CacheState, Response};
 use servo_base::id::{BrowsingContextId, PipelineId};
 use servo_url::ServoUrl;
 
+#[cfg(target_arch = "wasm32")]
+fn worker_system_time() -> SystemTime {
+    SystemTime::UNIX_EPOCH
+        + Duration::from_nanos(
+            servo_base::cross_process_instant::CrossProcessInstant::unix_time_now_ns(),
+        )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn worker_system_time() -> SystemTime {
+    SystemTime::now()
+}
+
 use crate::fetch::methods::FetchContext;
 
 #[expect(clippy::too_many_arguments)]
@@ -36,7 +49,7 @@ pub(crate) fn prepare_devtools_request(
     is_xhr: bool,
     browsing_context_id: BrowsingContextId,
 ) -> ChromeToDevtoolsControlMsg {
-    let started_date_time = SystemTime::now();
+    let started_date_time = worker_system_time();
     let request = DevtoolsHttpRequest {
         url,
         method,
@@ -176,7 +189,7 @@ pub(crate) fn send_early_httprequest_to_devtools(request: &Request, context: &Fe
             headers: request.headers.clone(),
             body: None,
             pipeline_id,
-            started_date_time: SystemTime::now(),
+            started_date_time: worker_system_time(),
             time_stamp: 0,
             connect_time: Duration::from_millis(0),
             send_time: Duration::from_millis(0),

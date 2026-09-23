@@ -10,6 +10,7 @@ pub extern crate servo_media_webrtc as webrtc;
 
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread;
 
 use audio::context::{AudioContext, AudioContextOptions};
@@ -97,6 +98,13 @@ pub enum SupportsMediaType {
 
 impl ServoMedia {
     pub fn init<B: BackendInit>() {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = INSTANCE.get_or_init(|| Arc::new(ServoMedia(B::init())));
+            return;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         thread::spawn(|| INSTANCE.get_or_init(|| Arc::new(ServoMedia(B::init()))));
     }
 
@@ -104,6 +112,13 @@ impl ServoMedia {
     where
         F: Fn() -> Box<dyn Backend> + Send + 'static,
     {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = INSTANCE.get_or_init(|| Arc::new(ServoMedia(backend_factory())));
+            return;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         thread::spawn(move || INSTANCE.get_or_init(|| Arc::new(ServoMedia(backend_factory()))));
     }
 

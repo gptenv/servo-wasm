@@ -19,6 +19,7 @@ use std::any::Any;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicIsize;
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -435,13 +436,35 @@ pub trait Layout {
 /// and also `LayoutFactory` from this crate. If it was in `script_traits` there would be a
 /// circular dependency.
 pub trait ScriptThreadFactory {
+    #[cfg(target_arch = "wasm32")]
+    type Handle: ScriptThreadHandle;
+
     /// Create a `ScriptThread`.
+    #[cfg(target_arch = "wasm32")]
+    fn create(
+        state: InitialScriptState,
+        layout_factory: Arc<dyn LayoutFactory>,
+        image_cache_factory: Arc<dyn ImageCacheFactory>,
+        background_hang_monitor_register: Box<dyn BackgroundHangMonitorRegister>,
+    ) -> Self::Handle;
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn create(
         state: InitialScriptState,
         layout_factory: Arc<dyn LayoutFactory>,
         image_cache_factory: Arc<dyn ImageCacheFactory>,
         background_hang_monitor_register: Box<dyn BackgroundHangMonitorRegister>,
     ) -> JoinHandle<()>;
+}
+
+#[cfg(target_arch = "wasm32")]
+pub trait ScriptThreadHandle: 'static {
+    /// Process one ready script message without blocking the Worker isolate.
+    /// Returns true if a message was processed.
+    fn pump(&mut self) -> bool;
+
+    /// Return the earliest scheduled browser timer as a monotonic nanosecond value.
+    fn next_timer_deadline_ns(&self) -> Option<u64>;
 }
 
 /// Type of the area of CSS box for query.

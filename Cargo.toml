@@ -149,7 +149,7 @@ libc = "0.2"
 log = "0.4.32"
 mach2 = "0.7"
 malloc_size_of_derive = "0.1"
-markup5ever = "0.40"
+markup5ever = "0.40.1"
 memmap2 = "0.9.10"
 mime = "0.3.13"
 mime_guess = "2.0.5"
@@ -220,14 +220,14 @@ rustls-pki-types = "1.14"
 rustls-platform-verifier = "0.7.0"
 sea-query = { version = "1.0.1", default-features = false, features = ["backend-sqlite", "derive"] }
 sea-query-rusqlite = "0.8.0"
-selectors = { git = "https://github.com/servo/stylo", rev = "bb8a1c140b5023087e7a8ab51deab7618c184d53" }
+selectors = { git = "https://github.com/gptenv/stylo-wasm", rev = "f15d4472b28b4694908cb91098b54e5110121154" }
 serde = "1.0.228"
 serde_bytes = "0.11"
 serde_core = "1.0.226"
 serde_json = "1.0"
 serde_test = "1.0"
 serde_with = "3.13"
-servo_arc = { git = "https://github.com/servo/stylo", rev = "bb8a1c140b5023087e7a8ab51deab7618c184d53" }
+servo_arc = { git = "https://github.com/gptenv/stylo-wasm", rev = "f15d4472b28b4694908cb91098b54e5110121154" }
 sha1 = "0.11"
 sha2 = "0.11"
 sha3 = "0.12"
@@ -238,12 +238,12 @@ speexdsp-resampler = "0.1.0"
 sponge-cursor = "0.1"
 string_cache = "0.11"
 strum = { version = "0.28", features = ["derive"] }
-stylo = { git = "https://github.com/servo/stylo", rev = "bb8a1c140b5023087e7a8ab51deab7618c184d53" }
-stylo_atoms = { git = "https://github.com/servo/stylo", rev = "bb8a1c140b5023087e7a8ab51deab7618c184d53" }
-stylo_dom = { git = "https://github.com/servo/stylo", rev = "bb8a1c140b5023087e7a8ab51deab7618c184d53" }
-stylo_malloc_size_of = { git = "https://github.com/servo/stylo", rev = "bb8a1c140b5023087e7a8ab51deab7618c184d53" }
-stylo_static_prefs = { git = "https://github.com/servo/stylo", rev = "bb8a1c140b5023087e7a8ab51deab7618c184d53" }
-stylo_traits = { git = "https://github.com/servo/stylo", rev = "bb8a1c140b5023087e7a8ab51deab7618c184d53" }
+stylo = { git = "https://github.com/gptenv/stylo-wasm", rev = "f15d4472b28b4694908cb91098b54e5110121154" }
+stylo_atoms = { git = "https://github.com/gptenv/stylo-wasm", rev = "f15d4472b28b4694908cb91098b54e5110121154" }
+stylo_dom = { git = "https://github.com/gptenv/stylo-wasm", rev = "f15d4472b28b4694908cb91098b54e5110121154" }
+stylo_malloc_size_of = { git = "https://github.com/gptenv/stylo-wasm", rev = "f15d4472b28b4694908cb91098b54e5110121154" }
+stylo_static_prefs = { git = "https://github.com/gptenv/stylo-wasm", rev = "f15d4472b28b4694908cb91098b54e5110121154" }
+stylo_traits = { git = "https://github.com/gptenv/stylo-wasm", rev = "f15d4472b28b4694908cb91098b54e5110121154" }
 surfman = "0.14.0"
 swapper = "0.1"
 syn = { version = "2", default-features = false, features = ["clone-impls", "derive", "parsing"] }
@@ -444,7 +444,26 @@ lto = "thin"
 codegen-units = 1
 
 [patch.crates-io]
+html5ever = { git = "https://github.com/gptenv/html5ever-wasm.git", rev = "21c3d6fdd9d4f059b68b46ddb38040f4acd22206" }
+markup5ever = { git = "https://github.com/gptenv/html5ever-wasm.git", rev = "21c3d6fdd9d4f059b68b46ddb38040f4acd22206" }
+tendril = { git = "https://github.com/gptenv/html5ever-wasm.git", rev = "21c3d6fdd9d4f059b68b46ddb38040f4acd22206" }
+web_atoms = { git = "https://github.com/gptenv/html5ever-wasm.git", rev = "21c3d6fdd9d4f059b68b46ddb38040f4acd22206" }
+xml5ever = { git = "https://github.com/gptenv/html5ever-wasm.git", rev = "21c3d6fdd9d4f059b68b46ddb38040f4acd22206" }
+
 # Worker-compatible mozjs port, on our gptenv/mozjs-wasm fork's `main`.
+mozjs = { git = "https://github.com/gptenv/mozjs-wasm.git", branch = "main" }
+mozjs_sys = { git = "https://github.com/gptenv/mozjs-wasm.git", branch = "main" }
+
+# Worker-compatible rendering and host-service forks required by wasm32.
+webrender = { git = "https://github.com/gptenv/webrender-wasm.git", branch = "main" }
+webrender_api = { git = "https://github.com/gptenv/webrender-wasm.git", branch = "main" }
+wr_glyph_rasterizer = { git = "https://github.com/gptenv/webrender-wasm.git", branch = "main" }
+wr_malloc_size_of = { git = "https://github.com/gptenv/webrender-wasm.git", branch = "main" }
+sqlite-wasm-rs = { git = "https://github.com/gptenv/sqlite-wasm-rs.git", branch = "master" }
+rusqlite = { git = "https://github.com/gptenv/rusqlite-wasm.git", branch = "master" }
+uuid = { git = "https://github.com/gptenv/uuid-wasm.git", branch = "main" }
+rustls-pki-types = { git = "https://github.com/gptenv/pki-types-wasm.git", branch = "main" }
+
 # If you need to temporarily test Servo with a local fork of some upstream
 # crate, add that here. Use the form:
 #
@@ -474,15 +493,6 @@ codegen-units = 1
 #
 # Or for Stylo:
 #
-# [patch."https://github.com/servo/stylo"]
-# selectors = { path = "../stylo/selectors" }
-# servo_arc = { path = "../stylo/servo_arc" }
-# stylo = { path = "../stylo/style" }
-# stylo_atoms = { path = "../stylo/stylo_atoms" }
-# stylo_dom = { path = "../stylo/stylo_dom" }
-# stylo_malloc_size_of = { path = "../stylo/malloc_size_of" }
-# stylo_static_prefs = { path = "../stylo/stylo_static_prefs" }
-# stylo_traits = { path = "../stylo/style_traits" }
 #
 # Or for another Git dependency:
 #

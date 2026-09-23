@@ -762,9 +762,10 @@ impl FetchResponseListener for FetchContext {
         let response_object = self.response_object.root();
         let mut realm = enter_auto_realm(cx, &*response_object);
         let cx = &mut realm.current_realm();
-        if let Err(ref error) = response
-            && *error == NetworkError::DecompressionError
-        {
+        // A host stream can fail after headers have resolved fetch(). Its
+        // consumers must reject, not receive a silently truncated success.
+        // A local abort already errored the stream with the caller's reason.
+        if response.is_err() && !self.locally_aborted {
             response_object.error_stream(cx, Error::Type(c"Network error occurred".to_owned()));
         }
         response_object.finish(cx);

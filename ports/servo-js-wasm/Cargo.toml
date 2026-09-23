@@ -13,14 +13,18 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 bytes = { workspace = true }
 dpi = { workspace = true }
+http = { workspace = true }
+hyper_serde = { workspace = true }
 js = { workspace = true, default-features = false, features = ["libz-rs"] }
 mime = { workspace = true }
 net_traits = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 servo-base = { workspace = true }
+servo-default-resources = { workspace = true }
 servo-url = { workspace = true }
 uuid = { workspace = true }
-servo = { path = "../../components/servo", default-features = false }
+servo = { path = "../../components/servo", default-features = false, features = ["baked-in-resources"] }
 url = { workspace = true }
 
 [lints]

@@ -9,7 +9,9 @@ use std::cmp::{Ord, Ordering};
 use std::collections::VecDeque;
 use std::default::Default;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 
 use deny_public_fields::DenyPublicFields;
 use js::context::JSContext;
@@ -17,10 +19,13 @@ use js::jsapi::Heap;
 use js::jsval::{JSVal, UndefinedValue};
 use js::rust::HandleValue;
 use js::rust::wrappers2::JS_GetScriptedCallerPrivate;
+use malloc_size_of_derive::MallocSizeOf;
 use net_traits::request::ParserMetadata;
 use rustc_hash::FxHashMap;
 use script_bindings::cell::DomRefCell;
 use serde::{Deserialize, Serialize};
+#[cfg(target_arch = "wasm32")]
+use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::id::PipelineId;
 use servo_config::pref;
 use servo_url::ServoUrl;
@@ -54,6 +59,48 @@ type TimerKey = i32;
 type RunStepsDeadline = Instant;
 type CompletionStep = Box<dyn FnOnce(&mut JSContext, &GlobalScope) + 'static>;
 
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy, Debug, Eq, MallocSizeOf, Ord, PartialEq, PartialOrd)]
+pub(crate) struct Instant(u64);
+
+#[cfg(target_arch = "wasm32")]
+impl Instant {
+    fn now() -> Self {
+        Self(
+            (CrossProcessInstant::now() - CrossProcessInstant::epoch())
+                .whole_nanoseconds()
+                .max(0) as u64,
+        )
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl std::ops::Add<Duration> for Instant {
+    type Output = Self;
+
+    fn add(self, rhs: Duration) -> Self::Output {
+        Self(self.0.saturating_add(rhs.as_nanos() as u64))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl std::ops::Sub<Duration> for Instant {
+    type Output = Self;
+
+    fn sub(self, rhs: Duration) -> Self::Output {
+        Self(self.0.saturating_sub(rhs.as_nanos() as u64))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl std::ops::Sub for Instant {
+    type Output = Duration;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Duration::from_nanos(self.0.saturating_sub(rhs.0))
+    }
+}
+
 /// <https://html.spec.whatwg.org/multipage/#run-steps-after-a-timeout>
 /// OrderingIdentifier per spec ("orderingIdentifier")
 type OrderingIdentifier = DOMString;
@@ -81,6 +128,7 @@ pub(crate) struct OneshotTimers {
     js_timers: JsTimers,
     next_timer_handle: Cell<OneshotTimerHandle>,
     timers: DomRefCell<VecDeque<OneshotTimer>>,
+    #[no_trace]
     suspended_since: Cell<Option<Instant>>,
     /// Initially 0, increased whenever the associated document is reactivated
     /// by the amount of ms the document was inactive. The current time can be
@@ -98,6 +146,7 @@ pub(crate) struct OneshotTimers {
     /// <https://html.spec.whatwg.org/multipage/#map-of-active-timers>
     /// TODO this should also be used for the other timers
     /// as per <html.spec.whatwg.org/multipage/#map-of-settimeout-and-setinterval-ids>Z.
+    #[no_trace]
     map_of_active_timers: DomRefCell<RunStepsActiveMap>,
 
     /// <https://html.spec.whatwg.org/multipage/#run-steps-after-a-timeout>
@@ -119,6 +168,7 @@ struct OneshotTimer {
     #[no_trace]
     source: TimerSource,
     callback: OneshotTimerCallback,
+    #[no_trace]
     scheduled_for: Instant,
 }
 

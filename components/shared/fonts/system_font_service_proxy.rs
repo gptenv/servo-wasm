@@ -120,42 +120,56 @@ impl SystemFontServiceProxy {
         descriptor_to_match: Option<&FontDescriptor>,
         family_descriptor: &SingleFontFamily,
     ) -> Vec<FontTemplateRef> {
-        let cache_key = FontTemplateCacheKey {
-            font_descriptor: descriptor_to_match.cloned(),
-            family_descriptor: family_descriptor.clone(),
-        };
-        if let Some(templates) = self.templates.read().get(&cache_key).cloned() {
-            return templates;
+        #[cfg(target_arch = "wasm32")]
+        {
+            // Worker isolates have no platform font registry. The wasm
+            // font_list backend reports no local families, so an empty
+            // template result is the correct answer and avoids waiting on
+            // the native-only font-service thread.
+            let _ = (descriptor_to_match, family_descriptor);
+            return Vec::new();
         }
 
-        debug!(
-            "SystemFontServiceProxy: cache miss for template_descriptor={:?} family_descriptor={:?}",
-            descriptor_to_match, family_descriptor
-        );
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let cache_key = FontTemplateCacheKey {
+                font_descriptor: descriptor_to_match.cloned(),
+                family_descriptor: family_descriptor.clone(),
+            };
+            if let Some(templates) = self.templates.read().get(&cache_key).cloned() {
+                return templates;
+            }
 
-        let (response_chan, response_port) =
-            generic_channel::channel().expect("failed to create IPC channel");
-        self.sender
-            .send(SystemFontServiceMessage::GetFontTemplates(
-                descriptor_to_match.cloned(),
-                family_descriptor.clone(),
-                response_chan,
-            ))
-            .expect("failed to send message to system font service");
-
-        let Ok(templates) = response_port.recv() else {
-            let font_thread_has_closed = self.sender.send(SystemFontServiceMessage::Ping).is_err();
-            assert!(
-                font_thread_has_closed,
-                "Failed to receive a response from live font cache"
+            debug!(
+                "SystemFontServiceProxy: cache miss for template_descriptor={:?} family_descriptor={:?}",
+                descriptor_to_match, family_descriptor
             );
-            panic!("SystemFontService has already exited.");
-        };
 
-        let templates: Vec<_> = templates.into_iter().map(FontTemplateRef::new).collect();
-        self.templates.write().insert(cache_key, templates.clone());
+            let (response_chan, response_port) =
+                generic_channel::channel().expect("failed to create IPC channel");
+            self.sender
+                .send(SystemFontServiceMessage::GetFontTemplates(
+                    descriptor_to_match.cloned(),
+                    family_descriptor.clone(),
+                    response_chan,
+                ))
+                .expect("failed to send message to system font service");
 
-        templates
+            let Ok(templates) = response_port.recv() else {
+                let font_thread_has_closed =
+                    self.sender.send(SystemFontServiceMessage::Ping).is_err();
+                assert!(
+                    font_thread_has_closed,
+                    "Failed to receive a response from live font cache"
+                );
+                panic!("SystemFontService has already exited.");
+            };
+
+            let templates: Vec<_> = templates.into_iter().map(FontTemplateRef::new).collect();
+            self.templates.write().insert(cache_key, templates.clone());
+
+            templates
+        }
     }
 
     pub fn generate_font_key(&self, painter_id: PainterId) -> FontKey {

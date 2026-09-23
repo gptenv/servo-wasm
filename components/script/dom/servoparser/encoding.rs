@@ -4,7 +4,7 @@
 
 use std::borrow::Cow;
 use std::mem;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chardetng::{Iso2022JpDetection, Utf8Detection};
 use encoding_rs::{Encoding, UTF_8, UTF_16BE, UTF_16LE, WINDOWS_1252, X_USER_DEFINED};
@@ -13,6 +13,7 @@ use tendril::stream::LossyDecoder;
 use tendril::{ByteTendril, StrTendril, TendrilSink};
 
 use crate::dom::document::Document;
+use servo_base::cross_process_instant::CrossProcessInstant;
 
 #[derive(JSTraceable, MallocSizeOf)]
 pub(super) struct DetectingState {
@@ -23,7 +24,8 @@ pub(super) struct DetectingState {
     /// `<iframe>`.
     #[no_trace]
     encoding_of_container_document: Option<&'static Encoding>,
-    start_timestamp: Instant,
+    #[no_trace]
+    start_timestamp: CrossProcessInstant,
     attempted_bom_sniffing: bool,
     buffered_bytes: Vec<u8>,
 }
@@ -69,7 +71,9 @@ impl DetectingState {
         is_at_end_of_file: AtEndOfFile,
     ) -> Option<&'static Encoding> {
         self.buffered_bytes.extend_from_slice(data);
-        let can_wait_longer = self.start_timestamp.elapsed() < Self::MAX_TIME_TO_BUFFER;
+        let elapsed = CrossProcessInstant::now() - self.start_timestamp;
+        let can_wait_longer =
+            elapsed.whole_nanoseconds() < Self::MAX_TIME_TO_BUFFER.as_nanos() as i128;
         self.determine_the_character_encoding(document, can_wait_longer, is_at_end_of_file)
     }
 
@@ -197,7 +201,7 @@ impl NetworkDecoderState {
         Self::Detecting(DetectingState {
             encoding_hint_from_content_type,
             encoding_of_container_document,
-            start_timestamp: Instant::now(),
+            start_timestamp: CrossProcessInstant::now(),
             attempted_bom_sniffing: false,
             buffered_bytes: vec![],
         })

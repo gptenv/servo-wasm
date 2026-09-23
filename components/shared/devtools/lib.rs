@@ -530,6 +530,12 @@ pub struct StackFrame {
     // source_id
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn get_time_stamp() -> u64 {
+    CrossProcessInstant::unix_time_now_ns() / 1_000_000
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn get_time_stamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

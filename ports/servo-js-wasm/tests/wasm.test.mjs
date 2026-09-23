@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { randomFillSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { createServoWorkerRuntime } from '../worker-adapter.mjs';
+import { webPlatformCases } from './web-platform-cases.mjs';
 
 // No WASI import object here, deliberately: this module used to require 15
 // wasi_snapshot_preview1 imports (clock_time_get, fd_read/write, path_open,
@@ -34,7 +36,8 @@ const WORKER_ENV_IMPORT_ALLOWLIST = [
 // ship.
 const wasmPath = process.env.SERVO_WASM_PATH ??
   new URL('../../../target/wasm32-unknown-unknown/production-stripped/servo_js_wasm.wasm', import.meta.url);
-const wasm = new WebAssembly.Module(readFileSync(wasmPath));
+const wasmBytes = readFileSync(wasmPath);
+const wasm = new WebAssembly.Module(wasmBytes);
 let instance;
 const unixEpochNsAtStartup = BigInt(Date.now()) * 1_000_000n;
 instance = new WebAssembly.Instance(wasm, {
@@ -45,9 +48,8 @@ instance = new WebAssembly.Instance(wasm, {
       const bytes = new Uint8Array(instance.exports.memory.buffer, ptr, len);
       console.error(new TextDecoder().decode(bytes));
     },
-    // No-op: nothing in this test suite drives Servo's fetch pipeline far
-    // enough to issue a real outbound request. Present only so the module
-    // (which declares this as a required `env` import) can instantiate.
+    // This low-level instance only runs isolated SpiderMonkey probes. The
+    // separate adapter instance below exercises the real fetch protocol.
     worker_fetch_request: (_ptr, _len) => {},
     // Real entropy, not a stub: getrandom's custom wasm32 backend
     // (servo-net-traits' __getrandom_v03_custom) is fail-closed on a
@@ -100,8 +102,36 @@ test('module imports exactly the allowed env functions, nothing else', () => {
     'module must import exactly the Worker-supplied env allowlist, no more and no less');
 });
 
+test('production WASM stays within the 64 MiB Worker bundle ceiling', () => {
+  assert.ok(wasmBytes.byteLength < 64 * 1024 * 1024,
+    `WASM artifact is ${wasmBytes.byteLength} bytes before Worker JavaScript is bundled`);
+});
+
 test('SpiderMonkey smoke export runs in wasm', () => {
   assert.equal(instance.exports.servo_js_smoke_test(), 42);
+});
+
+test('Worker lifecycle exports are present and initially idle', () => {
+  assert.equal(instance.exports.servo_worker_abi_version(), 1);
+  assert.equal(typeof instance.exports.servo_worker_reset, 'function');
+  assert.equal(typeof instance.exports.servo_worker_pump_status, 'function');
+  assert.equal(typeof instance.exports.servo_worker_pending_fetch_count, 'function');
+  assert.equal(Number(instance.exports.servo_worker_pending_fetch_count()), 0);
+  assert.equal(Number(instance.exports.servo_worker_reset()), 0);
+});
+
+test('adapter rejects an artifact without the matching host ABI', async () => {
+  const oldModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+  await assert.rejects(createServoWorkerRuntime(oldModule), /ABI mismatch/);
+});
+
+test('adapter validates resource budgets before instantiating WASM', async () => {
+  for (const maxResponseBytes of [-1, Infinity, 64 * 1024 * 1024 + 1]) {
+    await assert.rejects(createServoWorkerRuntime(wasm, { maxResponseBytes }), RangeError);
+  }
+  for (const maxSubrequests of [0, -1, Infinity, 0.5]) {
+    await assert.rejects(createServoWorkerRuntime(wasm, { maxSubrequests }), RangeError);
+  }
 });
 
 for (const [name, source, expected] of [
@@ -143,7 +173,7 @@ test('repeated evaluations remain within a Worker-sized heap', () => {
   }
   const finalBytes = instance.exports.memory.buffer.byteLength;
   assert.ok(finalBytes <= 64 * 1024 * 1024,
-    `wasm heap grew beyond the Worker bundle memory budget: ${finalBytes} bytes`);
+    `wasm heap grew beyond the 64 MiB probe memory budget: ${finalBytes} bytes`);
   assert.ok(finalBytes <= initialBytes * 4,
     `wasm heap grew unexpectedly from ${initialBytes} to ${finalBytes} bytes`);
 });
@@ -154,4 +184,616 @@ test('JavaScript exception reports failure', () => {
 
 test('non-int32 result reports failure', () => {
   assert.deepEqual(evaluate('"not an integer"'), { ok: false });
+});
+
+test('Worker adapter fetches a page and evaluates its DOM and inline script', async (t) => {
+  const requests = [];
+  const fetchErrors = [];
+  let slowFetchAborted = false;
+  let activeQueuedFetches = 0;
+  let peakQueuedFetches = 0;
+  let beforeHeadersAborted = false;
+  let streamCanceled = false;
+  let rejectedBodyCanceled = false;
+  let failedStreamController;
+  let queuedAborts = 0;
+  const runtime = await createServoWorkerRuntime(wasm, {
+    url: 'about:blank',
+    // This one runtime deliberately stress-loads many pages in a single test.
+    // A production Free-tier invocation keeps the adapter's default of 50.
+    maxSubrequests: 200,
+    log: (message) => {
+      fetchErrors.push(message);
+      if (/panicked|fatal/i.test(message)) t.diagnostic(message);
+    },
+    fetchImpl: async (url, init) => {
+      requests.push({ url, method: init.method, body: init.body,
+        authorization: init.headers.get('authorization'),
+        origin: init.headers.get('origin') });
+      if (url.endsWith('/abort-before')) {
+        return new Promise((_, reject) => {
+          init.signal.addEventListener('abort', () => {
+            beforeHeadersAborted = true;
+            reject(init.signal.reason);
+          }, { once: true });
+        });
+      }
+      if (url.includes('/abort-queued-')) {
+        return new Promise((_, reject) => {
+          init.signal.addEventListener('abort', () => {
+            queuedAborts++;
+            reject(init.signal.reason);
+          }, { once: true });
+        });
+      }
+      if (url.endsWith('/abort-stream')) {
+        return new Response(new ReadableStream({
+          start(controller) { controller.enqueue(new TextEncoder().encode('partial')); },
+          cancel() { streamCanceled = true; },
+        }));
+      }
+      if (url.endsWith('/failed-stream')) {
+        return new Response(new ReadableStream({
+          start(controller) {
+            failedStreamController = controller;
+            controller.enqueue(new TextEncoder().encode('incomplete'));
+          },
+        }));
+      }
+      if (url.endsWith('/rejected-stream')) {
+        return new Response(new ReadableStream({
+          cancel() { rejectedBodyCanceled = true; },
+        }), { headers: { 'content-length': '9000000' } });
+      }
+      if (url.includes('/queued-')) {
+        activeQueuedFetches++;
+        peakQueuedFetches = Math.max(peakQueuedFetches, activeQueuedFetches);
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        activeQueuedFetches--;
+        return new Response('queued-ok');
+      }
+      if (url === 'https://cors.example/ok') {
+        return new Response('cors-ok', {
+          status: 200,
+          headers: {
+            'access-control-allow-origin': 'https://example.test',
+            'access-control-expose-headers': 'x-public',
+            'x-public': 'shown',
+            'x-secret': 'hidden',
+          },
+        });
+      }
+      if (url === 'https://cors.example/wildcard') {
+        return new Response('wildcard-ok', {
+          status: 200,
+          headers: { 'access-control-allow-origin': '*', 'x-private': 'hidden' },
+        });
+      }
+      if (url === 'https://cors.example/denied') {
+        return new Response('cors-denied', { status: 200 });
+      }
+      if (url.endsWith('/slow')) {
+        return new Promise((_, reject) => {
+          init.signal.addEventListener('abort', () => {
+            slowFetchAborted = true;
+            reject(new DOMException('aborted by page reset', 'AbortError'));
+          }, { once: true });
+        });
+      }
+      if (url.endsWith('/data.json')) {
+        return new Response('{"value":"fetch-ok"}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/headers')) {
+        return new Response('header-ok', {
+          status: 201,
+          headers: { 'content-type': 'text/plain', 'x-fixture': 'preserved',
+            'set-cookie': 'session=private' },
+        });
+      }
+      if (url.endsWith('/big')) {
+        return new Response('x'.repeat(1_050_000), {
+          status: 200,
+          headers: { 'content-type': 'text/plain' },
+        });
+      }
+      if (url.endsWith('/oversize')) {
+        return new Response('small', {
+          status: 200,
+          headers: { 'content-length': '9000000' },
+        });
+      }
+      if (url.endsWith('/failure')) throw new Error('fixture network failure');
+      if (url.endsWith('/post')) {
+        return new Response(new TextDecoder().decode(init.body), {
+          status: 200,
+          headers: { 'content-type': 'text/plain' },
+        });
+      }
+      if (url.endsWith('/redirect')) {
+        return new Response(null, { status: 302, headers: { location: '/final' } });
+      }
+      if (url.endsWith('/js-redirect')) {
+        return new Response(null, { status: 302, headers: { location: '/data.json' } });
+      }
+      if (url.endsWith('/cross-redirect')) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: 'https://other.example/data.json' },
+        });
+      }
+      if (url.endsWith('/missing')) {
+        return new Response('not found', { status: 404 });
+      }
+      if (url.endsWith('/site.css')) {
+        return new Response('#answer { color: blue }', {
+          status: 200,
+          headers: { 'content-type': 'text/css' },
+        });
+      }
+      if (url === 'https://cdn.example/external.css') {
+        return new Response('#external { color: blue }', {
+          status: 200,
+          headers: { 'content-type': 'text/css' },
+        });
+      }
+      return new Response(
+        '<!doctype html><html><head><title>Worker fixture</title>' +
+          '<link rel="stylesheet" href="/site.css">' +
+          (url === 'https://example.test/'
+            ? '<link id="cross-style" rel="stylesheet" href="https://cdn.example/external.css">'
+            : '') +
+          '<style>#answer { color: red }</style></head><body>' +
+          '<main id="answer">hello from fixture</main>' +
+          '<div id="external">external style</div>' +
+          '<script>document.body.dataset.ready = "yes";' +
+          'fetch("/data.json").then(r => r.json()).then(x => ' +
+          'document.body.dataset.fetchValue = x.value);' +
+          'fetch("/missing").then(r => ' +
+          'document.body.dataset.missingStatus = String(r.status));' +
+          'fetch("/headers").then(r => {' +
+          'document.body.dataset.header = r.headers.get("x-fixture");' +
+          'document.body.dataset.cookieHidden = String(r.headers.get("set-cookie") === null);' +
+          'document.body.dataset.headerStatus = String(r.status) });' +
+          (url === 'https://example.test/'
+            ? 'fetch("/big").then(r => r.arrayBuffer()).then(b => ' +
+              'document.body.dataset.bigLength = String(b.byteLength)).catch(e => ' +
+              'document.body.dataset.bigError = String(e))'
+            : '') + '</script>' +
+          '</body></html>',
+        { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } },
+      );
+    },
+  });
+
+  const turn = async () => {
+    runtime.pump();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  assert.equal(runtime.bootstrap(1280, 720, 'about:blank'), false,
+    'a second bootstrap must fail without replacing the live SpiderMonkey runtime');
+  for (let i = 0; i < 3; i++) await turn();
+
+  assert.equal(runtime.loadPage('https://example.test/'), true);
+  for (let i = 0; i < 80; i++) await turn();
+  assert.deepEqual(requests.map(({ url }) => url).sort(), [
+    'https://example.test/',
+    'https://example.test/data.json',
+    'https://example.test/headers',
+    'https://example.test/big',
+    'https://example.test/missing',
+    'https://example.test/site.css',
+    'https://cdn.example/external.css',
+  ].sort());
+  assert.ok(requests.every(({ method }) => method === 'GET'));
+
+  assert.equal(runtime.evaluatePage(
+    'document.title === "Worker fixture" && ' +
+      'document.querySelector("#answer")?.textContent === "hello from fixture" && ' +
+      'document.body.dataset.ready === "yes" && ' +
+      'document.body.dataset.fetchValue === "fetch-ok" && ' +
+      'document.body.dataset.missingStatus === "404" && ' +
+      'document.body.dataset.header === "preserved" && ' +
+      'document.body.dataset.cookieHidden === "true" && ' +
+      'document.body.dataset.headerStatus === "201" && ' +
+      'document.body.dataset.bigLength === "1050000" && ' +
+      'document.querySelector("style").sheet.cssRules.length === 1 && ' +
+      'getComputedStyle(document.querySelector("#external")).color === "rgb(0, 0, 255)" && ' +
+      '(() => { try { document.querySelector("#cross-style").sheet.cssRules; ' +
+      'return false } catch (e) { return e.name === "SecurityError" } })() && ' +
+      'getComputedStyle(document.querySelector("#answer")).color === "rgb(255, 0, 0)" ? 42 : 0',
+  ), true);
+  for (let i = 0; i < 10; i++) await turn();
+  if (runtime.pageResult()?.Ok?.Number !== 42) {
+    runtime.evaluatePage('JSON.stringify({' +
+      'title: document.title, ready: document.body.dataset.ready,' +
+      'fetchValue: document.body.dataset.fetchValue,' +
+      'missingStatus: document.body.dataset.missingStatus,' +
+      'header: document.body.dataset.header,' +
+      'headerStatus: document.body.dataset.headerStatus,' +
+      'bigLength: document.body.dataset.bigLength,' +
+      'bigError: document.body.dataset.bigError,' +
+      'cssRules: document.querySelector("style").sheet.cssRules.length,' +
+      'color: getComputedStyle(document.querySelector("#answer")).color})');
+    for (let i = 0; i < 10; i++) await turn();
+    assert.fail(JSON.stringify({ result: runtime.pageResult(), fetchErrors,
+      pendingFetchCount: runtime.pendingFetchCount() }));
+  }
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+
+  assert.equal(runtime.evaluatePage(
+    'fetch("/failure").catch(() => document.body.dataset.failed = "yes");' +
+      'fetch("/oversize").catch(() => document.body.dataset.oversize = "yes");' +
+      'fetch("/post", {method: "POST", body: "x"}).then(r => r.text()).then(t => ' +
+      'document.body.dataset.postEcho = t);' +
+      'fetch("/post", {method: "POST", body: "x".repeat(300000)}).catch(() => ' +
+      'document.body.dataset.largePostRejected = "yes");' +
+      'fetch("/js-redirect").then(r => r.json().then(body => ({r, body}))).then(({r, body}) => ' +
+      'document.body.dataset.redirected = String(r.redirected && ' +
+      'r.url.endsWith("/data.json") && body.value === "fetch-ok"));' +
+      'fetch("/cross-redirect", {headers: {authorization: "Bearer secret"}})' +
+      '.catch(() => document.body.dataset.crossRedirectBlocked = "yes");' +
+      'fetch("https://other.example/data.json").catch(() => ' +
+      'document.body.dataset.crossOriginBlocked = "yes");' +
+      'fetch("https://cors.example/ok").then(r => r.text().then(body => ({r, body})))' +
+      '.then(({r, body}) => document.body.dataset.corsOk = String(' +
+      'r.type === "cors" && body === "cors-ok" && ' +
+      'r.headers.get("x-public") === "shown" && ' +
+      'r.headers.get("x-secret") === null && ' +
+      'r.headers.get("access-control-allow-origin") === null));' +
+      'fetch("https://cors.example/wildcard").then(r => r.text()).then(t => ' +
+      'document.body.dataset.corsWildcard = t);' +
+      'fetch("https://cors.example/denied").catch(() => ' +
+      'document.body.dataset.corsDenied = "yes");' +
+      'fetch("https://cors.example/ok", {credentials:"include"}).catch(() => ' +
+      'document.body.dataset.corsCredentialsBlocked = "yes");' +
+      'fetch("https://cors.example/ok", {headers:{"x-unsafe":"yes"}}).catch(() => ' +
+      'document.body.dataset.corsPreflightBlocked = "yes"); 1',
+  ), true);
+  for (let i = 0; i < 30; i++) await turn();
+  assert.equal(runtime.evaluatePage(
+    'document.body.dataset.failed === "yes" && ' +
+      'document.body.dataset.oversize === "yes" && ' +
+      'document.body.dataset.postEcho === "x" && ' +
+      'document.body.dataset.largePostRejected === "yes" && ' +
+      'document.body.dataset.crossRedirectBlocked === "yes" && ' +
+      'document.body.dataset.crossOriginBlocked === "yes" && ' +
+      'document.body.dataset.corsOk === "true" && ' +
+      'document.body.dataset.corsWildcard === "wildcard-ok" && ' +
+      'document.body.dataset.corsDenied === "yes" && ' +
+      'document.body.dataset.corsCredentialsBlocked === "yes" && ' +
+      'document.body.dataset.corsPreflightBlocked === "yes" && ' +
+      'document.body.dataset.redirected === "true" ? 42 : 0',
+  ), true);
+  for (let i = 0; i < 10; i++) await turn();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.ok(fetchErrors.some((message) => message.includes('fixture network failure')));
+  assert.ok(fetchErrors.some((message) => message.includes('exceeds')));
+  assert.ok(fetchErrors.some((message) => message.includes('request-body streaming')));
+  const postRequest = requests.find(({ url }) => url.endsWith('/post'));
+  assert.equal(postRequest?.method, 'POST');
+  assert.equal(new TextDecoder().decode(postRequest.body), 'x');
+  assert.equal(requests.some(({ url }) => url === 'https://other.example/data.json'), true,
+    'simple cross-origin page requests reach the host, then require CORS permission');
+  assert.equal(requests.find(({ url }) => url === 'https://cors.example/ok')?.origin,
+    'https://example.test');
+  assert.equal(requests.find(({ url }) => url.endsWith('/cross-redirect'))?.authorization,
+    'Bearer secret', 'serialized request header values must be decoded from bytes');
+  assert.equal(requests.filter(({ url }) => url === 'https://cors.example/ok').length, 1,
+    'credentialed and preflighted requests must fail before reaching the host');
+
+  assert.equal(runtime.evaluatePage(
+    'Promise.all(Array.from({length: 9}, (_, i) => ' +
+    'fetch("/queued-" + i).then(r => r.text()).then(t => {' +
+    'document.body.dataset.queueResolved = String(Number(document.body.dataset.queueResolved || 0) + 1);' +
+    'return t }))).then(values => ' +
+    'document.body.dataset.queueDone = String(values.every(v => v === "queued-ok")))' +
+    '.catch(e => document.body.dataset.queueError = String(e)); 1',
+  ), true);
+  const queueStatus = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+  assert.equal(queueStatus.settled, true);
+  assert.equal(runtime.evaluatePage(
+    'document.body.dataset.queueDone === "true" ? 42 : 0',
+  ), true);
+  for (let i = 0; i < 10; i++) await turn();
+  if (runtime.pageResult()?.Ok?.Number !== 42) {
+    runtime.evaluatePage('JSON.stringify({done: document.body.dataset.queueDone,' +
+      'resolved: document.body.dataset.queueResolved,error: document.body.dataset.queueError})');
+    for (let i = 0; i < 10; i++) await turn();
+    assert.fail(JSON.stringify({ queueStatus, result: runtime.pageResult(),
+      peakQueuedFetches, fetchErrors, queuedRequests: requests.filter(({ url }) => url.includes('/queued-')) }));
+  }
+  assert.equal(peakQueuedFetches, 6,
+    'the host adapter must queue above the six outgoing-connection limit');
+
+  assert.equal(runtime.evaluatePage(
+    'setTimeout(() => { document.body.dataset.timer = "fired" }, 500); 1',
+  ), true);
+  for (let i = 0; i < 5; i++) await turn();
+  assert.notEqual(runtime.nextTimerDelayMs(), null);
+  const timerStatus = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+  assert.equal(timerStatus.settled, true, JSON.stringify({
+    timerStatus,
+    nextTimerDelayMs: runtime.nextTimerDelayMs(),
+    pendingFetchCount: runtime.pendingFetchCount(),
+  }));
+  assert.equal(runtime.evaluatePage(
+    'document.body.dataset.timer === "fired" ? 42 : 0',
+  ), true);
+  for (let i = 0; i < 10; i++) await turn();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+
+  const heapBeforeRepeatLoads = runtime.instance.exports.memory.buffer.byteLength;
+  for (let page = 0; page < 4; page++) {
+    assert.equal(runtime.loadPage(`https://example.test/repeat-${page}`), true);
+    for (let i = 0; i < 30; i++) await turn();
+  }
+  assert.equal(runtime.evaluatePage(
+    'document.title === "Worker fixture" && ' +
+      'document.querySelector("#answer") !== null ? 42 : 0',
+  ), true);
+  for (let i = 0; i < 10; i++) await turn();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  const heapAfterRepeatLoads = runtime.instance.exports.memory.buffer.byteLength;
+  assert.ok(heapAfterRepeatLoads <= 128 * 1024 * 1024,
+    `WASM heap exceeded the Worker memory ceiling: ${heapAfterRepeatLoads} bytes`);
+  assert.ok(heapAfterRepeatLoads <= heapBeforeRepeatLoads * 4,
+    `repeated page loads grew the heap unexpectedly: ${heapBeforeRepeatLoads} -> ${heapAfterRepeatLoads}`);
+
+  assert.equal(runtime.evaluatePage('globalThis.oldPageSentinel = "private"; 42'), true);
+  for (let i = 0; i < 10; i++) await turn();
+  assert.equal(runtime.loadPage('https://other.example/'), true);
+  for (let i = 0; i < 50; i++) await turn();
+  assert.equal(runtime.evaluatePage(
+    'location.origin === "https://other.example" && ' +
+      'typeof oldPageSentinel === "undefined" ? 42 : 0',
+  ), true);
+  for (let i = 0; i < 10; i++) await turn();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+
+  assert.equal(runtime.loadPage('https://example.test/redirect'), true);
+  for (let i = 0; i < 45; i++) await turn();
+  assert.ok(requests.some(({ url }) => url === 'https://example.test/final'));
+  assert.equal(runtime.evaluatePage(
+    'location.pathname === "/final" && document.title === "Worker fixture" ? 42 : 0',
+  ), true);
+  for (let i = 0; i < 10; i++) await turn();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+
+  assert.equal(runtime.evaluatePage('globalThis.oldPageSentinel = "private"; 42'), true);
+  for (let i = 0; i < 10; i++) await turn();
+  assert.equal(runtime.reset(), true);
+  assert.equal(runtime.pendingFetchCount(), 0);
+  for (let i = 0; i < 50; i++) await turn();
+  assert.equal(runtime.evaluatePage(
+    'document.URL === "about:blank" && typeof oldPageSentinel === "undefined" ? 42 : 0',
+  ), true);
+  for (let i = 0; i < 10; i++) await turn();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+
+  assert.equal(runtime.loadPage('https://example.test/slow'), true);
+  for (let i = 0; i < 10; i++) await turn();
+  assert.ok(runtime.pendingFetchCount() > 0);
+  assert.equal(runtime.reset(), true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(slowFetchAborted, true);
+  assert.equal(runtime.pendingFetchCount(), 0);
+
+  assert.throws(() => runtime.loadHtml('<p>nope</p>', { url: 'data:text/html,nope' }),
+    TypeError);
+  assert.equal(runtime.loadHtml(
+    '<!doctype html><html><head><title>Inline document</title>' +
+      '<style>#inline { color: purple }</style></head><body>' +
+      '<main id="inline">host bytes</main><script>' +
+      'document.body.dataset.executed = "yes";' +
+      'fetch("data.json").then(r => r.json()).then(data => ' +
+      'document.body.dataset.relativeFetch = data.value)' +
+      '</script></body></html>',
+    { url: 'https://inline.example/test/' },
+  ), true);
+  const inlineStatus = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+  assert.equal(inlineStatus.settled, true);
+  assert.equal(runtime.evaluatePage(
+    'document.title === "Inline document" && ' +
+      'document.querySelector("#inline").textContent === "host bytes" && ' +
+      'document.body.dataset.executed === "yes" && ' +
+      'document.body.dataset.relativeFetch === "fetch-ok" && ' +
+      'getComputedStyle(document.querySelector("#inline")).color === "rgb(128, 0, 128)" ' +
+      '? 42 : 0',
+  ), true);
+  for (let i = 0; i < 10; i++) await turn();
+  if (runtime.pageResult()?.Ok?.Number !== 42) {
+    runtime.evaluatePage('JSON.stringify({' +
+      'url: document.URL, title: document.title, text: document.querySelector("#inline")?.textContent,' +
+      'executed: document.body?.dataset.executed,' +
+      'relativeFetch: document.body?.dataset.relativeFetch,' +
+      'color: document.querySelector("#inline") && getComputedStyle(document.querySelector("#inline")).color})');
+    for (let i = 0; i < 10; i++) await turn();
+    assert.fail(JSON.stringify({ inlineStatus, result: runtime.pageResult(), fetchErrors,
+      inlineRequests: requests.filter(({ url }) => url.startsWith('https://inline.example/')) }));
+  }
+  assert.equal(requests.some(({ url }) => url === 'https://inline.example/test/'), false,
+    'host-supplied HTML must not make an outbound navigation subrequest');
+  assert.ok(requests.some(({ url }) => url === 'https://inline.example/test/data.json'),
+    'relative script fetches must resolve against the supplied page URL');
+
+  const settle = async () => {
+    const status = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+    assert.equal(status.settled, true, JSON.stringify({ status, fetchErrors }));
+    assert.equal(runtime.pendingFetchCount(), 0);
+  };
+  const checkPage = async (expression) => {
+    assert.equal(runtime.evaluatePage(`(${expression}) ? 42 : 0`), true);
+    await settle();
+    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  };
+
+  await t.test('settling budgets and concurrent calls fail explicitly', async () => {
+    assert.deepEqual(await runtime.pumpUntilSettled({ maxTurns: 0 }), { settled: false, turns: 0 });
+    await assert.rejects(runtime.pumpUntilSettled({ maxDurationMs: Infinity }), RangeError);
+    await assert.rejects(runtime.pumpUntilSettled({ maxTurns: -1 }), RangeError);
+    await assert.rejects(runtime.pumpUntilSettled({ until: true }), TypeError);
+    const pending = runtime.pumpUntilSettled();
+    await assert.rejects(runtime.pumpUntilSettled(), /already running/);
+    assert.equal((await pending).settled, true);
+  });
+
+  await t.test('AbortController cancels a host fetch before headers', async () => {
+    runtime.evaluatePage('globalThis.beforeController = new AbortController();' +
+      'fetch("/abort-before", {signal: beforeController.signal}).catch(e => ' +
+      'document.body.dataset.beforeAbort = e.name); 1');
+    for (let i = 0; i < 10; i++) await turn();
+    assert.ok(requests.some(({ url }) => url.endsWith('/abort-before')));
+    runtime.evaluatePage('beforeController.abort(); 1');
+    await settle();
+    assert.equal(beforeHeadersAborted, true);
+    await checkPage('document.body.dataset.beforeAbort === "AbortError"');
+  });
+
+  await t.test('streaming headers wake the page and abort cancels its open body', async () => {
+    runtime.evaluatePage('globalThis.streamController = new AbortController();' +
+      'fetch("/abort-stream", {signal: streamController.signal}).then(r => {' +
+      'document.body.dataset.streamHeaders = String(r.status);' +
+      'r.text().then(() => document.body.dataset.streamAbort = "unexpected success",' +
+      'e => document.body.dataset.streamAbort = e.name);' +
+      'streamController.abort(); }); 1');
+    await settle();
+    assert.equal(streamCanceled, true, 'an open host body must be canceled');
+    await checkPage('document.body.dataset.streamHeaders === "200" && ' +
+      'document.body.dataset.streamAbort === "AbortError"');
+  });
+
+  await t.test('canceling queued requests never starts extra host connections', async () => {
+    const before = requests.length;
+    runtime.evaluatePage('globalThis.queueControllers = Array.from({length:9}, () => new AbortController());' +
+      'globalThis.queueAbortCount = 0;' +
+      'queueControllers.forEach((c,i) => fetch("/abort-queued-" + i, {signal:c.signal})' +
+      '.catch(e => { if (e.name === "AbortError") queueAbortCount++ }));' +
+      'queueControllers.forEach(c => c.abort()); 1');
+    await settle();
+    assert.equal(requests.slice(before).filter(({ url }) => url.includes('/abort-queued-')).length, 6);
+    assert.equal(queuedAborts, 6);
+    await checkPage('queueAbortCount === 9');
+  });
+
+  await t.test('failure after response headers rejects the body, not a truncated success', async () => {
+    runtime.evaluatePage('fetch("/failed-stream").then(r => {' +
+      'document.body.dataset.failedStreamHeaders = "yes";' +
+      'return r.text() }).then(() => document.body.dataset.failedStream = "unexpected success",' +
+      'e => document.body.dataset.failedStream = e.name); 1');
+    for (let i = 0; i < 15; i++) await turn();
+    assert.ok(failedStreamController);
+    failedStreamController.error(new Error('fixture body interrupted'));
+    await settle();
+    await checkPage('document.body.dataset.failedStreamHeaders === "yes" && ' +
+      'document.body.dataset.failedStream === "TypeError"');
+  });
+
+  await t.test('rejecting response metadata releases the unread host body', async () => {
+    runtime.evaluatePage('fetch("/rejected-stream").catch(e => ' +
+      'document.body.dataset.rejectedStream = e.name); 1');
+    await settle();
+    assert.equal(rejectedBodyCanceled, true);
+    await checkPage('document.body.dataset.rejectedStream === "TypeError"');
+  });
+
+  await t.test('response ABI enforces headers, chunks, and exactly one terminal event', async () => {
+    const dispatchFetch = runtime.dispatchFetch;
+    let requestId;
+    runtime.dispatchFetch = (request) => { requestId = request.id; };
+    try {
+      runtime.evaluatePage('fetch("/protocol").then(r => r.text()).then(t => ' +
+        'document.body.dataset.protocol = t); 1');
+      for (let i = 0; i < 10 && !requestId; i++) await turn();
+      assert.equal(typeof requestId, 'string');
+    } finally {
+      runtime.dispatchFetch = dispatchFetch;
+    }
+    const buffers = [requestId, 'https://inline.example/protocol', '[]', 'complete']
+      .map((value) => {
+        const bytes = new TextEncoder().encode(value);
+        const ptr = runtime.instance.exports.servo_js_alloc(bytes.length);
+        assert.notEqual(ptr, 0);
+        new Uint8Array(runtime.instance.exports.memory.buffer, ptr, bytes.length).set(bytes);
+        return [ptr, bytes.length];
+      });
+    try {
+      const [id, url, headers, body] = buffers;
+      const exports = runtime.instance.exports;
+      assert.equal(exports.servo_worker_deliver_http_chunk(...id, ...body), 0);
+      assert.equal(exports.servo_worker_finish_http_response(...id), 0);
+      assert.equal(exports.servo_worker_begin_http_response(...id, ...url, 200, ...headers, 0), 1);
+      assert.equal(exports.servo_worker_begin_http_response(...id, ...url, 200, ...headers, 0), 0);
+      assert.equal(exports.servo_worker_deliver_http_chunk(...id, ...body), 1);
+      assert.equal(exports.servo_worker_finish_http_response(...id), 1);
+      assert.equal(exports.servo_worker_finish_http_response(...id), 0);
+      assert.equal(exports.servo_worker_deliver_http_chunk(...id, ...body), 0);
+    } finally {
+      for (const buffer of buffers) runtime.instance.exports.servo_js_free(...buffer);
+    }
+    await settle();
+    await checkPage('document.body.dataset.protocol === "complete"');
+  });
+
+  for (const { name, source } of webPlatformCases) {
+    await t.test(name, async () => checkPage(source));
+  }
+
+  await t.test('promise microtasks precede timers and canceled timers stay canceled', async () => {
+    runtime.evaluatePage('globalThis.taskOrder = ["sync"];' +
+      'Promise.resolve().then(() => taskOrder.push("microtask"));' +
+      'const canceled = setTimeout(() => taskOrder.push("canceled"), 0); clearTimeout(canceled);' +
+      'setTimeout(() => { taskOrder.push("timer");' +
+      'Promise.resolve().then(() => taskOrder.push("timer-microtask")); }, 5); 1');
+    await settle();
+    await checkPage('taskOrder.join(",") === "sync,microtask,timer,timer-microtask"');
+  });
+});
+
+test('host subrequest budget counts redirects and survives reset', async () => {
+  const requests = [];
+  let discardedRedirectBody = false;
+  const runtime = await createServoWorkerRuntime(wasm, {
+    maxSubrequests: 2,
+    log: () => {},
+    fetchImpl: async (url) => {
+      requests.push(url);
+      if (url.endsWith('/redirect')) {
+        return new Response(new ReadableStream({
+          cancel() { discardedRedirectBody = true; },
+        }), { status: 302, headers: { location: '/final' } });
+      }
+      return new Response('final');
+    },
+  });
+  const settle = async () => {
+    assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 3_000 })).settled, true);
+    assert.equal(runtime.pendingFetchCount(), 0);
+  };
+  // Deliberately no bootstrap pumps here: the factory must return a usable
+  // initial browsing context, so callers can load immediately after awaiting it.
+  runtime.loadHtml('<!doctype html><title>budget</title><body><script>' +
+    'fetch("/redirect").then(r => r.text()).then(t => {' +
+    'document.body.dataset.first = t; return fetch("/over-budget") })' +
+    '.catch(e => document.body.dataset.failure = e.name);</script>',
+  { url: 'https://budget.example/' });
+  await settle();
+  runtime.evaluatePage('document.body.dataset.first === "final" && ' +
+    'document.body.dataset.failure === "TypeError" ? 42 : 0');
+  await settle();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.equal(discardedRedirectBody, true);
+  assert.deepEqual(requests, ['https://budget.example/redirect', 'https://budget.example/final']);
+
+  runtime.reset();
+  runtime.loadHtml('<!doctype html><body><script>fetch("/after-reset")' +
+    '.catch(e => document.body.dataset.failure = e.name);</script>',
+  { url: 'https://budget.example/again' });
+  await settle();
+  runtime.evaluatePage('document.body.dataset.failure === "TypeError" ? 42 : 0');
+  await settle();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.equal(requests.length, 2, 'reset must not replenish the invocation subrequest budget');
 });

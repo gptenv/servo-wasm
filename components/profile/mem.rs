@@ -4,9 +4,11 @@
 
 //! Memory profiling functions.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::borrow::ToOwned;
 use std::collections::HashMap;
 use std::fs::File;
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread;
 
 use log::debug;
@@ -30,6 +32,18 @@ pub struct Profiler {
 
 impl Profiler {
     pub fn create() -> ProfilerChan {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let (sender, _receiver) = generic_channel::channel::<ProfilerMsg>().unwrap();
+            ProfilerChan(sender)
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        Self::create_native()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn create_native() -> ProfilerChan {
         let (chan, port) = generic_channel::channel().unwrap();
 
         if servo_allocator::is_tracking_unmeasured() && std::env::var(LOG_FILE_VAR).is_err() {

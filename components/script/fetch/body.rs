@@ -418,16 +418,6 @@ impl ExtractedBody {
             source,
         } = self;
 
-        // First, setup some infra to be used to transmit body
-        //  from `components::script` to `components::net`.
-        let (chunk_request_sender, chunk_request_receiver) = ipc::channel().unwrap();
-
-        let trusted_stream = Trusted::new(&*stream);
-
-        let global = stream.global();
-        let task_manager = global.task_manager();
-        let task_source = task_manager.networking_task_source();
-
         // In case of the data being in-memory, send everything in one chunk, by-passing SM.
         // Empty extracted bodies are always representable as an in-memory empty payload.
         let in_memory = stream.get_in_memory_bytes(cx).or_else(|| {
@@ -443,45 +433,67 @@ impl ExtractedBody {
             _ => NetBodySource::Object,
         };
 
-        let mut body_handler = TransmitBodyConnectHandler::new(
-            trusted_stream,
-            task_source.into(),
-            chunk_request_sender.clone(),
-            in_memory,
-            source,
-        );
+        #[cfg(target_arch = "wasm32")]
+        {
+            // A raw Worker cannot start ipc-channel's router thread. Most
+            // RequestInit bodies already have bytes in the extracted stream;
+            // carry those directly to the host. Streams without in-memory
+            // bytes are reported as unsupported by the Worker fetch adapter.
+            let bytes =
+                in_memory.and_then(|memory| (memory.len() <= 256 * 1024).then(|| memory.to_vec()));
+            return (
+                RequestBody::new_worker(bytes, net_source, total_bytes),
+                stream,
+            );
+        }
 
-        ROUTER.add_typed_route(
-            chunk_request_receiver,
-            Box::new(move |message| {
-                match message.unwrap() {
-                    BodyChunkRequest::Connect(sender) => {
-                        body_handler.start_reading(sender);
-                    },
-                    BodyChunkRequest::Extract(receiver) => {
-                        body_handler.re_extract(receiver);
-                    },
-                    BodyChunkRequest::Chunk => body_handler.transmit_body_chunk(),
-                    // Note: this is actually sent from this process
-                    // by the TransmitBodyPromiseHandler when reading stops.
-                    BodyChunkRequest::Done => {
-                        body_handler.stop_reading(StopReading::Done);
-                    },
-                    // Note: this is actually sent from this process
-                    // by the TransmitBodyPromiseHandler when the stream errors.
-                    BodyChunkRequest::Error => {
-                        body_handler.stop_reading(StopReading::Error);
-                    },
-                }
-            }),
-        );
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Native request-body transmission is driven by the script IPC
+            // router and its networking task source.
+            let (chunk_request_sender, chunk_request_receiver) = ipc::channel().unwrap();
+            let trusted_stream = Trusted::new(&*stream);
+            let task_source = stream.global().task_manager().networking_task_source();
+            let mut body_handler = TransmitBodyConnectHandler::new(
+                trusted_stream,
+                task_source.into(),
+                chunk_request_sender.clone(),
+                in_memory,
+                source,
+            );
 
-        // Return `components::net` view into this request body,
-        // which can be used by `net` to transmit it over the network.
-        let request_body = RequestBody::new(chunk_request_sender, net_source, total_bytes);
+            ROUTER.add_typed_route(
+                chunk_request_receiver,
+                Box::new(move |message| {
+                    match message.unwrap() {
+                        BodyChunkRequest::Connect(sender) => {
+                            body_handler.start_reading(sender);
+                        },
+                        BodyChunkRequest::Extract(receiver) => {
+                            body_handler.re_extract(receiver);
+                        },
+                        BodyChunkRequest::Chunk => body_handler.transmit_body_chunk(),
+                        // Note: this is actually sent from this process
+                        // by the TransmitBodyPromiseHandler when reading stops.
+                        BodyChunkRequest::Done => {
+                            body_handler.stop_reading(StopReading::Done);
+                        },
+                        // Note: this is actually sent from this process
+                        // by the TransmitBodyPromiseHandler when the stream errors.
+                        BodyChunkRequest::Error => {
+                            body_handler.stop_reading(StopReading::Error);
+                        },
+                    }
+                }),
+            );
 
-        // Also return the stream for this body, which can be used by script to consume it.
-        (request_body, stream)
+            // Return `components::net` view into this request body,
+            // which can be used by `net` to transmit it over the network.
+            let request_body = RequestBody::new(chunk_request_sender, net_source, total_bytes);
+
+            // Also return the stream for this body, which can be used by script to consume it.
+            (request_body, stream)
+        }
     }
 
     /// Is the data of the stream of this extracted body available in memory?

@@ -504,13 +504,22 @@ impl ScriptThreadReceivers {
             }
         };
 
-        if let Some(deadline) = timer_scheduler.next_deadline() {
-            select
-                .select_deadline(deadline)
-                .map(message_from_operation)
-                .unwrap_or(MixedMessage::TimerFired)
-        } else {
-            message_from_operation(select.select())
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = timer_scheduler;
+            unreachable!("blocking event-loop receive is unavailable on Worker WASM")
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(deadline) = timer_scheduler.next_deadline() {
+                select
+                    .select_deadline(deadline)
+                    .map(message_from_operation)
+                    .unwrap_or(MixedMessage::TimerFired)
+            } else {
+                message_from_operation(select.select())
+            }
         }
     }
 

@@ -5,10 +5,10 @@
 use std::path::PathBuf;
 
 use profile_traits::mem::ProfilerChan as MemProfilerChan;
-use servo_base::generic_channel::GenericSender;
+use servo_base::generic_channel::{self, GenericSender};
 use storage_traits::StorageThreads;
-use storage_traits::cache_storage::CacheStorageThreadHandle;
-use storage_traits::client_storage::ClientStorageThreadHandle;
+use storage_traits::cache_storage::{CacheStorageThreadHandle, CacheStorageThreadMessage};
+use storage_traits::client_storage::{ClientStorageThreadHandle, ClientStorageThreadMessage};
 use storage_traits::indexeddb::IndexedDBThreadMsg;
 use storage_traits::webstorage_thread::WebStorageThreadMsg;
 
@@ -50,6 +50,28 @@ pub fn new_storage_threads(
     config_dir: Option<PathBuf>,
     temporary_storage: bool,
 ) -> (StorageThreads, StorageThreads) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let make_group = || {
+            let client = generic_channel::channel::<ClientStorageThreadMessage>()
+                .expect("create Worker client-storage channel")
+                .0;
+            let idb = generic_channel::channel::<IndexedDBThreadMsg>()
+                .expect("create Worker indexedDB channel")
+                .0;
+            let web = generic_channel::channel::<WebStorageThreadMsg>()
+                .expect("create Worker web-storage channel")
+                .0;
+            let cache = generic_channel::channel::<CacheStorageThreadMessage>()
+                .expect("create Worker cache-storage channel")
+                .0;
+            StorageThreads::new(client, idb, web, cache)
+        };
+        let _ = (mem_profiler_chan, config_dir, temporary_storage);
+        return (make_group(), make_group());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     let private_storage_threads = new_storage_thread_group(
         mem_profiler_chan.clone(),
         config_dir.clone(),
@@ -59,5 +81,6 @@ pub fn new_storage_threads(
     let public_storage_threads =
         new_storage_thread_group(mem_profiler_chan, config_dir, temporary_storage, "public");
 
+    #[cfg(not(target_arch = "wasm32"))]
     (private_storage_threads, public_storage_threads)
 }

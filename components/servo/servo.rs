@@ -271,6 +271,11 @@ struct ServoInner {
     pending_handled_input_events: RefCell<Vec<PendingHandledInputEvent>>,
     /// An [`EventLoopWaker`] used to wake up the main embedder event loop.
     event_loop_waker: Box<dyn EventLoopWaker>,
+    #[cfg(target_arch = "wasm32")]
+    constellation:
+        RefCell<Option<Constellation<script::ScriptThread, script::ServiceWorkerManager>>>,
+    #[cfg(target_arch = "wasm32")]
+    worker_pump_progress: Cell<bool>,
 }
 
 impl ServoInner {
@@ -287,6 +292,14 @@ impl ServoInner {
             return false;
         }
 
+        #[cfg(target_arch = "wasm32")]
+        self.worker_pump_progress.set(
+            self.constellation
+                .borrow_mut()
+                .as_mut()
+                .is_some_and(Constellation::pump),
+        );
+
         {
             let paint = self.paint.borrow();
             let mut messages = Vec::new();
@@ -298,6 +311,10 @@ impl ServoInner {
                     },
                 }
             }
+            #[cfg(target_arch = "wasm32")]
+            if !messages.is_empty() {
+                self.worker_pump_progress.set(true);
+            }
             paint.handle_messages(messages);
         }
 
@@ -308,6 +325,8 @@ impl ServoInner {
         );
         // Only handle incoming embedder messages if `Paint` hasn't already started shutting down.
         while let Some(message) = selector.try_recv_one_message() {
+            #[cfg(target_arch = "wasm32")]
+            self.worker_pump_progress.set(true);
             match message {
                 Message::FromUnknown(message) => self.handle_embedder_message(message),
                 Message::FromNet(message) => self.handle_net_embedder_message(message),
@@ -1020,7 +1039,7 @@ impl Servo {
             opts.temporary_storage,
         );
 
-        create_constellation(
+        let constellation = create_constellation(
             embedder_to_constellation_receiver,
             &paint.borrow(),
             embedder_proxy,
@@ -1071,6 +1090,10 @@ impl Servo {
             _js_engine_setup: js_engine_setup,
             pending_handled_input_events: Default::default(),
             event_loop_waker,
+            #[cfg(target_arch = "wasm32")]
+            constellation: RefCell::new(constellation),
+            #[cfg(target_arch = "wasm32")]
+            worker_pump_progress: Cell::new(false),
         }))
     }
 
@@ -1095,6 +1118,23 @@ impl Servo {
     ///   - Maybe update the rendered `Paint` output, but *without* swapping buffers.
     pub fn spin_event_loop(&self) {
         self.0.spin_event_loop();
+    }
+
+    /// Pump once and report whether any Worker-side event was handled.
+    #[cfg(target_arch = "wasm32")]
+    pub fn worker_spin_event_loop(&self) -> bool {
+        self.0.spin_event_loop();
+        self.0.worker_pump_progress.get()
+    }
+
+    /// Return the next browser timer deadline for a cooperative Worker host.
+    #[cfg(target_arch = "wasm32")]
+    pub fn worker_next_timer_deadline_ns(&self) -> Option<u64> {
+        self.0
+            .constellation
+            .borrow()
+            .as_ref()
+            .and_then(Constellation::worker_next_timer_deadline_ns)
     }
 
     pub fn setup_logging(&self) {
@@ -1244,7 +1284,7 @@ fn create_constellation(
     async_runtime: Box<dyn net_traits::AsyncRuntime>,
     public_storage_threads: StorageThreads,
     private_storage_threads: StorageThreads,
-) {
+) -> Option<Constellation<script::ScriptThread, script::ServiceWorkerManager>> {
     // Global configuration options, parsed from the command line.
     let opts = opts::get();
 
@@ -1292,14 +1332,30 @@ fn create_constellation(
 
     let layout_factory = Arc::new(LayoutFactoryImpl());
 
-    Constellation::<script::ScriptThread, script::ServiceWorkerManager>::start(
-        embedder_to_constellation_receiver,
-        initial_state,
-        layout_factory,
-        opts.random_pipeline_closure_probability,
-        opts.random_pipeline_closure_seed,
-        opts.hard_fail,
-    );
+    #[cfg(target_arch = "wasm32")]
+    {
+        Some(Constellation::new(
+            embedder_to_constellation_receiver,
+            initial_state,
+            layout_factory,
+            opts.random_pipeline_closure_probability,
+            opts.random_pipeline_closure_seed,
+            opts.hard_fail,
+        ))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Constellation::<script::ScriptThread, script::ServiceWorkerManager>::start(
+            embedder_to_constellation_receiver,
+            initial_state,
+            layout_factory,
+            opts.random_pipeline_closure_probability,
+            opts.random_pipeline_closure_seed,
+            opts.hard_fail,
+        );
+        None
+    }
 }
 
 // A logger that logs to two downstream loggers.

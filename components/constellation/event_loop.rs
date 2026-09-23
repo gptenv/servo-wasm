@@ -9,10 +9,14 @@
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::rc::Rc;
+use std::time::Duration;
 
-use background_hang_monitor_api::BackgroundHangMonitorControlMsg;
 #[cfg(feature = "multiprocess")]
 use background_hang_monitor_api::HangAlert;
+use background_hang_monitor_api::{
+    BackgroundHangMonitor, BackgroundHangMonitorClone, BackgroundHangMonitorControlMsg,
+    BackgroundHangMonitorExitSignal, BackgroundHangMonitorRegister, HangAnnotation,
+};
 use embedder_traits::ScriptToEmbedderChan;
 use layout_api::ScriptThreadFactory;
 use log::error;
@@ -139,6 +143,10 @@ impl EventLoop {
     ) -> Self {
         let script_chan = initial_script_state.constellation_to_script_sender.clone();
         let id = initial_script_state.id;
+        #[cfg(target_arch = "wasm32")]
+        let background_hang_monitor_register: Box<dyn BackgroundHangMonitorRegister> =
+            Box::new(WorkerBackgroundHangMonitorRegister);
+        #[cfg(not(target_arch = "wasm32"))]
         let background_hang_monitor_register = constellation
             .background_monitor_register
             .clone()
@@ -149,6 +157,9 @@ impl EventLoop {
             constellation.image_cache_factory.clone(),
             background_hang_monitor_register,
         );
+        #[cfg(target_arch = "wasm32")]
+        constellation.add_script_thread_handle(Box::new(join_handle));
+        #[cfg(not(target_arch = "wasm32"))]
         constellation.add_event_loop_join_handle(join_handle);
 
         Self {
@@ -218,6 +229,39 @@ impl EventLoop {
             error!("Could not send message ({message:?}) to BHM: {error}");
         }
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+struct WorkerBackgroundHangMonitorRegister;
+
+#[cfg(target_arch = "wasm32")]
+impl BackgroundHangMonitorRegister for WorkerBackgroundHangMonitorRegister {
+    fn register_component(
+        &self,
+        _component: background_hang_monitor_api::MonitoredComponentId,
+        _transient_hang_timeout: Duration,
+        _permanent_hang_timeout: Duration,
+        _exit_signal: Box<dyn BackgroundHangMonitorExitSignal>,
+    ) -> Box<dyn BackgroundHangMonitor> {
+        Box::new(WorkerBackgroundHangMonitor)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl BackgroundHangMonitorClone for WorkerBackgroundHangMonitorRegister {
+    fn clone_box(&self) -> Box<dyn BackgroundHangMonitorRegister> {
+        Box::new(Self)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+struct WorkerBackgroundHangMonitor;
+
+#[cfg(target_arch = "wasm32")]
+impl BackgroundHangMonitor for WorkerBackgroundHangMonitor {
+    fn notify_activity(&self, _annotation: HangAnnotation) {}
+    fn notify_wait(&self) {}
+    fn unregister(&self) {}
 }
 
 /// All of the information necessary to create a new script [`EventLoop`] in a new process.

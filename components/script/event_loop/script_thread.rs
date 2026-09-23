@@ -27,8 +27,10 @@ use std::rc::{Rc, Weak};
 use std::result::Result;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant, SystemTime};
+use std::thread;
+#[cfg(not(target_arch = "wasm32"))]
+use std::thread::JoinHandle;
+use std::time::{Duration, SystemTime};
 
 use background_hang_monitor_api::{
     BackgroundHangMonitor, BackgroundHangMonitorExitSignal, BackgroundHangMonitorRegister,
@@ -59,6 +61,8 @@ use js::jsapi::{GCReason, JSContext as UnsafeJSContext};
 use js::jsval::UndefinedValue;
 use js::rust::ParentRuntime;
 use js::rust::wrappers2::{JS_AddInterruptCallback, JS_GC, SetWindowProxyClass};
+#[cfg(target_arch = "wasm32")]
+use layout_api::ScriptThreadHandle;
 use layout_api::{LayoutConfig, LayoutFactory, RestyleReason, ScriptThreadFactory};
 use media::WindowGLContext;
 use metrics::MAX_TASK_NS;
@@ -158,6 +162,7 @@ use crate::mime::{APPLICATION, CHARSET, MimeExt, TEXT, XML};
 use crate::modules::script_module::ScriptFetchOptions;
 use crate::navigation::{InProgressLoad, NavigationListener};
 use crate::realms::enter_auto_realm;
+
 use crate::runtime::job_queue::{MicrotaskRunnable, job_queue_microtask_checkpoint};
 use crate::runtime::script_runtime::{
     IntroductionType, Runtime, ScriptThreadEventCategory, ThreadSafeJSContext, get_reports,
@@ -271,7 +276,7 @@ pub struct ScriptThread {
     this: Weak<ScriptThread>,
 
     /// <https://html.spec.whatwg.org/multipage/#last-render-opportunity-time>
-    last_render_opportunity_time: Cell<Option<Instant>>,
+    last_render_opportunity_time: Cell<Option<CrossProcessInstant>>,
     /// State that is common to `WebView`s to be shared with all of their `Pipeline`s. Each
     /// is stored as a `Weak` and pruned lazily so that there does not need to be any
     /// management when `WebView`s are closed.
@@ -474,6 +479,10 @@ impl Drop for ScriptMemoryFailsafe<'_> {
 }
 
 impl ScriptThreadFactory for ScriptThread {
+    #[cfg(target_arch = "wasm32")]
+    type Handle = WorkerScriptThreadHandle;
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn create(
         state: InitialScriptState,
         layout_factory: Arc<dyn LayoutFactory>,
@@ -524,6 +533,48 @@ impl ScriptThreadFactory for ScriptThread {
                 failsafe.neuter();
             })
             .expect("Thread spawning failed")
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn create(
+        state: InitialScriptState,
+        layout_factory: Arc<dyn LayoutFactory>,
+        image_cache_factory: Arc<dyn ImageCacheFactory>,
+        background_hang_monitor_register: Box<dyn BackgroundHangMonitorRegister>,
+    ) -> Self::Handle {
+        PipelineNamespace::set_installer_sender(state.namespace_request_sender.clone());
+        thread_state::initialize(ThreadState::SCRIPT);
+        ScriptEventLoopId::install(state.id);
+        let (script_thread, cx) = ScriptThread::new(
+            state,
+            layout_factory,
+            image_cache_factory,
+            background_hang_monitor_register,
+        );
+        SCRIPT_THREAD_ROOT.with(|root| {
+            root.set(Some(Rc::as_ptr(&script_thread)));
+        });
+        WorkerScriptThreadHandle { script_thread, cx }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub struct WorkerScriptThreadHandle {
+    script_thread: Rc<ScriptThread>,
+    cx: JSContext,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ScriptThreadHandle for WorkerScriptThreadHandle {
+    fn pump(&mut self) -> bool {
+        self.script_thread.pump(&mut self.cx)
+    }
+
+    fn next_timer_deadline_ns(&self) -> Option<u64> {
+        self.script_thread
+            .timer_scheduler
+            .borrow()
+            .worker_next_deadline_ns()
     }
 }
 
@@ -1023,6 +1074,12 @@ impl ScriptThread {
         debug!("Stopped script thread.");
     }
 
+    /// Process one ready message without blocking the Worker isolate. The
+    /// return value reports whether work was actually processed this turn.
+    pub(crate) fn pump(&self, cx: &mut js::context::JSContext) -> bool {
+        self.handle_msgs_inner(cx, true)
+    }
+
     /// Process input events as part of a "update the rendering task".
     fn process_pending_input_events(
         &self,
@@ -1076,7 +1133,8 @@ impl ScriptThread {
     ///
     /// Returns true if any reflows produced a new display list.
     pub(crate) fn update_the_rendering(&self, cx: &mut js::context::JSContext) -> bool {
-        self.last_render_opportunity_time.set(Some(Instant::now()));
+        self.last_render_opportunity_time
+            .set(Some(CrossProcessInstant::now()));
         self.cancel_scheduled_update_the_rendering();
         self.needs_rendering_update.store(false, Ordering::Relaxed);
 
@@ -1269,6 +1327,7 @@ impl ScriptThread {
     /// scheduled already. Another example is if rAFs are running but no display
     /// lists are being produced. In that case the [`ScriptThread`] is
     /// responsible for scheduling animation ticks.
+    #[cfg(not(target_arch = "wasm32"))]
     fn maybe_schedule_rendering_opportunity_after_ipc_message(
         &self,
         no_gc: &NoGC,
@@ -1321,7 +1380,10 @@ impl ScriptThread {
         let time_since_last_rendering_opportunity = self
             .last_render_opportunity_time
             .get()
-            .map(|last_render_opportunity_time| Instant::now() - last_render_opportunity_time)
+            .map(|last_render_opportunity_time| {
+                let elapsed = CrossProcessInstant::now() - last_render_opportunity_time;
+                Duration::from_nanos(elapsed.whole_nanoseconds().max(0) as u64)
+            })
             .unwrap_or(Duration::MAX)
             .min(animation_delay);
         self.schedule_update_the_rendering_timer_if_necessary(
@@ -1355,6 +1417,10 @@ impl ScriptThread {
 
     /// Handle incoming messages from other tasks and the task queue.
     fn handle_msgs(&self, cx: &mut js::context::JSContext) -> bool {
+        self.handle_msgs_inner(cx, false)
+    }
+
+    fn handle_msgs_inner(&self, cx: &mut js::context::JSContext, nonblocking: bool) -> bool {
         // Proritize rendering tasks and others, and gather all other events as `sequential`.
         let mut sequential: SmallVec<[MixedMessage; 10]> = SmallVec::new();
 
@@ -1363,12 +1429,27 @@ impl ScriptThread {
 
         // Receive at least one message so we don't spinloop.
         debug!("Waiting for event.");
+        // The native receiver blocks on TimerScheduler::wait_channel(). A
+        // Worker cannot block, so dispatch timers before polling the task
+        // queue; otherwise a due timer with no unrelated message would never
+        // be observed by the cooperative pump.
+        #[cfg(target_arch = "wasm32")]
+        self.timer_scheduler
+            .borrow_mut()
+            .dispatch_completed_timers();
         let fully_active = self.get_fully_active_document_ids();
-        let mut event = self.receivers.recv(
-            &self.task_queue,
-            &self.timer_scheduler.borrow(),
-            &fully_active,
-        );
+        let mut event = if nonblocking {
+            let Some(event) = self.receivers.try_recv(&self.task_queue, &fully_active) else {
+                return false;
+            };
+            event
+        } else {
+            self.receivers.recv(
+                &self.task_queue,
+                &self.timer_scheduler.borrow(),
+                &fully_active,
+            )
+        };
 
         loop {
             debug!("Handling event: {event:?}");
@@ -1404,6 +1485,9 @@ impl ScriptThread {
             // If any of our input sources has an event pending, we'll perform another
             // iteration and check for events. If there are no events pending, we'll move
             // on and execute the sequential events.
+            #[cfg(target_arch = "wasm32")]
+            break;
+            #[cfg(not(target_arch = "wasm32"))]
             match self.receivers.try_recv(&self.task_queue, &fully_active) {
                 Some(new_event) => event = new_event,
                 None => break,
@@ -1505,6 +1589,13 @@ impl ScriptThread {
                 .perform_a_dom_garbage_collection_checkpoint();
         }
 
+        // The Worker port has no renderer yet. `update_the_rendering` runs
+        // animation, observer, and layout-facing steps that can synchronously
+        // enter platform timing/layout code, so defer the whole rendering
+        // opportunity until the Worker rendering backend is implemented.
+        #[cfg(target_arch = "wasm32")]
+        let built_any_display_lists = false;
+        #[cfg(not(target_arch = "wasm32"))]
         let built_any_display_lists =
             self.needs_rendering_update.load(Ordering::Relaxed) && self.update_the_rendering(cx);
 
@@ -1512,6 +1603,7 @@ impl ScriptThread {
         self.maybe_resolve_pending_screenshot_readiness_requests(cx);
 
         // This must happen last to detect if any change above makes a rendering update necessary.
+        #[cfg(not(target_arch = "wasm32"))]
         self.maybe_schedule_rendering_opportunity_after_ipc_message(
             cx.no_gc(),
             built_any_display_lists,
@@ -1552,7 +1644,7 @@ impl ScriptThread {
     {
         self.background_hang_monitor
             .notify_activity(HangAnnotation::Script(category.into()));
-        let start = Instant::now();
+        let start = CrossProcessInstant::now();
         let value = if self.profile_script_events {
             let profiler_chan = self.senders.time_profiler_sender.clone();
             match category {
@@ -1705,11 +1797,11 @@ impl ScriptThread {
         } else {
             f()
         };
-        let task_duration = start.elapsed();
+        let task_duration = CrossProcessInstant::now() - start;
         for (doc_id, doc) in self.documents.borrow().iter() {
             if let Some(pipeline_id) = pipeline_id
                 && pipeline_id == doc_id
-                && task_duration.as_nanos() > MAX_TASK_NS
+                && task_duration.whole_nanoseconds() > MAX_TASK_NS as i128
             {
                 if opts::get()
                     .debug
@@ -1717,7 +1809,7 @@ impl ScriptThread {
                 {
                     println!(
                         "Task took longer than max allowed ({category:?}) {:?}",
-                        task_duration.as_nanos()
+                        task_duration.whole_nanoseconds()
                     );
                 }
                 doc.start_tti();

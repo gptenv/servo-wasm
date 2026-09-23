@@ -335,6 +335,10 @@ pub struct RequestBody {
     source: BodySource,
     /// <https://fetch.spec.whatwg.org/#concept-body-total-bytes>
     total_bytes: Option<usize>,
+    /// A bounded, in-memory request payload for the single-threaded Worker
+    /// host. The native path continues to transmit through the IPC sender.
+    #[cfg(target_arch = "wasm32")]
+    pub worker_bytes: Option<Vec<u8>>,
 }
 
 impl RequestBody {
@@ -347,11 +351,31 @@ impl RequestBody {
             body_chunk_request_channel: Arc::new(Mutex::new(Some(body_chunk_request_channel))),
             source,
             total_bytes,
+            #[cfg(target_arch = "wasm32")]
+            worker_bytes: None,
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn new_worker(
+        bytes: Option<Vec<u8>>,
+        source: BodySource,
+        total_bytes: Option<usize>,
+    ) -> Self {
+        Self {
+            body_chunk_request_channel: Arc::new(Mutex::new(None)),
+            source,
+            total_bytes,
+            worker_bytes: bytes,
         }
     }
 
     /// Step 12 of <https://fetch.spec.whatwg.org/#concept-http-redirect-fetch>
     pub fn extract_source(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        if self.worker_bytes.is_some() {
+            return;
+        }
         match self.source {
             BodySource::Null => panic!("Null sources should never be re-directed."),
             BodySource::Object => {

@@ -24,6 +24,39 @@ use serde::{Deserialize, Serialize};
 use servo_url::ServoUrl;
 use time::{Date, Duration, Month, OffsetDateTime, Time};
 
+#[cfg(target_arch = "wasm32")]
+#[allow(unsafe_code)]
+pub(crate) fn worker_system_time() -> SystemTime {
+    #[link(wasm_import_module = "env")]
+    unsafe extern "C" {
+        #[link_name = "worker_unix_time_now_ns"]
+        fn worker_unix_time_now_ns() -> u64;
+    }
+
+    SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(unsafe { worker_unix_time_now_ns() })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn worker_system_time() -> SystemTime {
+    SystemTime::now()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn worker_offset_date_time() -> OffsetDateTime {
+    OffsetDateTime::from_unix_timestamp_nanos(
+        worker_system_time()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as i128,
+    )
+    .unwrap_or(OffsetDateTime::UNIX_EPOCH)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn worker_offset_date_time() -> OffsetDateTime {
+    OffsetDateTime::now_utc()
+}
+
 /// A stored cookie that wraps the definition in cookie-rs. This is used to implement
 /// various behaviours defined in the spec that rely on an associated request URL,
 /// which cookie-rs and hyper's header parsing do not support.
@@ -91,10 +124,10 @@ impl ServoCookie {
 
             // 2. Set the cookie's expiry-time to attribute-value of the last
             // attribute in the cookie-attribute-list with an attribute-name of "Max-Age".
-            expiry_time = Some(SystemTime::now() + clamped_max_age);
+            expiry_time = Some(worker_system_time() + clamped_max_age);
             cookie.set_max_age(clamped_max_age);
             // cookie-rs doesn't seem to mirror the max-age value to expiry and vice versa so we do explicitly
-            cookie.set_expires(Some(OffsetDateTime::now_utc() + clamped_max_age));
+            cookie.set_expires(Some(worker_offset_date_time() + clamped_max_age));
         }
         // Otherwise, if the cookie-attribute-list contains an attribute with an attribute-name of "Expires":
         else if let Some(date_time) = cookie.expires_datetime() {
@@ -104,14 +137,14 @@ impl ServoCookie {
             // The user agent MUST limit the maximum value of the Expires attribute.
             // The limit SHOULD NOT be greater than 400 days (34560000 seconds) in the future.
             let clamped_date_time =
-                date_time.min(OffsetDateTime::now_utc() + Duration::seconds(34_560_000));
+                date_time.min(worker_offset_date_time() + Duration::seconds(34_560_000));
 
             // 2. Set the cookie's expiry-time to attribute-value of the last attribute in the
             // cookie-attribute-list with an attribute-name of "Expires".
             expiry_time = Some(clamped_date_time.into());
             cookie.set_expires(Some(clamped_date_time));
             // cookie-rs doesn't seem to mirror the max-age value to expiry and vice versa so we do explicitly
-            cookie.set_max_age(Some(clamped_date_time - OffsetDateTime::now_utc()));
+            cookie.set_max_age(Some(clamped_date_time - worker_offset_date_time()));
         }
         //  Otherwise:
         else {
@@ -273,14 +306,14 @@ impl ServoCookie {
             cookie,
             host_only,
             persistent,
-            creation_time: SystemTime::now(),
-            last_access: SystemTime::now(),
+            creation_time: worker_system_time(),
+            last_access: worker_system_time(),
             expiry_time,
         })
     }
 
     pub fn touch(&mut self) {
-        self.last_access = SystemTime::now();
+        self.last_access = worker_system_time();
     }
 
     pub fn set_expiry_time_in_past(&mut self) {

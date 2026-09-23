@@ -63,6 +63,10 @@ static RESOURCE_READER: LazyLock<ResourceReader> = {
     LazyLock::new(|| {
         let mut resource_reader_iterator = inventory::iter::<ResourceReader>.into_iter();
         let Some(resource_reader) = resource_reader_iterator.next() else {
+            #[cfg(target_arch = "wasm32")]
+            {
+                return &WASM_RESOURCE_READER;
+            }
             panic!("No resource reader registered");
         };
         if resource_reader_iterator.next().is_some() {
@@ -175,4 +179,25 @@ pub trait ResourceReaderMethods {
     /// If resources are shipped as files, then the directory containing them be listed
     /// here to ensure the content process can access the files.
     fn sandbox_access_files_dirs(&self) -> Vec<PathBuf>;
+}
+
+#[cfg(target_arch = "wasm32")]
+static WASM_RESOURCE_READER: WasmResourceReader = WasmResourceReader;
+
+#[cfg(target_arch = "wasm32")]
+struct WasmResourceReader;
+
+#[cfg(target_arch = "wasm32")]
+impl ResourceReaderMethods for WasmResourceReader {
+    fn read(&self, _res: Resource) -> Vec<u8> {
+        Vec::new()
+    }
+
+    fn sandbox_access_files(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
+
+    fn sandbox_access_files_dirs(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
 }

@@ -100,7 +100,12 @@ impl Response {
     }
 
     pub(crate) fn error_stream(&self, cx: &mut js::context::JSContext, error: Error) {
-        if let Some(body) = self.fetch_body_stream.get() {
+        // Metadata failure, an abort, and a terminal network error can race.
+        // Only a readable stream may transition to errored; preserve the
+        // original error (and never reopen a canceled or completed stream).
+        if let Some(body) = self.fetch_body_stream.get()
+            && body.is_readable()
+        {
             body.error_native(cx, error);
         }
     }
@@ -539,7 +544,9 @@ impl Response {
         // Note, are these two actually mutually exclusive?
         if let Some(stream_consumer) = self.stream_consumer.borrow().as_ref() {
             stream_consumer.consume_chunk(&chunk);
-        } else if let Some(body) = self.fetch_body_stream.get() {
+        } else if let Some(body) = self.fetch_body_stream.get()
+            && body.is_readable()
+        {
             body.enqueue_native(cx, chunk.to_vec());
         }
     }
