@@ -6,7 +6,7 @@ Target: a raw `wasm32-unknown-unknown` Servo module instantiated directly by a C
 
 ## 1. Current state
 
-The port builds as a raw `wasm32-unknown-unknown` module with no WASI or wasm-bindgen imports. The current production-stripped artifact is **55,923,533 bytes** (about 53.3 MiB), below the 64 MiB target. The Worker bundle remains about **54,637 KiB** uncompressed (see the smoke-test README for the latest exact dry-run measurement). It imports exactly these five host functions:
+The port builds as a raw `wasm32-unknown-unknown` module with no WASI or wasm-bindgen imports. The current production-stripped artifact is **55,912,978 bytes** (about 53.3 MiB), below the 64 MiB target. The Worker bundle remains about **54,637 KiB** uncompressed (see the smoke-test README for the latest exact dry-run measurement). It imports exactly these five host functions:
 
 - `worker_fetch_request`
 - `worker_getrandom`
@@ -297,7 +297,7 @@ Every layer should run after a clean target build at least once in CI. Increment
 - [x] One deterministic DOM/CSSOM/fetch fixture passes in raw Node WASM tests.
 - [ ] Expanded DOM/CSS/fetch failure and standards-compatibility fixtures pass in raw Node WASM tests; computed color, failed and oversized fetches, and a navigation redirect now have fixtures.
 - [x] Page reset-to-`about:blank` and a four-page repeated-load memory-bound test pass (this is not full engine destruction).
-- [ ] Unsupported APIs return explicit errors/statuses.
+- [ ] Unsupported APIs return explicit errors/statuses. (Partial: `canvas.getContext("2d")`, the one confirmed hang, is now fixed — see Section 14. `WebSocket` and `requestAnimationFrame` accept calls without throwing but haven't been verified to ever progress or fail; `indexedDB`/`caches` are absent but inert.)
 - [x] Rendering limitation is documented: the WASM context is null-GL and screenshot pixels are not rendered.
 - [x] Local Wrangler/workerd smoke test passes with inline HTML, computed CSS, deterministic script fetch and open-stream abort (no deployment).
 - [ ] Clean production build passes import and size gates. (Latest successful production build was incremental; a clean target build remains required.)
@@ -320,21 +320,46 @@ pump turns had elapsed; both actually reject immediately and correctly (see
 below). Cite that mistake as a reason to re-verify with generous pump budgets
 before concluding something hangs.
 
-**Critical, previously-undocumented finding: `canvas.getContext("2d")` hangs
-the WASM instance indefinitely.** `document.createElement("canvas")` alone
-is fine; calling `.getContext("2d")` on it never returns — confirmed
-reproducible in isolation with a hard OS-level `timeout`, not just an
-unsettled promise (100% CPU, unkillable by any JS-level budget, matching
-Section 7's "a host deadline cannot interrupt a synchronous infinite page
-script" caveat, except this isn't a contrived infinite loop — it's a single
-trivial call any page script can make). `getContext("webgl")` is fine by
-contrast: it returns `null` immediately, which is the documented null-GL
-behavior. This is a real DoS vector for a future MCP host serving untrusted
-page content, not just a missing-feature gap, and should be treated as
-higher priority than most of Workstream G: either make `getContext("2d")`
-return `null`/throw like the WebGL path already does, or fix whatever loops
-in the 2D canvas context's Worker-side initialization. Not yet root-caused —
-this pass deliberately stayed no-rebuild.
+**Critical finding, now fixed: `canvas.getContext("2d")` hung the WASM
+instance indefinitely.** `document.createElement("canvas")` alone was fine;
+calling `.getContext("2d")` on it never returned — confirmed reproducible in
+isolation with a hard OS-level `timeout`, not just an unsettled promise
+(100% CPU, unkillable by any JS-level budget, matching Section 7's "a host
+deadline cannot interrupt a synchronous infinite page script" caveat, except
+this wasn't a contrived infinite loop — it was a single trivial call any
+page script can make). `getContext("webgl")` was fine by contrast: it
+returns `null` immediately, the documented null-GL behavior.
+
+Root cause, traced after the initial no-rebuild pass: `CanvasState::new()`
+(`components/script/dom/canvas/2d/canvas_state.rs`) sends
+`ScriptToConstellationMessage::CreateCanvasPaintThread` to the constellation
+and blocks on `receiver.recv()`. The constellation's handler
+(`handle_create_canvas_paint_thread_msg` in `components/constellation/constellation.rs`)
+in turn calls `CanvasPaintThread::start`
+(`components/canvas/canvas_paint_thread.rs`), which spawns an OS thread via
+`std::thread::Builder::spawn` whose body is an infinite
+`loop { select! { .. } }` servicing exactly this kind of request. wasm32 has
+no real OS threads, so that "spawn" never produces a second thread to
+service the call — the whole cooperative runtime deadlocks on itself. This
+is a concrete instance of the general native-thread-assumption class of bug
+Workstream A2 calls out for audit (`std::thread`, `thread::spawn`,
+`JoinHandle`); this one wasn't caught by that audit yet because nothing had
+exercised the canvas 2D path until this characterization pass.
+
+**Fix applied and verified**: `CanvasState::new()` now returns `None`
+immediately under `#[cfg(target_arch = "wasm32")]`, before ever reaching the
+constellation/thread-spawn path — the same fail-closed behavior
+`getContext("webgl")` already had. Rebuilt clean (`--jobs 4`, ~30 minutes —
+touching this file forced a full recompile of the `script` crate and
+everything downstream, much longer than the "seconds" a typical one-file
+incremental rebuild takes per the prior handoff doc; budget accordingly if
+you touch a file this central again). All 31 existing tests still pass, the
+artifact stayed within budget (55,912,978 bytes, versus 55,923,533 before —
+slightly smaller), and the isolated hang reproduction now returns
+`{"ctx-type":"null"}` immediately instead of hanging. This is a stopgap that
+trades "hangs" for "explicitly unsupported," not a rendering implementation
+— canvas 2D drawing still doesn't work; see Workstream G before attempting
+that.
 
 Other surfaces checked (fresh `about:blank` runtime, no page load unless noted):
 

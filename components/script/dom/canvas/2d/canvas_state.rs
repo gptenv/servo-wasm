@@ -227,43 +227,66 @@ pub(super) struct CanvasState {
 impl CanvasState {
     pub(super) fn new(global: &GlobalScope, size: Size2D<u64>) -> Option<CanvasState> {
         debug!("Creating new canvas rendering context.");
-        let (sender, receiver) =
-            profile_traits::generic_channel::channel(global.time_profiler_chan().clone()).unwrap();
-        let script_to_constellation_chan = global.script_to_constellation_chan();
-        debug!("Asking constellation to create new canvas thread.");
-        let size = adjust_canvas_size(size);
-        script_to_constellation_chan
-            .send(ScriptToConstellationMessage::CreateCanvasPaintThread(
-                size, sender,
-            ))
+        // The Worker wasm32 target has no real OS threads: `CanvasPaintThread::start`
+        // (components/canvas/canvas_paint_thread.rs) calls `std::thread::Builder::spawn`
+        // with a body that services requests in an infinite `loop { select! { .. } }`.
+        // On wasm32-unknown-unknown that call never produces a second thread to
+        // service this call's own `receiver.recv()` below, so the whole runtime
+        // deadlocks — confirmed via an isolated hang reproduction (see
+        // docs/wasm-worker-port-plan.md's Section 14 characterization pass). Fail
+        // closed here the same way `getContext("webgl")` already does (returns
+        // `None`, so `HTMLCanvasElement.getContext("2d")` returns `null`) instead of
+        // reaching the thread-spawn path at all. Revisit once the Worker rendering
+        // path (docs/wasm-worker-port-plan.md Workstream G) has a real cooperative
+        // canvas backend; this is a stopgap that trades "hangs" for "explicitly
+        // unsupported," not a rendering implementation.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (global, size);
+            return None;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (sender, receiver) = profile_traits::generic_channel::channel(
+                global.time_profiler_chan().clone(),
+            )
             .unwrap();
-        let (canvas_thread_sender, canvas_id) = receiver.recv().ok()??;
-        debug!("Done.");
-        // Worklets always receive a unique origin. This messes with fetching
-        // cached images in the case of paint worklets, since the image cache
-        // is keyed on the origin requesting the image data.
-        let origin = if global.is::<PaintWorkletGlobalScope>() {
-            global.api_base_url().origin()
-        } else {
-            global.origin().immutable().clone()
-        };
-        Some(CanvasState {
-            canvas_id,
-            size: Cell::new(size),
-            state: DomRefCell::new(CanvasContextState::new()),
-            origin_clean: Cell::new(true),
-            image_cache: global.image_cache(),
-            base_url: global.api_base_url(),
-            missing_image_urls: DomRefCell::new(Vec::new()),
-            saved_states: DomRefCell::new(Vec::new()),
-            origin,
-            current_default_path: DomRefCell::new(Path::new()),
-            buffered_sender: GenericBufferedSender::new(
-                canvas_thread_sender,
-                Box::new(move |cmds| (canvas_id, CanvasCommand::ProcessBatchMessages(cmds))),
-                servo_config::pref!(dom_canvas_msg_buffer_size) as usize,
-            ),
-        })
+            let script_to_constellation_chan = global.script_to_constellation_chan();
+            debug!("Asking constellation to create new canvas thread.");
+            let size = adjust_canvas_size(size);
+            script_to_constellation_chan
+                .send(ScriptToConstellationMessage::CreateCanvasPaintThread(
+                    size, sender,
+                ))
+                .unwrap();
+            let (canvas_thread_sender, canvas_id) = receiver.recv().ok()??;
+            debug!("Done.");
+            // Worklets always receive a unique origin. This messes with fetching
+            // cached images in the case of paint worklets, since the image cache
+            // is keyed on the origin requesting the image data.
+            let origin = if global.is::<PaintWorkletGlobalScope>() {
+                global.api_base_url().origin()
+            } else {
+                global.origin().immutable().clone()
+            };
+            Some(CanvasState {
+                canvas_id,
+                size: Cell::new(size),
+                state: DomRefCell::new(CanvasContextState::new()),
+                origin_clean: Cell::new(true),
+                image_cache: global.image_cache(),
+                base_url: global.api_base_url(),
+                missing_image_urls: DomRefCell::new(Vec::new()),
+                saved_states: DomRefCell::new(Vec::new()),
+                origin,
+                current_default_path: DomRefCell::new(Path::new()),
+                buffered_sender: GenericBufferedSender::new(
+                    canvas_thread_sender,
+                    Box::new(move |cmds| (canvas_id, CanvasCommand::ProcessBatchMessages(cmds))),
+                    servo_config::pref!(dom_canvas_msg_buffer_size) as usize,
+                ),
+            })
+        }
     }
 
     pub(super) fn set_image_key(&self, image_key: ImageKey) {
