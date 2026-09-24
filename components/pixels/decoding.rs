@@ -20,6 +20,9 @@ use crate::{
     rgba8_premultiply_inplace,
 };
 
+/// Bound decoded image memory independently of compressed response size.
+const MAX_DECODED_IMAGE_PIXELS: u64 = 8 * 1024 * 1024;
+
 enum GenericImageDecoder<'a> {
     Apng(Box<png::ApngDecoder<Cursor<&'a [u8]>>>),
     Png(Box<png::PngDecoder<Cursor<&'a [u8]>>>),
@@ -257,6 +260,11 @@ pub(crate) fn decode_static_image(
     cors_status: CorsStatus,
     mut image_decoder: impl ImageDecoder,
 ) -> Option<RasterImage> {
+    let (width, height) = image_decoder.dimensions();
+    if u64::from(width) * u64::from(height) > MAX_DECODED_IMAGE_PIXELS {
+        debug!("Image exceeds the decoded pixel limit");
+        return None;
+    }
     let orientation = image_decoder.orientation();
 
     let Ok(mut dynamic_image) = DynamicImage::from_decoder(image_decoder) else {
@@ -312,6 +320,7 @@ where
     let mut frame_data = vec![];
     let mut total_number_of_bytes = 0;
     let mut is_opaque = true;
+    let mut exceeded_pixel_limit = false;
     let loop_count = match animated_image_decoder.loop_count() {
         LoopCount::Finite(repeat_time) => Repeat::Finite(repeat_time),
         LoopCount::Infinite => Repeat::Infinite,
@@ -327,6 +336,17 @@ where
                 },
             };
 
+            let frame_width = animated_frame.buffer().width();
+            let frame_height = animated_frame.buffer().height();
+            let frame_bytes = u64::from(frame_width) * u64::from(frame_height) * 4;
+            if frame_bytes > MAX_DECODED_IMAGE_PIXELS * 4
+                || total_number_of_bytes as u64 + frame_bytes > MAX_DECODED_IMAGE_PIXELS * 4
+            {
+                debug!("Animated image exceeds the decoded pixel limit");
+                exceeded_pixel_limit = true;
+                return None;
+            }
+
             // Store pre-multiplied data as that prevents having to do conversions of the data at later
             // times. This does cause an issue with some canvas APIs. See:
             // https://github.com/servo/servo/issues/40257
@@ -336,8 +356,6 @@ where
             total_number_of_bytes += animated_frame.buffer().len();
 
             // The image size should be at least as large as the largest frame.
-            let frame_width = animated_frame.buffer().width();
-            let frame_height = animated_frame.buffer().height();
             width = cmp::max(width, frame_width);
             height = cmp::max(height, frame_height);
 
@@ -354,7 +372,7 @@ where
         })
         .collect();
 
-    if frames.is_empty() {
+    if frames.is_empty() || exceeded_pixel_limit {
         debug!("Animated Image decoding error");
         return None;
     }
