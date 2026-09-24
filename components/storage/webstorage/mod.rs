@@ -82,6 +82,9 @@ pub fn new_worker_webstorage() -> GenericSender<WebStorageThreadMsg> {
             running = manager.handle_message(message);
         }
     }));
+    servo_base::worker_services::register(Box::new(
+        storage_traits::webstorage_thread::process_worker_webstorage,
+    ));
     chan
 }
 

@@ -116,6 +116,9 @@ impl SystemFontService {
                     running = service.handle_message(message);
                 }
             }));
+            servo_base::worker_services::register(Box::new(
+                fonts_traits::worker_fonts::process_service,
+            ));
             return SystemFontServiceProxySender(sender);
         }
 

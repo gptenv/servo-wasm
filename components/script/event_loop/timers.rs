@@ -10,8 +10,6 @@ use std::collections::VecDeque;
 use std::default::Default;
 use std::rc::Rc;
 use std::time::Duration;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Instant;
 
 use deny_public_fields::DenyPublicFields;
 use js::context::JSContext;
@@ -24,9 +22,8 @@ use net_traits::request::ParserMetadata;
 use rustc_hash::FxHashMap;
 use script_bindings::cell::DomRefCell;
 use serde::{Deserialize, Serialize};
-#[cfg(target_arch = "wasm32")]
-use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::id::PipelineId;
+use servo_base::monotonic_instant::Instant;
 use servo_config::pref;
 use servo_url::ServoUrl;
 use timers::{BoxedTimerCallback, TimerEventRequest};
@@ -58,48 +55,6 @@ use crate::tasks::task_source::SendableTaskSource;
 type TimerKey = i32;
 type RunStepsDeadline = Instant;
 type CompletionStep = Box<dyn FnOnce(&mut JSContext, &GlobalScope) + 'static>;
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone, Copy, Debug, Eq, MallocSizeOf, Ord, PartialEq, PartialOrd)]
-pub(crate) struct Instant(u64);
-
-#[cfg(target_arch = "wasm32")]
-impl Instant {
-    fn now() -> Self {
-        Self(
-            (CrossProcessInstant::now() - CrossProcessInstant::epoch())
-                .whole_nanoseconds()
-                .max(0) as u64,
-        )
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-impl std::ops::Add<Duration> for Instant {
-    type Output = Self;
-
-    fn add(self, rhs: Duration) -> Self::Output {
-        Self(self.0.saturating_add(rhs.as_nanos() as u64))
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-impl std::ops::Sub<Duration> for Instant {
-    type Output = Self;
-
-    fn sub(self, rhs: Duration) -> Self::Output {
-        Self(self.0.saturating_sub(rhs.as_nanos() as u64))
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-impl std::ops::Sub for Instant {
-    type Output = Duration;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        Duration::from_nanos(self.0.saturating_sub(rhs.0))
-    }
-}
 
 /// <https://html.spec.whatwg.org/multipage/#run-steps-after-a-timeout>
 /// OrderingIdentifier per spec ("orderingIdentifier")

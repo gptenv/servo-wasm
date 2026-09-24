@@ -82,6 +82,15 @@ pub mod resource_thread {
             const { RefCell::new(None) };
         static FETCH_HANDLER: RefCell<Option<WorkerFetchHandler>> =
             const { RefCell::new(None) };
+        /// The Worker's cookie jar: in memory, for the life of the instance.
+        static COOKIES: RefCell<crate::cookie_storage::CookieStorage> =
+            RefCell::new(crate::cookie_storage::CookieStorage::new(150));
+    }
+
+    fn set_cookie(url: &servo_url::ServoUrl, cookie: cookie::Cookie<'static>, source: net_traits::CookieSource) {
+        if let Some(cookie) = crate::cookie::ServoCookie::new_wrapped(cookie, url, source) {
+            COOKIES.with(|jar| jar.borrow_mut().push(cookie, url, source));
+        }
     }
 
     /// Install the host-side implementation of network fetching.
@@ -123,7 +132,57 @@ pub mod resource_thread {
                     });
                 },
                 CoreResourceMsg::Cancel(_) => {},
-                _ => {},
+                CoreResourceMsg::SetCookieForUrl(url, cookie, source, sender) => {
+                    set_cookie(&url, cookie.into_inner().to_owned(), source);
+                    if let Some(sender) = sender {
+                        let _ = sender.send(());
+                    }
+                },
+                CoreResourceMsg::SetCookiesForUrl(url, cookies, source) => {
+                    for cookie in cookies {
+                        set_cookie(&url, cookie.into_inner(), source);
+                    }
+                },
+                CoreResourceMsg::GetCookieStringForUrl(url, sender, source) => {
+                    let cookies = COOKIES.with(|jar| {
+                        let mut jar = jar.borrow_mut();
+                        jar.remove_expired_cookies_for_url(&url);
+                        jar.cookies_for_url(&url, source)
+                    });
+                    let _ = sender.send(cookies);
+                },
+                CoreResourceMsg::GetCookiesForUrl(url, sender, source) => {
+                    let cookies = COOKIES.with(|jar| {
+                        let mut jar = jar.borrow_mut();
+                        jar.remove_expired_cookies_for_url(&url);
+                        jar.cookies_data_for_url(&url, source)
+                            .map(hyper_serde::Serde)
+                            .collect()
+                    });
+                    let _ = sender.send(cookies);
+                },
+                CoreResourceMsg::DeleteCookies(url, sender) => {
+                    COOKIES.with(|jar| jar.borrow_mut().clear_storage(url.as_ref()));
+                    if let Some(sender) = sender {
+                        let _ = sender.send(());
+                    }
+                },
+                CoreResourceMsg::DeleteCookie(url, name) => {
+                    COOKIES.with(|jar| jar.borrow_mut().delete_cookie_with_name(&url, name));
+                },
+                // Keepalive requests are sent as ordinary host fetches, which
+                // the Worker does not keep past the invocation.
+                CoreResourceMsg::TotalSizeOfInFlightKeepAliveRecords(_, sender) => {
+                    let _ = sender.send(0);
+                },
+                CoreResourceMsg::DeleteSessionCookies(sender) => {
+                    COOKIES.with(|jar| jar.borrow_mut().clear_session_cookies());
+                    let _ = sender.send(());
+                },
+                // Anything else is unsupported on the Worker. Dropping the
+                // message drops any reply sender, so a caller waiting on it
+                // gets an error instead of waiting forever.
+                other => log::debug!("Unsupported Worker resource message: {other:?}"),
             }
             processed += 1;
         }
@@ -143,6 +202,12 @@ pub mod resource_thread {
     ) -> (ResourceThreads, ResourceThreads, Box<dyn AsyncRuntime>) {
         let (sender, receiver) = channel().expect("create Worker resource channel");
         RESOURCE_RECEIVER.with(|slot| *slot.borrow_mut() = Some(receiver));
+        net_traits::set_worker_resource_pump(Box::new(|| {
+            pump_worker_fetches();
+        }));
+        servo_base::worker_services::register(Box::new(|| {
+            pump_worker_fetches();
+        }));
         let public = ResourceThreads::new(sender.clone());
         let private = ResourceThreads::new(sender);
         (public, private, super::async_runtime::init_async_runtime())

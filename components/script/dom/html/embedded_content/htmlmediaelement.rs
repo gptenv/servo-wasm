@@ -8,7 +8,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::{f64, mem};
 
 use bytes::Bytes;
@@ -36,6 +36,7 @@ use script_bindings::codegen::InheritTypes::{
     ElementTypeId, HTMLElementTypeId, HTMLMediaElementTypeId, NodeTypeId,
 };
 use script_bindings::weakref::WeakRef;
+use servo_base::monotonic_instant::Instant;
 use servo_base::generic_channel::{self, GenericCallback, GenericSharedMemory};
 use servo_base::id::WebViewId;
 use servo_config::pref;
@@ -605,6 +606,7 @@ pub(crate) struct HTMLMediaElement {
     text_tracks_list: MutNullableDom<TextTrackList>,
     /// Time of last timeupdate notification.
     #[ignore_malloc_size_of = "Defined in std::time"]
+    #[no_trace]
     next_timeupdate_event: Cell<Instant>,
     /// Latest fetch request context.
     current_fetch_context: RefCell<Option<HTMLMediaElementFetchContext>>,

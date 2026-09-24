@@ -62,8 +62,11 @@ pub fn set_service_pump(pump: Box<dyn FnMut()>) {
 /// invoke this after sending and before blocking on a reply.
 pub fn process_service() {
     SERVICE_PUMP.with(|slot| {
-        if let Some(pump) = slot.borrow_mut().as_mut() {
-            pump();
+        // Already running further up the stack: nothing to do here.
+        if let Ok(mut pump) = slot.try_borrow_mut() {
+            if let Some(pump) = pump.as_mut() {
+                pump();
+            }
         }
     });
 }

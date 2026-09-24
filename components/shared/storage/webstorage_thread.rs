@@ -132,8 +132,11 @@ pub fn register_worker_webstorage_pump(pump: Box<dyn FnMut()>) {
 pub fn process_worker_webstorage() {
     #[cfg(target_arch = "wasm32")]
     WORKER_WEBSTORAGE_PUMPS.with(|pumps| {
-        for pump in pumps.borrow_mut().iter_mut() {
-            pump();
+        // Already running further up the stack: nothing to do here.
+        if let Ok(mut pumps) = pumps.try_borrow_mut() {
+            for pump in pumps.iter_mut() {
+                pump();
+            }
         }
     });
 }

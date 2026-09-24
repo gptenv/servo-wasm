@@ -744,7 +744,12 @@ impl ResourceThreads {
 
 impl GenericSend<CoreResourceMsg> for ResourceThreads {
     fn send(&self, msg: CoreResourceMsg) -> SendResult {
-        self.core_thread.send(msg)
+        let result = self.core_thread.send(msg);
+        // The Worker has no resource thread running alongside script; handle
+        // the message now so that a caller blocking on its reply gets one.
+        #[cfg(target_arch = "wasm32")]
+        process_worker_resource_messages();
+        result
     }
 
     fn sender(&self) -> GenericSender<CoreResourceMsg> {
@@ -952,6 +957,31 @@ thread_local! {
         std::cell::RefCell<Option<WorkerFetchRequestHandler>> = const { std::cell::RefCell::new(None) };
     static WORKER_FETCH_CANCEL_HANDLER:
         std::cell::RefCell<Option<WorkerFetchCancelHandler>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static WORKER_RESOURCE_PUMP: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install the Worker's in-process resource message handler.
+#[cfg(target_arch = "wasm32")]
+pub fn set_worker_resource_pump(pump: Box<dyn FnMut()>) {
+    WORKER_RESOURCE_PUMP.with(|slot| *slot.borrow_mut() = Some(pump));
+}
+
+/// Handle queued resource messages now (Worker only). Re-entrant calls, made
+/// while a message is being handled, do nothing.
+#[cfg(target_arch = "wasm32")]
+pub fn process_worker_resource_messages() {
+    WORKER_RESOURCE_PUMP.with(|slot| {
+        if let Ok(mut pump) = slot.try_borrow_mut() {
+            if let Some(pump) = pump.as_mut() {
+                pump();
+            }
+        }
+    });
 }
 
 #[cfg(target_arch = "wasm32")]

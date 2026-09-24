@@ -440,7 +440,28 @@ where
         match &self.0 {
             GenericReceiverVariants::Ipc(receiver) => Ok(receiver.recv()?),
             GenericReceiverVariants::Crossbeam(receiver) => {
+                // The Worker has one thread: nothing can send while this blocks.
+                // Let in-process services handle queued messages first; if the
+                // reply still is not there it never will be, so fail instead of
+                // blocking forever.
+                #[cfg(target_arch = "wasm32")]
+                {
+                    if receiver.is_empty() {
+                        crate::worker_services::run_all();
+                    }
+                    return match receiver.try_recv() {
+                        Ok(msg) => Ok(msg.expect("Infallible")),
+                        Err(_) => {
+                            log::warn!(
+                                "Worker: blocking receive of {} has no sender that can reply",
+                                std::any::type_name::<T>()
+                            );
+                            Err(ReceiveError::Disconnected)
+                        },
+                    };
+                }
                 // `recv()` returns an error if the channel is disconnected
+                #[allow(unreachable_code)]
                 let msg = receiver.recv()?;
                 // `msg` must be `ok` because the corresponding [`GenericSender::Crossbeam`] will
                 // unconditionally send an `Ok(T)`

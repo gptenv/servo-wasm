@@ -8,13 +8,14 @@ use std::cmp;
 use std::default::Default;
 use std::str::{self, FromStr};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use atomic_refcell::AtomicRefCell;
 use bytes::{Bytes, BytesMut};
 use data_url::mime::Mime;
 use dom_struct::dom_struct;
 use encoding_rs::{Encoding, UTF_8};
+use servo_base::monotonic_instant::Instant;
 use headers::{ContentLength, ContentType, HeaderMapExt};
 use html5ever::serialize;
 use html5ever::serialize::SerializeOpts;
@@ -234,6 +235,7 @@ pub(crate) struct XMLHttpRequest {
     send_flag: Cell<bool>,
 
     timeout_cancel: DomRefCell<Option<OneshotTimerHandle>>,
+    #[no_trace]
     fetch_time: Cell<Instant>,
     generation_id: Cell<GenerationId>,
     response_status: Cell<Result<(), ()>>,

@@ -2577,6 +2577,9 @@ fn create_worker_canvas(
             .get_or_insert_with(|| {
                 // Canvas frames go to Paint like on native, where the Worker
                 // renderer picks them up for screenshots.
+                servo_base::worker_services::register(Box::new(|| {
+                    process_worker_canvas_commands();
+                }));
                 let paint_api = global
                     .downcast::<crate::dom::window::Window>()
                     .map(|window| window.paint_api().clone())
@@ -2591,10 +2594,12 @@ fn create_worker_canvas(
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn process_worker_canvas_commands() -> bool {
     WORKER_CANVAS_PAINT_THREAD.with(|paint_thread| {
-        paint_thread
-            .borrow_mut()
-            .as_mut()
-            .is_some_and(|paint_thread| paint_thread.process_pending())
+        // Already running further up the stack: nothing to do here.
+        paint_thread.try_borrow_mut().is_ok_and(|mut paint_thread| {
+            paint_thread
+                .as_mut()
+                .is_some_and(|paint_thread| paint_thread.process_pending())
+        })
     })
 }
 
