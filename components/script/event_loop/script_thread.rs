@@ -276,6 +276,7 @@ pub struct ScriptThread {
     this: Weak<ScriptThread>,
 
     /// <https://html.spec.whatwg.org/multipage/#last-render-opportunity-time>
+    #[no_trace]
     last_render_opportunity_time: Cell<Option<CrossProcessInstant>>,
     /// State that is common to `WebView`s to be shared with all of their `Pipeline`s. Each
     /// is stored as a `Weak` and pruned lazily so that there does not need to be any
