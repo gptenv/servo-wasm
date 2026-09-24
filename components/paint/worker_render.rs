@@ -24,7 +24,7 @@ use vello_cpu::peniko::{
 };
 use pixels::{EncodedImageType, Snapshot, SnapshotAlphaMode, SnapshotPixelFormat};
 use rustc_hash::FxHashMap;
-use vello_cpu::{Glyph, Pixmap, RenderContext, RenderSettings, Resources};
+use vello_cpu::{Glyph, Mask, Pixmap, RenderContext, RenderSettings, Resources};
 use webrender_api::units::{LayoutRect, LayoutSize, LayoutTransform};
 use webrender_api::{
     AlphaType, BorderDetails, BorderRadius, BorderSide, BorderStyle, BoxShadowClipMode,
@@ -91,6 +91,9 @@ pub(crate) fn render_png(full_page: bool) -> Result<Vec<u8>, String> {
 enum ClipShape {
     Rect(LayoutRect),
     RoundedRect(LayoutRect, BorderRadius),
+    /// An image whose alpha masks content (`mask-image`); applied only to
+    /// stacking contexts, as a mask layer.
+    ImageMask(ImageKey, LayoutRect),
 }
 
 #[derive(Clone)]
@@ -268,6 +271,15 @@ impl<'a> Renderer<'a> {
                         );
                     }
                 },
+                DisplayItem::ImageMaskClip(clip) => {
+                    self.clips.insert(
+                        clip.id,
+                        Clip {
+                            spatial: (pipeline, clip.spatial_id.0),
+                            shape: ClipShape::ImageMask(clip.image_mask.image, clip.image_mask.rect),
+                        },
+                    );
+                },
                 DisplayItem::ClipChain(chain) => {
                     let clip_ids = item.clip_chain_items().iter().collect();
                     self.clip_chains.insert(chain.id, (chain.parent, clip_ids));
@@ -275,10 +287,12 @@ impl<'a> Renderer<'a> {
                 DisplayItem::PushStackingContext(push) => {
                     let filters: Vec<FilterOp> = item.filters().iter().collect();
                     let transform = self.node(pipeline, push.spatial_id.0);
+                    let masks = self.image_masks(push.stacking_context.clip_chain_id);
                     let entry = self.push_stacking_context(
                         push.stacking_context.mix_blend_mode,
                         &filters,
                         transform,
+                        masks,
                     );
                     stacking.push(entry);
                 },
@@ -523,12 +537,63 @@ impl<'a> Renderer<'a> {
                 ClipShape::RoundedRect(rect, radii) => {
                     transform * rounded_rect_of(rect, &radii).to_path(0.1)
                 },
+                ClipShape::ImageMask(..) => continue,
             };
             self.context.set_transform(Affine::IDENTITY);
             self.context.push_clip_layer(&path);
             pushed += 1;
         }
         pushed
+    }
+
+    /// Rasterize the image mask clips of a stacking context's clip chain into
+    /// canvas-sized alpha masks.
+    fn image_masks(&mut self, chain: Option<ClipChainId>) -> Vec<Mask> {
+        let mut shapes = Vec::new();
+        let mut next = chain;
+        let mut guard = 0;
+        while let Some(chain_id) = next {
+            guard += 1;
+            let Some((parent, ids)) = self.clip_chains.get(&chain_id) else {
+                break;
+            };
+            for id in ids {
+                if let Some(Clip {
+                    spatial,
+                    shape: ClipShape::ImageMask(key, rect),
+                }) = self.clips.get(id)
+                {
+                    shapes.push((*spatial, *key, *rect));
+                }
+            }
+            next = *parent;
+            if guard > 64 {
+                break;
+            }
+        }
+        let (width, height) = (self.context.width(), self.context.height());
+        shapes
+            .into_iter()
+            .map(|(spatial, key, rect)| {
+                let transform = self.spatial_nodes.get(&spatial).copied().unwrap_or(Affine::IDENTITY);
+                let mut pixmap = Pixmap::new(width, height);
+                if let Some(image) = self.image(key, AlphaType::PremultipliedAlpha) {
+                    let settings = RenderSettings {
+                        level: vello_cpu::Level::try_detect().unwrap_or(vello_cpu::Level::baseline()),
+                        num_threads: 0,
+                    };
+                    let context = RenderContext::new_with(width, height, settings);
+                    let parent = std::mem::replace(&mut self.context, context);
+                    self.context.set_transform(transform);
+                    self.fill_image(image, rect, rect.size(), Extend::Pad);
+                    let mut context = std::mem::replace(&mut self.context, parent);
+                    context.flush();
+                    context.render(&mut pixmap, &mut self.resources);
+                }
+                // An image that has not loaded masks everything out.
+                Mask::new_alpha(&pixmap)
+            })
+            .collect()
     }
 
     fn image(&mut self, key: ImageKey, alpha_type: AlphaType) -> Option<Arc<Pixmap>> {
@@ -779,6 +844,7 @@ impl<'a> Renderer<'a> {
         blend: MixBlendMode,
         filters: &[FilterOp],
         transform: Affine,
+        masks: Vec<Mask>,
     ) -> StackingEntry {
         let mut opacity = 1.0f32;
         let mut matrix: Option<ColorMatrix> = None;
@@ -830,6 +896,10 @@ impl<'a> Renderer<'a> {
         self.context.set_transform(Affine::IDENTITY);
         if let Some(mix) = mix_of(blend) {
             self.context.push_blend_layer(mix);
+            layers += 1;
+        }
+        for mask in masks {
+            self.context.push_mask_layer(mask);
             layers += 1;
         }
         if opacity < 1.0 {

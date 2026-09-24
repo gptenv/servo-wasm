@@ -975,3 +975,31 @@ test('screenshots draw shadows and filters, follow scrolling, and capture full p
   assert.deepEqual(full.pixel(15, 45), [0, 0, 255, 255], 'full page starts at the top');
   assert.deepEqual(full.pixel(150, 1500), [0, 128, 0, 255], 'full page reaches the bottom');
 });
+
+test('screenshots apply mask-image (icons drawn as masked colored boxes)', async () => {
+  // Left half opaque, right half transparent.
+  const maskSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">' +
+    '<rect width="10" height="20" fill="#000"/></svg>';
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 200,
+    height: 100,
+    fetchImpl: async (url) => url.endsWith('.svg')
+      ? new Response(maskSvg, { headers: { 'content-type': 'image/svg+xml' } })
+      : new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <div style="position:absolute;left:10px;top:10px;width:40px;height:40px;background:rgb(255, 0, 0);
+      mask-image:url(m.svg);mask-size:40px 40px;mask-repeat:no-repeat"></div>
+    <div style="position:absolute;left:110px;top:10px;width:40px;height:40px;background:rgb(0, 0, 255);
+      -webkit-mask:url(m.svg) no-repeat center / 20px 20px"></div>
+    </body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const png = decodePng(await runtime.screenshot());
+  assert.deepEqual(png.pixel(15, 30), [255, 0, 0, 255], 'masked-in half is drawn');
+  assert.deepEqual(png.pixel(45, 30), [255, 255, 255, 255], 'masked-out half is not');
+  // Centered 20px mask: x 120..130 visible, the rest of the box masked out.
+  assert.deepEqual(png.pixel(125, 30), [0, 0, 255, 255], '-webkit-mask shorthand, visible part');
+  assert.deepEqual(png.pixel(135, 30), [255, 255, 255, 255], '-webkit-mask shorthand, masked part');
+  assert.deepEqual(png.pixel(112, 30), [255, 255, 255, 255], 'outside the mask tile is masked out');
+});

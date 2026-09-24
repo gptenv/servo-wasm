@@ -351,6 +351,8 @@ pub(crate) trait ComputedValuesExt {
     fn used_transform_style(&self, fragment_flags: FragmentFlags) -> ComputedTransformStyle;
     fn establishes_block_formatting_context(&self, fragment_flags: FragmentFlags) -> bool;
     fn establishes_stacking_context(&self, fragment_flags: FragmentFlags) -> bool;
+    /// Whether any `mask-image` layer is not `none`.
+    fn has_mask_image(&self) -> bool;
     fn establishes_scroll_container(&self, fragment_flags: FragmentFlags) -> bool;
     fn establishes_containing_block_for_absolute_descendants(
         &self,
@@ -698,7 +700,7 @@ impl ComputedValuesExt for ComputedValues {
         //    used value of the contain property, such as content-visibility:
         //    hidden.
         //
-        // TODO: Support `mask-image`, `mask-border-source`, and `contain`.
+        // TODO: Support `mask-border-source` and `contain`.
         let effects = self.get_effects();
         let overflow = self.effective_overflow(fragment_flags);
         if !matches!(overflow.x, Overflow::Visible | Overflow::Clip)
@@ -707,6 +709,7 @@ impl ComputedValuesExt for ComputedValues {
             || !effects.filter.0.is_empty()
             || !effects.clip.is_auto()
             || self.get_svg().clip_path != ClipPath::None
+            || self.has_mask_image()
             || self.get_box().isolation == ComputedIsolation::Isolate
             || effects.mix_blend_mode != ComputedMixBlendMode::Normal
         {
@@ -756,6 +759,14 @@ impl ComputedValuesExt for ComputedValues {
     }
 
     /// Returns true if this fragment establishes a new stacking context and false otherwise.
+    fn has_mask_image(&self) -> bool {
+        self.get_svg()
+            .mask_image
+            .0
+            .iter()
+            .any(|image| !matches!(image, style::values::computed::Image::None))
+    }
+
     fn establishes_stacking_context(&self, fragment_flags: FragmentFlags) -> bool {
         // From <https://www.w3.org/TR/css-will-change/#valdef-will-change-custom-ident>:
         // > If any non-initial value of a property would create a stacking context on the element,
@@ -834,6 +845,12 @@ impl ComputedValuesExt for ComputedValues {
         // > A computed value of other than `none` results in the creation of a stacking context.
         // Note `will-change: clip-path` is handled above by `STACKING_CONTEXT_UNCONDITIONAL`.
         if self.get_svg().clip_path != ClipPath::None {
+            return true;
+        }
+
+        // From <https://drafts.fxtf.org/css-masking/#the-mask-image>
+        // > A computed value of other than `none` results in the creation of a stacking context.
+        if self.has_mask_image() {
             return true;
         }
 

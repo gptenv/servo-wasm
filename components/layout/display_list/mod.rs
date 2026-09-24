@@ -459,6 +459,7 @@ impl DisplayListBuilder<'_> {
                     && effects.mix_blend_mode == ComputedMixBlendMode::Normal
                     && !style.has_effective_transform_or_perspective(FragmentFlags::empty())
                     && style.get_svg().clip_path == ComputedClipPath::None
+                    && !style.has_mask_image()
                     && transform_style == TransformStyle::Flat
                 {
                     return false;
@@ -503,6 +504,15 @@ impl DisplayListBuilder<'_> {
             clip_id => Some(self.clip_chain_id(clip_id)),
         };
         let spatial_id = self.spatial_id(stacking_context.scroll_tree_node_id);
+        let clip_chain_id = match &stacking_context.fragment {
+            StackingContextFragments::Fragment(fragment) => self.add_mask_image_clip(
+                fragment,
+                stacking_context.containing_block_origin,
+                spatial_id,
+                clip_chain_id,
+            ),
+            StackingContextFragments::Root => clip_chain_id,
+        };
 
         self.wr().push_stacking_context(
             spatial_id,
@@ -518,6 +528,95 @@ impl DisplayListBuilder<'_> {
         );
 
         true
+    }
+
+    /// Apply `mask-image` to a stacking context: the topmost layer that is a
+    /// loaded image becomes a WebRender image mask clip (its alpha masks the
+    /// element), sized and positioned by `mask-size`, `mask-position` and
+    /// `mask-origin` like a background layer. Returns the stacking context's
+    /// clip chain with the mask added.
+    ///
+    /// TODO: gradient masks, repeated mask tiles, several composited layers,
+    /// `mask-mode: luminance` and SVG `<mask>` references are not supported;
+    /// such masks leave the element unmasked.
+    fn add_mask_image_clip(
+        &mut self,
+        fragment: &Arc<BoxFragment>,
+        containing_block_origin: PhysicalPoint<Au>,
+        spatial_id: SpatialId,
+        clip_chain_id: Option<ClipChainId>,
+    ) -> Option<ClipChainId> {
+        use style::computed_values::mask_origin::single_value::T as MaskOrigin;
+        use style::values::specified::background::BackgroundRepeatKeyword;
+
+        let style = fragment.style();
+        if !style.has_mask_image() {
+            return clip_chain_id;
+        }
+        let svg = style.get_svg();
+        let with_style = fragment.with_style();
+        let fragment_builder = BuilderForBoxFragment::new(&with_style, containing_block_origin);
+        let node = fragment.base.tag.map(|tag| tag.node);
+        for (index, image) in svg.mask_image.0.iter().enumerate() {
+            let Ok(ResolvedImage::Image { image, size }) =
+                self.image_resolver.resolve_image(node, image)
+            else {
+                continue;
+            };
+            let positioning_area = match background::get_cyclic(&svg.mask_origin.0, index) {
+                MaskOrigin::ContentBox => *fragment_builder.content_rect(),
+                MaskOrigin::PaddingBox => *fragment_builder.padding_rect(),
+                _ => fragment_builder.border_rect,
+            };
+            let natural_sizes = NaturalSizes::from_width_and_height(size.width, size.height);
+            let Some(mut tile_size) = background::tile_size(
+                background::get_cyclic(&svg.mask_size.0, index),
+                positioning_area.size(),
+                &natural_sizes,
+            ) else {
+                return clip_chain_id;
+            };
+            let x = background::layout_1d(
+                &mut tile_size.width,
+                BackgroundRepeatKeyword::NoRepeat,
+                background::get_cyclic(&svg.mask_position_x.0, index),
+                0.,
+                positioning_area.width(),
+                positioning_area.width(),
+            );
+            let y = background::layout_1d(
+                &mut tile_size.height,
+                BackgroundRepeatKeyword::NoRepeat,
+                background::get_cyclic(&svg.mask_position_y.0, index),
+                0.,
+                positioning_area.height(),
+                positioning_area.height(),
+            );
+            let rect = LayoutRect::from_origin_and_size(
+                positioning_area.min + LayoutVector2D::new(x.bounds_origin, y.bounds_origin),
+                tile_size,
+            );
+            let scale = self.device_pixel_ratio.get();
+            let device_size: DeviceIntSize =
+                Size2D::new(tile_size.width * scale, tile_size.height * scale).to_i32();
+            let Some(image_key) =
+                self.image_resolver
+                    .image_key_from_cached_image(&image, device_size, node)
+            else {
+                continue;
+            };
+            let mask = self.wr().define_clip_image_mask(
+                spatial_id,
+                wr::ImageMask {
+                    image: image_key,
+                    rect,
+                },
+                &[],
+                wr::FillRule::Nonzero,
+            );
+            return Some(self.wr().define_clip_chain(clip_chain_id, [mask]));
+        }
+        clip_chain_id
     }
 
     fn common_properties(
