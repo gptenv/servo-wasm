@@ -94,23 +94,29 @@ invocation ends; Servo's native blocking shutdown path is not used.
 
 ## Screenshots
 
-`await runtime.screenshot({maxDurationMs, maxPasses})` returns PNG bytes of the
-current page at the viewport size given at bootstrap. It asks the page to update
-its rendering once (layout otherwise stays idle on the Worker), pumps until
-settled, and repeats while a frame starts new image, font or canvas loads (up to
-`maxPasses`, default 4), then rasterizes on the CPU. Underlying exports:
-`servo_worker_request_frame()`, `servo_worker_frame_resource_generation()`,
-`servo_worker_render_png()` (PNG length, or zero with the reason logged) and
-`servo_worker_frame_png_ptr/len()`. `servo_worker_frame_item_count()` is a
-diagnostic.
+`await runtime.screenshot({maxDurationMs, maxPasses, fullPage})` returns PNG bytes
+of the current page: the viewport at its current scroll position, or with
+`fullPage` the whole document from its top, at the viewport width (height capped
+at 8 Mpixels to fit the 128 MB isolate). It asks the page to update its rendering
+once (layout otherwise stays idle on the Worker), pumps until settled, and repeats
+while a frame starts new image, font or canvas loads (up to `maxPasses`, default 4),
+then rasterizes on the CPU. Underlying exports: `servo_worker_request_frame()`,
+`servo_worker_frame_resource_generation()`, `servo_worker_render_png(flags)` (bit 0:
+full page; returns the PNG length, or zero with the reason logged) and
+`servo_worker_frame_png_ptr/len()`. `servo_worker_frame_item_count()` and
+`servo_worker_frame_describe()` (a text dump of the captured spatial trees and
+scroll offsets, in the same result buffer) are diagnostics.
 
 The renderer interprets Servo's WebRender display list with vello_cpu: 2D
-transforms, rect and rounded-rect clips, backgrounds, text, images (stretched and
-repeated), canvas content, solid borders with radii, text decorations, linear and
-radial gradients, opacity and iframes. Not yet drawn: box and text shadows,
-dashed/dotted/inset-style borders (drawn solid), blend modes, filters other than
-opacity, 3D transforms, and scroll positions (pages render unscrolled; only the
-viewport is captured, not the full page).
+transforms, scroll offsets, rect and rounded-rect clips, backgrounds, text, images
+(stretched and repeated), canvas content, borders of every style (radii only for
+uniform solid borders), text decorations, linear and radial gradients, box
+shadows (outset, inset, spread, blur), text shadows, opacity, `mix-blend-mode`,
+CSS filters (blur and drop-shadow natively; brightness, contrast, grayscale,
+hue-rotate, invert, saturate and sepia via a color matrix on an offscreen layer)
+and iframes. 3D transforms are drawn flattened, sticky elements at their static
+position, and backdrop-filter, masks and clip-path shapes other than rounded
+rectangles are not yet drawn.
 
 ## Traps
 

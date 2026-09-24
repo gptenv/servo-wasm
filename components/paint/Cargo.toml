@@ -67,6 +67,8 @@ bytemuck = { workspace = true }
 fonts_traits = { workspace = true }
 pixels = { workspace = true }
 vello_cpu = { workspace = true }
+# For vello_cpu filter layer types, which vello_cpu does not re-export.
+vello_common = { version = "0.2", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 surfman = { workspace = true }

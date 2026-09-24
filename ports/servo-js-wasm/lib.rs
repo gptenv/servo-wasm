@@ -158,12 +158,14 @@ thread_local! {
 }
 
 /// Rasterize the latest rendering (after `servo_worker_request_frame` and
-/// pumping) to a PNG held in a result buffer. Returns its length, or zero on
-/// failure (the reason is logged through `worker_log_error`).
+/// pumping) to a PNG held in a result buffer. `flags` bit 0 captures the whole
+/// page instead of the viewport. Returns the PNG length, or zero on failure
+/// (the reason is logged through `worker_log_error`).
 #[unsafe(no_mangle)]
-pub extern "C" fn servo_worker_render_png() -> u32 {
+pub extern "C" fn servo_worker_render_png(flags: u32) -> u32 {
+    let full_page = flags & 1 != 0;
     let result = BROWSER.with(|browser| match browser.borrow().as_ref() {
-        Some(browser) => browser.servo.worker_render_png(),
+        Some(browser) => browser.servo.worker_render_png(full_page),
         None => Err("Servo has not been bootstrapped".to_owned()),
     });
     match result {
@@ -200,6 +202,23 @@ pub extern "C" fn servo_worker_frame_resource_generation() -> u32 {
             .borrow()
             .as_ref()
             .map_or(0, |browser| browser.servo.worker_resource_generation())
+    })
+}
+
+/// Diagnostic: describe the captured spatial trees into the frame result
+/// buffer (read with `servo_worker_frame_png_ptr/len`). Returns its length.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_frame_describe() -> u32 {
+    let text = BROWSER.with(|browser| {
+        browser
+            .borrow()
+            .as_ref()
+            .map(|browser| browser.servo.worker_describe_frame())
+            .unwrap_or_default()
+    });
+    LAST_FRAME_PNG.with(|slot| {
+        *slot.borrow_mut() = text.into_bytes();
+        slot.borrow().len() as u32
     })
 }
 

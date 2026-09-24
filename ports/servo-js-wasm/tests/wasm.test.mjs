@@ -925,3 +925,36 @@ test('screenshots rasterize backgrounds, borders, text, images and canvas', asyn
   }
   assert.ok(inked > 50, `text should draw glyphs (inked ${inked} pixels)`);
 });
+
+test('screenshots draw shadows and filters, follow scrolling, and capture full pages', async () => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 300,
+    height: 200,
+    fetchImpl: async () => new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <div style="position:absolute;left:20px;top:20px;width:100px;height:50px;background:white;
+      box-shadow:0 0 0 10px rgb(0, 0, 255)"></div>
+    <div style="position:absolute;left:160px;top:20px;width:60px;height:50px;
+      background:rgb(255, 0, 0);filter:grayscale(1)"></div>
+    <div style="position:absolute;left:0;top:1000px;width:300px;height:1000px;background:rgb(0, 128, 0)"></div>
+    </body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const top = decodePng(await runtime.screenshot());
+  assert.deepEqual(top.pixel(15, 45), [0, 0, 255, 255], 'box-shadow spread');
+  const [red, green, blue] = top.pixel(190, 45);
+  assert.ok(red === green && green === blue && red > 0 && red < 255, `grayscale filter: ${top.pixel(190, 45)}`);
+
+  runtime.evaluatePage('window.scrollTo(0, 1000); window.scrollY');
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1000 } });
+  const scrolled = decodePng(await runtime.screenshot());
+  assert.deepEqual(scrolled.pixel(150, 100), [0, 128, 0, 255], 'viewport follows the scroll position');
+
+  const full = decodePng(await runtime.screenshot({ fullPage: true }));
+  assert.equal(full.width, 300);
+  assert.equal(full.height, 2000);
+  assert.deepEqual(full.pixel(15, 45), [0, 0, 255, 255], 'full page starts at the top');
+  assert.deepEqual(full.pixel(150, 1500), [0, 128, 0, 255], 'full page reaches the bottom');
+});

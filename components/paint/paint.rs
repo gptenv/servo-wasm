@@ -273,6 +273,12 @@ impl Paint {
         })
     }
 
+    /// See `worker_frame::describe`.
+    #[cfg(target_arch = "wasm32")]
+    pub fn worker_describe_frame(&self) -> String {
+        crate::worker_frame::describe()
+    }
+
     /// See `worker_frame::resource_generation`.
     #[cfg(target_arch = "wasm32")]
     pub fn worker_resource_generation(&self) -> u32 {
@@ -281,8 +287,8 @@ impl Paint {
 
     /// Rasterize the latest top-level document on the CPU and encode it as PNG.
     #[cfg(target_arch = "wasm32")]
-    pub fn worker_render_png(&self) -> Result<Vec<u8>, String> {
-        crate::worker_render::render_png()
+    pub fn worker_render_png(&self, full_page: bool) -> Result<Vec<u8>, String> {
+        crate::worker_render::render_png(full_page)
     }
 
     pub fn register_rendering_context(
@@ -516,6 +522,9 @@ impl Paint {
                         offset,
                         external_scroll_id,
                     );
+                } else {
+                    #[cfg(target_arch = "wasm32")]
+                    crate::worker_frame::set_scroll_offset(pipeline_id, external_scroll_id, offset);
                 }
             },
             PaintMessage::ScrollViewportByDelta(webview_id, delta) => {

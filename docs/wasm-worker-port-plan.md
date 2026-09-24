@@ -290,7 +290,7 @@ Every layer should run after a clean target build at least once in CI. Increment
 - [x] Stylo WASM clock fork/patch is reproducible and pinned.
 - [x] Raw Worker adapter can fetch deterministic HTML, parse its DOM/CSSOM, execute an inline script, and return a page-evaluation result.
 - [ ] `about:blank` and multiple sequential full-page loads pump to stable completion with bounded retained memory.
-- [x] Viewport screenshots render on the CPU (Node and workerd); shadows, dashed borders, scroll positions and full-page capture remain.
+- [x] Viewport and full-page screenshots render on the CPU (Node and workerd), including shadows, all border styles, blend modes, CSS filters and scroll positions.
 - [ ] Page scripts, DOM mutation, promises, and exceptions work broadly; inline scripts, DOM reads, and `setTimeout` have a deterministic smoke test.
 - [ ] Worker fetch request/response/error/cancel protocol is complete; navigation, subresources, in-memory POST, headers, chunks, same-origin redirects, abort before/after headers, queued aborts, body failure, response ordering and reset cancellation are covered. Streaming request bodies, full CORS/cookie/manual-redirect behavior, reader/clone cancellation and the wider redirect matrix remain. Simple permitted CORS reads work; unsupported credential/preflight paths fail closed.
 - [x] ABI version mismatch is rejected; immediate navigation after factory creation and supplied inline HTML are tested.
@@ -401,8 +401,15 @@ display lists instead:
   Paint answers canvas frame-delay requests immediately; previously a page with
   a canvas never rendered again after its first frame.
 
-Verified with pixel-exact Node tests (43/43) and in workerd (a 640×360 page renders
-in ~80 ms). Artifact 61,592,697 bytes.
+Verified with pixel-exact Node tests (44/44) and in workerd (a 640×360 page renders
+in ~80 ms). The second pass added box/text shadows (vello_cpu's blurred rounded
+rects and Gaussian blur filter layers), dotted/dashed/double/groove/ridge/
+inset/outset borders, `mix-blend-mode`, CSS filters (color filters via an
+offscreen color matrix, since vello_cpu implements only blur and drop-shadow),
+scroll offsets and full-page capture. The page's scroll offset lives on the
+implicit root scroll node, known only through Servo's scroll tree
+(`ScrollTreeNode::webrender_id`), and Worker Paint applies layout's scroll
+messages to captured scroll trees.
 
 **Build memory.** This machine has 15 GB and no swap. Building the `script` crate
 alone at this profile needs several GB; with other large apps open, even

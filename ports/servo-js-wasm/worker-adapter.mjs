@@ -637,11 +637,12 @@ class ServoWorkerRuntime {
   }
 
   /**
-   * Render the page as it currently is to PNG bytes (Uint8Array), at the
-   * viewport size. Runs "update the rendering" once, pumps until settled, then
+   * Render the page as it currently is to PNG bytes (Uint8Array): the viewport
+   * at its current scroll position, or with `fullPage` the whole document
+   * from the top (height capped to keep memory within Worker limits). Runs "update the rendering" once, pumps until settled, then
    * rasterizes on the CPU. Throws if the page has not produced a rendering.
    */
-  async screenshot({ maxDurationMs = 5_000, maxPasses = 4 } = {}) {
+  async screenshot({ maxDurationMs = 5_000, maxPasses = 4, fullPage = false } = {}) {
     // A frame can start loads (CSS background images, web fonts, canvas
     // frames) that only a later frame shows; repeat until a frame adds none.
     const exports = this.instance.exports;
@@ -653,7 +654,7 @@ class ServoWorkerRuntime {
       await this.pumpUntilSettled({ maxDurationMs });
       if (exports.servo_worker_frame_resource_generation() === resourcesBefore) break;
     }
-    const length = this.instance.exports.servo_worker_render_png();
+    const length = this.instance.exports.servo_worker_render_png(fullPage ? 1 : 0);
     if (!length) throw new Error('Servo could not render the page (see the host log)');
     const ptr = this.instance.exports.servo_worker_frame_png_ptr();
     return new Uint8Array(this.instance.exports.memory.buffer, ptr, length).slice();

@@ -63,6 +63,49 @@ pub(crate) fn capture_display_list(
     });
 }
 
+/// Apply a script scroll to a captured display list's scroll tree. Layout sends
+/// the node's new scroll offset (not a delta) in `ScrollNodeByDelta`; later
+/// display lists carry it themselves.
+pub(crate) fn set_scroll_offset(
+    pipeline_id: WebRenderPipelineId,
+    scroll_id: webrender_api::ExternalScrollId,
+    offset: webrender_api::units::LayoutVector2D,
+) {
+    DISPLAY_LISTS.with(|lists| {
+        if let Some(captured) = lists.borrow_mut().get_mut(&pipeline_id) {
+            captured
+                .info
+                .scroll_tree
+                .set_scroll_offset_for_node_with_external_scroll_id(
+                    scroll_id,
+                    offset,
+                    paint_api::display_list::ScrollType::Script,
+                );
+        }
+    });
+}
+
+/// A human-readable summary of the captured spatial trees and scroll offsets,
+/// for diagnosing the Worker renderer.
+pub(crate) fn describe() -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    DISPLAY_LISTS.with(|lists| {
+        for (pipeline, captured) in lists.borrow().iter() {
+            let _ = writeln!(
+                out,
+                "pipeline {pipeline:?} seq {} viewport {:?}",
+                captured.sequence, captured.info.viewport_details.size
+            );
+            captured.display_list.iter_spatial_tree(|item| {
+                let _ = writeln!(out, "  {item:?}");
+            });
+            let _ = writeln!(out, "  offsets {:?}", captured.info.scroll_tree.scroll_offsets());
+        }
+    });
+    out
+}
+
 /// Forget display lists of a pipeline that has gone away.
 pub(crate) fn remove_pipeline(pipeline_id: PipelineId) {
     let pipeline_id: WebRenderPipelineId = pipeline_id.into();

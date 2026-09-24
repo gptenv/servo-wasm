@@ -6,26 +6,31 @@
 //! renderer, so this interprets the display lists captured in
 //! [`crate::worker_frame`] with `vello_cpu`, the rasterizer canvas 2D uses.
 //!
-//! Supported: the spatial tree (2D transforms; scroll and sticky frames at their
-//! unscrolled positions), rect and rounded-rect clips, rectangles, text,
-//! images (stretched and repeated), borders (solid, with radii), lines,
-//! linear/radial gradients, stacking-context opacity and iframes. Not yet:
-//! box and text shadows, dashed/dotted/3D border styles, blend modes, filters
-//! other than opacity, 3D transforms and scroll offsets.
+//! Supported: the spatial tree (2D transforms, scroll offsets; sticky frames at
+//! their static positions), rect and rounded-rect clips, rectangles, text,
+//! images (stretched and repeated), borders (all styles, radii for uniform
+//! solid borders), lines, linear/radial gradients, box and text shadows,
+//! stacking-context opacity, blend modes and filters, and iframes. 3D
+//! transforms are drawn flattened.
 
 use std::sync::Arc;
 
 use euclid::default::Size2D;
-use vello_cpu::kurbo::{self, Affine, BezPath, Rect, RoundedRect, RoundedRectRadii, Shape};
-use vello_cpu::peniko::{self, Color, ColorStop, Extend, Gradient, ImageQuality, ImageSampler};
+use paint_api::display_list::{ScrollTree, SpatialTreeNodeInfo};
+use vello_common::filter_effects::{EdgeMode, Filter, FilterFunction, FilterPrimitive};
+use vello_cpu::kurbo::{self, Affine, BezPath, Cap, Rect, RoundedRect, RoundedRectRadii, Shape, Stroke};
+use vello_cpu::peniko::{
+    self, BlendMode, Color, ColorStop, Compose, Extend, Gradient, ImageQuality, ImageSampler, Mix,
+};
 use pixels::{EncodedImageType, Snapshot, SnapshotAlphaMode, SnapshotPixelFormat};
 use rustc_hash::FxHashMap;
 use vello_cpu::{Glyph, Pixmap, RenderContext, RenderSettings, Resources};
 use webrender_api::units::{LayoutRect, LayoutSize, LayoutTransform};
 use webrender_api::{
-    AlphaType, BorderDetails, BorderRadius, BorderStyle, BuiltDisplayList, ClipChainId, ClipId,
-    ClipMode, ColorF, DisplayItem, ExtendMode, FilterOp, GradientStop, ImageFormat, ImageKey,
-    PipelineId, PropertyBinding, ReferenceFrameKind, ReferenceTransformBinding, SpatialTreeItem,
+    AlphaType, BorderDetails, BorderRadius, BorderSide, BorderStyle, BoxShadowClipMode,
+    BuiltDisplayList, ClipChainId, ClipId, ClipMode, ColorF, DisplayItem, ExtendMode, FilterOp,
+    GradientStop, ImageFormat, ImageKey, MixBlendMode, PipelineId, PropertyBinding,
+    ReferenceFrameKind, ReferenceTransformBinding, Shadow, SpatialTreeItem,
 };
 
 use crate::worker_frame::{self, WorkerResources};
@@ -34,18 +39,33 @@ use crate::worker_frame::{self, WorkerResources};
 const MAX_DIMENSION: u32 = 16_384;
 /// Iframes nested deeper than this are not drawn.
 const MAX_IFRAME_DEPTH: usize = 8;
+/// Largest full-page capture in pixels (32 MiB as RGBA); Worker isolates have
+/// 128 MB of memory in total.
+const MAX_FULL_PAGE_PIXELS: u32 = 8 * 1024 * 1024;
 
-/// Render the latest top-level document to a PNG.
-pub(crate) fn render_png() -> Result<Vec<u8>, String> {
+/// Render the latest top-level document to a PNG: the viewport, or with
+/// `full_page` the whole document from its top (height capped for memory).
+pub(crate) fn render_png(full_page: bool) -> Result<Vec<u8>, String> {
     let (width, height, pixmap) = worker_frame::with_display_lists(|lists| {
         let root = worker_frame::root_pipeline(lists).ok_or("No page has been rendered yet")?;
         let info = &lists[&root].info;
         let scale = info.viewport_details.hidpi_scale_factor.get();
-        let size = info.viewport_details.size * scale;
+        let mut size = info.viewport_details.size;
+        if full_page {
+            if let Some((_, content)) = scroll_nodes(&info.scroll_tree).get(&1) {
+                size.width = size.width.max(content.width);
+                size.height = size.height.max(content.height);
+            }
+        }
+        let size = size * scale;
         let width = (size.width.ceil() as u32).clamp(1, MAX_DIMENSION);
-        let height = (size.height.ceil() as u32).clamp(1, MAX_DIMENSION);
+        let mut height = (size.height.ceil() as u32).clamp(1, MAX_DIMENSION);
+        if full_page {
+            height = height.min((MAX_FULL_PAGE_PIXELS / width).max(1));
+        }
         let pixmap = worker_frame::with_resources(|resources| {
             let mut renderer = Renderer::new(width as u16, height as u16, lists, resources);
+            renderer.full_page = full_page;
             renderer.draw_pipeline(root, Affine::scale(scale as f64), 0);
             renderer.finish()
         });
@@ -90,6 +110,24 @@ struct Renderer<'a> {
     clip_chains: FxHashMap<ClipChainId, (Option<ClipChainId>, Vec<ClipId>)>,
     image_cache: FxHashMap<ImageKey, Option<Arc<Pixmap>>>,
     device_rect: Rect,
+    /// Text shadows in effect (between PushShadow and PopAllShadows).
+    shadows: Vec<Shadow>,
+    /// Contexts suspended while a stacking context with color filters draws
+    /// into its own context, with that context's color matrix.
+    offscreen: Vec<(RenderContext, ColorMatrix)>,
+    /// The transform of the item being drawn.
+    item_transform: Affine,
+    /// Render the whole document: the root scroll frame is drawn unscrolled.
+    full_page: bool,
+}
+
+/// A CSS/SVG color matrix: 4 rows of 5 (the last column is an offset, 0..1).
+type ColorMatrix = [f32; 20];
+
+/// What a stacking context pushed, to undo it when it ends.
+struct StackingEntry {
+    layers: usize,
+    offscreen: bool,
 }
 
 impl<'a> Renderer<'a> {
@@ -119,6 +157,10 @@ impl<'a> Renderer<'a> {
             clip_chains: FxHashMap::default(),
             image_cache: FxHashMap::default(),
             device_rect: Rect::new(0.0, 0.0, width as f64, height as f64),
+            shadows: Vec::new(),
+            offscreen: Vec::new(),
+            item_transform: Affine::IDENTITY,
+            full_page: false,
         }
     }
 
@@ -136,10 +178,30 @@ impl<'a> Renderer<'a> {
             .unwrap_or(Affine::IDENTITY)
     }
 
-    fn build_spatial_tree(&mut self, pipeline: PipelineId, list: &BuiltDisplayList, base: Affine) {
+    fn build_spatial_tree(
+        &mut self,
+        pipeline: PipelineId,
+        list: &BuiltDisplayList,
+        scroll_tree: &ScrollTree,
+        base: Affine,
+        is_root_document: bool,
+    ) {
+        // Scroll offsets by spatial node index, from Servo's scroll tree (which
+        // also covers the implicit root scroll node that scrolls the page).
+        let scrolling = scroll_nodes(scroll_tree);
+        let full_page = self.full_page && is_root_document;
+        let scrolled = |index: usize, parent: Affine| {
+            let offset = match scrolling.get(&index) {
+                // A full-page capture shows the document from its top.
+                Some(_) if full_page && index == 1 => Default::default(),
+                Some((offset, _)) => *offset,
+                None => Default::default(),
+            };
+            parent * Affine::translate((-offset.x as f64, -offset.y as f64))
+        };
         // Nodes 0 and 1 are the implicit root reference frame and root scroll node.
         self.spatial_nodes.insert((pipeline, 0), base);
-        self.spatial_nodes.insert((pipeline, 1), base);
+        self.spatial_nodes.insert((pipeline, 1), scrolled(1, base));
         let mut entries = Vec::new();
         list.iter_spatial_tree(|item| entries.push(*item));
         for item in entries {
@@ -162,8 +224,8 @@ impl<'a> Renderer<'a> {
                 },
                 SpatialTreeItem::ScrollFrame(descriptor) => {
                     let parent = self.node(pipeline, descriptor.parent_space.0);
-                    self.spatial_nodes
-                        .insert((pipeline, descriptor.scroll_frame_id.0), parent);
+                    let index = descriptor.scroll_frame_id.0;
+                    self.spatial_nodes.insert((pipeline, index), scrolled(index, parent));
                 },
                 SpatialTreeItem::StickyFrame(descriptor) => {
                     let parent = self.node(pipeline, descriptor.parent_spatial_id.0);
@@ -179,10 +241,9 @@ impl<'a> Renderer<'a> {
             return;
         };
         let list = &captured.display_list;
-        self.build_spatial_tree(pipeline, list, base);
+        self.build_spatial_tree(pipeline, list, &captured.info.scroll_tree, base, depth == 0);
 
-        // Opacity layers pushed for each open stacking context.
-        let mut stacking_layers: Vec<bool> = Vec::new();
+        let mut stacking: Vec<StackingEntry> = Vec::new();
         let mut iter = list.iter();
         while let Some(item) = iter.next() {
             match item.item() {
@@ -211,27 +272,29 @@ impl<'a> Renderer<'a> {
                     let clip_ids = item.clip_chain_items().iter().collect();
                     self.clip_chains.insert(chain.id, (chain.parent, clip_ids));
                 },
-                DisplayItem::PushStackingContext(stacking_context) => {
-                    let opacity: f32 = item
-                        .filters()
-                        .iter()
-                        .filter_map(|filter| match filter {
-                            FilterOp::Opacity(binding, _) => Some(binding_value(&binding)),
-                            _ => None,
-                        })
-                        .product();
-                    let pushed = opacity < 1.0;
-                    if pushed {
-                        self.context.set_transform(Affine::IDENTITY);
-                        self.context.push_opacity_layer(opacity.max(0.0));
-                    }
-                    let _ = stacking_context;
-                    stacking_layers.push(pushed);
+                DisplayItem::PushStackingContext(push) => {
+                    let filters: Vec<FilterOp> = item.filters().iter().collect();
+                    let transform = self.node(pipeline, push.spatial_id.0);
+                    let entry = self.push_stacking_context(
+                        push.stacking_context.mix_blend_mode,
+                        &filters,
+                        transform,
+                    );
+                    stacking.push(entry);
                 },
                 DisplayItem::PopStackingContext => {
-                    if stacking_layers.pop() == Some(true) {
-                        self.context.pop_layer();
+                    if let Some(entry) = stacking.pop() {
+                        self.pop_stacking_context(entry);
                     }
+                },
+                DisplayItem::PushShadow(push) => self.shadows.push(push.shadow),
+                DisplayItem::PopAllShadows => self.shadows.clear(),
+                DisplayItem::BoxShadow(shadow) => {
+                    let shadow = *shadow;
+                    let extent = shadow_extent(&shadow);
+                    self.draw(pipeline, &shadow.common, extent, |renderer| {
+                        renderer.fill_box_shadow(&shadow);
+                    });
                 },
                 DisplayItem::Rectangle(rectangle) => {
                     let color = binding_value(&rectangle.color);
@@ -258,14 +321,17 @@ impl<'a> Renderer<'a> {
                             y: glyph.point.y,
                         })
                         .collect();
-                    let color = text.color;
-                    self.draw(pipeline, &text.common, text.bounds, |renderer| {
-                        renderer.context.set_paint(color_of(color));
-                        renderer
-                            .context
-                            .glyph_run(&mut renderer.resources, font)
-                            .font_size(size)
-                            .fill_glyphs(glyphs.into_iter());
+                    let color = color_of(text.color);
+                    let bounds = inflate_for_shadows(text.bounds, &self.shadows);
+                    self.draw(pipeline, &text.common, bounds, |renderer| {
+                        renderer.with_shadows(color, |renderer, color| {
+                            renderer.context.set_paint(color);
+                            renderer
+                                .context
+                                .glyph_run(&mut renderer.resources, font)
+                                .font_size(size)
+                                .fill_glyphs(glyphs.iter().copied());
+                        });
                     });
                 },
                 DisplayItem::Image(image) => {
@@ -296,10 +362,13 @@ impl<'a> Renderer<'a> {
                     });
                 },
                 DisplayItem::Line(line) => {
-                    let (area, color) = (line.area, line.color);
-                    self.draw(pipeline, &line.common, area, |renderer| {
-                        renderer.context.set_paint(color_of(color));
-                        renderer.context.fill_rect(&rect_of(area));
+                    let (area, color) = (line.area, color_of(line.color));
+                    let bounds = inflate_for_shadows(area, &self.shadows);
+                    self.draw(pipeline, &line.common, bounds, |renderer| {
+                        renderer.with_shadows(color, |renderer, color| {
+                            renderer.context.set_paint(color);
+                            renderer.context.fill_rect(&rect_of(area));
+                        });
                     });
                 },
                 DisplayItem::Gradient(gradient) => {
@@ -366,11 +435,10 @@ impl<'a> Renderer<'a> {
                 _ => {},
             }
         }
-        for pushed in stacking_layers {
-            if pushed {
-                self.context.pop_layer();
-            }
+        while let Some(entry) = stacking.pop() {
+            self.pop_stacking_context(entry);
         }
+        self.shadows.clear();
     }
 
     /// Draw an item in its spatial node's coordinate space, inside its clips.
@@ -394,6 +462,7 @@ impl<'a> Renderer<'a> {
             bounds,
         );
         self.context.set_transform(transform);
+        self.item_transform = transform;
         paint(self);
         for _ in 0..clips {
             self.context.pop_layer();
@@ -507,11 +576,10 @@ impl<'a> Renderer<'a> {
         widths: webrender_api::units::LayoutSideOffsets,
         details: &webrender_api::NormalBorder,
     ) {
-        let visible = |style: BorderStyle| !matches!(style, BorderStyle::None | BorderStyle::Hidden);
+        let visible = |side: &BorderSide| {
+            !matches!(side.style, BorderStyle::None | BorderStyle::Hidden) && side.color.a > 0.0
+        };
         let sides = [details.top, details.right, details.bottom, details.left];
-        let uniform = sides.iter().all(|side| {
-            side.color == details.top.color && side.style == details.top.style
-        });
         let outer = rect_of(bounds);
         let inner = Rect::new(
             outer.x0 + widths.left as f64,
@@ -520,8 +588,11 @@ impl<'a> Renderer<'a> {
             outer.y1 - widths.bottom as f64,
         );
 
-        if uniform {
-            if !visible(details.top.style) {
+        let uniform_solid = sides.iter().all(|side| {
+            side.color == details.top.color && side.style == BorderStyle::Solid
+        });
+        if uniform_solid {
+            if !visible(&details.top) {
                 return;
             }
             // One ring: the outer rounded rect minus the inner one.
@@ -543,25 +614,271 @@ impl<'a> Renderer<'a> {
             return;
         }
 
-        // Sides differ: draw each side as a trapezoid meeting at the corners.
-        let quads = [
-            (details.top, [(outer.x0, outer.y0), (outer.x1, outer.y0), (inner.x1, inner.y0), (inner.x0, inner.y0)]),
-            (details.right, [(outer.x1, outer.y0), (outer.x1, outer.y1), (inner.x1, inner.y1), (inner.x1, inner.y0)]),
-            (details.bottom, [(outer.x1, outer.y1), (outer.x0, outer.y1), (inner.x0, inner.y1), (inner.x1, inner.y1)]),
-            (details.left, [(outer.x0, outer.y1), (outer.x0, outer.y0), (inner.x0, inner.y0), (inner.x0, inner.y1)]),
-        ];
-        for (side, points) in quads {
-            if !visible(side.style) || side.color.a == 0.0 {
+        // Per side: index 0 top, 1 right, 2 bottom, 3 left.
+        let side_widths = [widths.top, widths.right, widths.bottom, widths.left];
+        for (index, side) in sides.iter().enumerate() {
+            let width = side_widths[index] as f64;
+            if !visible(side) || width <= 0.0 {
                 continue;
             }
-            let mut path = BezPath::new();
-            path.move_to(points[0]);
-            for point in &points[1..] {
-                path.line_to(*point);
+            let color = color_of(side.color);
+            // Sides lit from the top left: top/left are the "light" sides.
+            let top_left = index == 0 || index == 3;
+            match side.style {
+                BorderStyle::Dotted => {
+                    // Round dots, evenly spaced so both ends get one.
+                    let (start, end) = side_center_line(outer, inner, index);
+                    let length = (end - start).hypot();
+                    let gaps = (length / (width * 2.0)).round().max(1.0);
+                    let mut dots = BezPath::new();
+                    for step in 0..=gaps as usize {
+                        let center = start.lerp(end, step as f64 / gaps);
+                        dots.extend(kurbo::Circle::new(center, width / 2.0).to_path(0.1));
+                    }
+                    self.context.set_paint(color);
+                    self.context.fill_path(&dots);
+                },
+                BorderStyle::Dashed => {
+                    let (start, end) = side_center_line(outer, inner, index);
+                    let mut line = BezPath::new();
+                    line.move_to(start);
+                    line.line_to(end);
+                    self.context.set_stroke(
+                        Stroke::new(width)
+                            .with_caps(Cap::Butt)
+                            .with_dashes(0.0, [width * 3.0, width * 3.0]),
+                    );
+                    self.context.set_paint(color);
+                    self.context.stroke_path(&line);
+                },
+                BorderStyle::Double => {
+                    let third = |fraction: f64| lerp_rect(outer, inner, fraction);
+                    self.fill_side(outer, third(1.0 / 3.0), index, color);
+                    self.fill_side(third(2.0 / 3.0), inner, index, color);
+                },
+                BorderStyle::Groove | BorderStyle::Ridge => {
+                    let middle = lerp_rect(outer, inner, 0.5);
+                    let (dark, light) = (shade(side.color, 0.5), color);
+                    let outer_color = if (side.style == BorderStyle::Groove) == top_left { dark } else { light };
+                    let inner_color = if outer_color == dark { light } else { dark };
+                    self.fill_side(outer, middle, index, outer_color);
+                    self.fill_side(middle, inner, index, inner_color);
+                },
+                BorderStyle::Inset | BorderStyle::Outset => {
+                    let darken = (side.style == BorderStyle::Inset) == top_left;
+                    let color = if darken { shade(side.color, 0.5) } else { color };
+                    self.fill_side(outer, inner, index, color);
+                },
+                _ => self.fill_side(outer, inner, index, color),
             }
-            path.close_path();
-            self.context.set_paint(color_of(side.color));
-            self.context.fill_path(&path);
+        }
+    }
+
+    /// Fill one side of the ring between `outer` and `inner`, as a trapezoid
+    /// meeting its neighbours at the corners.
+    fn fill_side(&mut self, outer: Rect, inner: Rect, index: usize, color: Color) {
+        let points = match index {
+            0 => [(outer.x0, outer.y0), (outer.x1, outer.y0), (inner.x1, inner.y0), (inner.x0, inner.y0)],
+            1 => [(outer.x1, outer.y0), (outer.x1, outer.y1), (inner.x1, inner.y1), (inner.x1, inner.y0)],
+            2 => [(outer.x1, outer.y1), (outer.x0, outer.y1), (inner.x0, inner.y1), (inner.x1, inner.y1)],
+            _ => [(outer.x0, outer.y1), (outer.x0, outer.y0), (inner.x0, inner.y0), (inner.x0, inner.y1)],
+        };
+        let mut path = BezPath::new();
+        path.move_to(points[0]);
+        for point in &points[1..] {
+            path.line_to(*point);
+        }
+        path.close_path();
+        self.context.set_paint(color);
+        self.context.fill_path(&path);
+    }
+
+    fn fill_box_shadow(&mut self, shadow: &webrender_api::BoxShadowDisplayItem) {
+        let color = color_of(shadow.color);
+        // CSS blur radius is twice the Gaussian standard deviation.
+        let std_dev = shadow.blur_radius / 2.0;
+        let box_rect = rect_of(shadow.box_bounds);
+        let box_path = rounded_rect_of(shadow.box_bounds, &shadow.border_radius).to_path(0.1);
+        let spread = shadow.spread_radius as f64;
+        let offset = kurbo::Vec2::new(shadow.offset.x as f64, shadow.offset.y as f64);
+        let corner = corner_radius(shadow.border_radius.top_left);
+        let transform = self.item_transform;
+
+        match shadow.clip_mode {
+            BoxShadowClipMode::Outset => {
+                let shadow_rect = box_rect.inflate(spread, spread) + offset;
+                let radius = (corner + spread).max(0.0) as f32;
+                // An outer shadow is not drawn under its box.
+                let mut clip = self.device_rect.inflate(1.0, 1.0).to_path(0.1);
+                clip.extend(transform * box_path);
+                self.push_clip(&clip, peniko::Fill::EvenOdd);
+                self.context.set_transform(transform);
+                self.context.set_paint(color);
+                if std_dev > 0.25 {
+                    self.context.fill_blurred_rounded_rect(&shadow_rect, radius, std_dev, false);
+                } else {
+                    self.context.fill_path(&RoundedRect::from_rect(shadow_rect, radius as f64).to_path(0.1));
+                }
+                self.context.pop_layer();
+            },
+            BoxShadowClipMode::Inset => {
+                let shadow_rect = box_rect.inflate(-spread, -spread) + offset;
+                let radius = (corner - spread).max(0.0) as f32;
+                self.push_clip(&(transform * box_path), peniko::Fill::NonZero);
+                self.context.set_transform(transform);
+                self.context.set_paint(color);
+                if std_dev > 0.25 {
+                    self.context.fill_blurred_rounded_rect(&shadow_rect, radius, std_dev, true);
+                } else {
+                    let mut ring = box_rect.inflate(1.0, 1.0).to_path(0.1);
+                    ring.extend(RoundedRect::from_rect(shadow_rect, radius as f64).to_path(0.1));
+                    self.context.set_fill_rule(peniko::Fill::EvenOdd);
+                    self.context.fill_path(&ring);
+                    self.context.set_fill_rule(peniko::Fill::NonZero);
+                }
+                self.context.pop_layer();
+            },
+        }
+    }
+
+    /// Push a device-space clip layer.
+    fn push_clip(&mut self, path: &BezPath, fill: peniko::Fill) {
+        self.context.set_transform(Affine::IDENTITY);
+        self.context.set_fill_rule(fill);
+        self.context.push_clip_layer(path);
+        self.context.set_fill_rule(peniko::Fill::NonZero);
+    }
+
+    /// Draw text shadows (if any) and then the item itself, calling `paint`
+    /// with the color to use; the current transform is the item's.
+    fn with_shadows(&mut self, color: Color, mut paint: impl FnMut(&mut Self, Color)) {
+        let transform = self.item_transform;
+        for shadow in self.shadows.clone() {
+            let blurred = shadow.blur_radius > 0.0;
+            if blurred {
+                self.context.set_transform(Affine::IDENTITY);
+                self.context.push_filter_layer(Filter::from_primitive(FilterPrimitive::GaussianBlur {
+                    std_deviation: shadow.blur_radius / 2.0,
+                    edge_mode: EdgeMode::None,
+                }));
+            }
+            self.context.set_transform(
+                transform * Affine::translate((shadow.offset.x as f64, shadow.offset.y as f64)),
+            );
+            paint(self, color_of(shadow.color));
+            if blurred {
+                self.context.pop_layer();
+            }
+        }
+        self.context.set_transform(transform);
+        paint(self, color);
+    }
+
+    fn push_stacking_context(
+        &mut self,
+        blend: MixBlendMode,
+        filters: &[FilterOp],
+        transform: Affine,
+    ) -> StackingEntry {
+        let mut opacity = 1.0f32;
+        let mut matrix: Option<ColorMatrix> = None;
+        let mut effects = Vec::new();
+        for filter in filters {
+            let step = match *filter {
+                FilterOp::Opacity(ref binding, _) => {
+                    opacity *= binding_value(binding);
+                    None
+                },
+                FilterOp::Blur(width, height) => {
+                    // Blur scales with the element's transform.
+                    let scale = transform.as_coeffs()[0].hypot(transform.as_coeffs()[1]) as f32;
+                    effects.push(Filter::from_function(FilterFunction::Blur {
+                        radius: width.max(height) * scale,
+                    }));
+                    None
+                },
+                FilterOp::DropShadow(shadow) => {
+                    effects.push(Filter::from_primitive(FilterPrimitive::DropShadow {
+                        dx: shadow.offset.x,
+                        dy: shadow.offset.y,
+                        std_deviation: shadow.blur_radius / 2.0,
+                        color: color_of(shadow.color),
+                        edge_mode: EdgeMode::None,
+                    }));
+                    None
+                },
+                FilterOp::Brightness(amount) => Some(brightness_matrix(amount)),
+                FilterOp::Contrast(amount) => Some(contrast_matrix(amount)),
+                FilterOp::Grayscale(amount) => Some(saturate_matrix(1.0 - amount.clamp(0.0, 1.0))),
+                FilterOp::Saturate(amount) => Some(saturate_matrix(amount)),
+                FilterOp::HueRotate(degrees) => Some(hue_rotate_matrix(degrees)),
+                FilterOp::Invert(amount) => Some(invert_matrix(amount.clamp(0.0, 1.0))),
+                FilterOp::Sepia(amount) => Some(sepia_matrix(amount.clamp(0.0, 1.0))),
+                _ => None,
+            };
+            if let Some(step) = step {
+                matrix = Some(match matrix {
+                    Some(previous) => multiply(&step, &previous),
+                    None => step,
+                });
+            }
+        }
+
+        // Outermost first: blend with the backdrop, then opacity, then effects;
+        // color filters apply first, to the element's own pixels.
+        let mut layers = 0;
+        self.context.set_transform(Affine::IDENTITY);
+        if let Some(mix) = mix_of(blend) {
+            self.context.push_blend_layer(mix);
+            layers += 1;
+        }
+        if opacity < 1.0 {
+            self.context.push_opacity_layer(opacity.max(0.0));
+            layers += 1;
+        }
+        for effect in effects.into_iter().rev() {
+            self.context.push_filter_layer(effect);
+            layers += 1;
+        }
+        let offscreen = matrix.is_some();
+        if let Some(matrix) = matrix {
+            let settings = RenderSettings {
+                level: vello_cpu::Level::try_detect().unwrap_or(vello_cpu::Level::baseline()),
+                num_threads: 0,
+            };
+            let context =
+                RenderContext::new_with(self.context.width(), self.context.height(), settings);
+            let parent = std::mem::replace(&mut self.context, context);
+            self.offscreen.push((parent, matrix));
+        }
+        StackingEntry { layers, offscreen }
+    }
+
+    fn pop_stacking_context(&mut self, entry: StackingEntry) {
+        if entry.offscreen {
+            if let Some((parent, matrix)) = self.offscreen.pop() {
+                let mut context = std::mem::replace(&mut self.context, parent);
+                let mut pixmap = Pixmap::new(context.width(), context.height());
+                context.flush();
+                context.render(&mut pixmap, &mut self.resources);
+                apply_color_matrix(&mut pixmap, &matrix);
+                let device = self.device_rect;
+                self.context.set_transform(Affine::IDENTITY);
+                self.context.set_paint(vello_cpu::Image {
+                    image: vello_cpu::ImageSource::Pixmap(Arc::new(pixmap)),
+                    sampler: ImageSampler {
+                        x_extend: Extend::Pad,
+                        y_extend: Extend::Pad,
+                        quality: ImageQuality::Low,
+                        alpha: 1.0,
+                    },
+                });
+                self.context.reset_paint_transform();
+                self.context.fill_rect(&device);
+            }
+        }
+        for _ in 0..entry.layers {
+            self.context.pop_layer();
         }
     }
 }
@@ -677,4 +994,179 @@ fn pixmap_of(image: &worker_frame::WorkerImage, alpha_type: AlphaType) -> Option
         }
     }
     Some(Pixmap::from_parts(pixels, width as u16, height as u16))
+}
+
+/// Scroll offset and content size of each scrolling spatial node, by index.
+fn scroll_nodes(scroll_tree: &ScrollTree) -> FxHashMap<usize, (webrender_api::units::LayoutVector2D, LayoutSize)> {
+    scroll_tree
+        .nodes
+        .iter()
+        .filter_map(|node| match (&node.info, node.webrender_id) {
+            (SpatialTreeNodeInfo::Scroll(info), Some(id)) => {
+                Some((id.0, (info.offset, info.content_rect.size())))
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+fn corner_radius(size: LayoutSize) -> f64 {
+    size.width.min(size.height).max(0.0) as f64
+}
+
+/// The area a box shadow can paint.
+fn shadow_extent(shadow: &webrender_api::BoxShadowDisplayItem) -> LayoutRect {
+    let reach = shadow.spread_radius.abs() + shadow.blur_radius * 1.5 +
+        shadow.offset.x.abs().max(shadow.offset.y.abs());
+    shadow.box_bounds.inflate(reach, reach)
+}
+
+/// Grow an item's bounds to cover its text shadows.
+fn inflate_for_shadows(bounds: LayoutRect, shadows: &[Shadow]) -> LayoutRect {
+    shadows.iter().fold(bounds, |bounds, shadow| {
+        let reach = shadow.blur_radius * 1.5 + shadow.offset.x.abs().max(shadow.offset.y.abs());
+        bounds.union(&bounds.inflate(reach, reach))
+    })
+}
+
+/// The centre line of a border side (index 0 top, 1 right, 2 bottom, 3 left).
+fn side_center_line(outer: Rect, inner: Rect, index: usize) -> (kurbo::Point, kurbo::Point) {
+    let middle = lerp_rect(outer, inner, 0.5);
+    match index {
+        0 => ((outer.x0, middle.y0).into(), (outer.x1, middle.y0).into()),
+        1 => ((middle.x1, outer.y0).into(), (middle.x1, outer.y1).into()),
+        2 => ((outer.x1, middle.y1).into(), (outer.x0, middle.y1).into()),
+        _ => ((middle.x0, outer.y1).into(), (middle.x0, outer.y0).into()),
+    }
+}
+
+fn lerp_rect(outer: Rect, inner: Rect, fraction: f64) -> Rect {
+    let lerp = |a: f64, b: f64| a + (b - a) * fraction;
+    Rect::new(
+        lerp(outer.x0, inner.x0),
+        lerp(outer.y0, inner.y0),
+        lerp(outer.x1, inner.x1),
+        lerp(outer.y1, inner.y1),
+    )
+}
+
+fn shade(color: ColorF, factor: f32) -> Color {
+    Color::new([color.r * factor, color.g * factor, color.b * factor, color.a])
+}
+
+fn mix_of(blend: MixBlendMode) -> Option<BlendMode> {
+    let mix = match blend {
+        MixBlendMode::Normal => return None,
+        MixBlendMode::PlusLighter => return Some(BlendMode::new(Mix::Normal, Compose::Plus)),
+        MixBlendMode::Multiply => Mix::Multiply,
+        MixBlendMode::Screen => Mix::Screen,
+        MixBlendMode::Overlay => Mix::Overlay,
+        MixBlendMode::Darken => Mix::Darken,
+        MixBlendMode::Lighten => Mix::Lighten,
+        MixBlendMode::ColorDodge => Mix::ColorDodge,
+        MixBlendMode::ColorBurn => Mix::ColorBurn,
+        MixBlendMode::HardLight => Mix::HardLight,
+        MixBlendMode::SoftLight => Mix::SoftLight,
+        MixBlendMode::Difference => Mix::Difference,
+        MixBlendMode::Exclusion => Mix::Exclusion,
+        MixBlendMode::Hue => Mix::Hue,
+        MixBlendMode::Saturation => Mix::Saturation,
+        MixBlendMode::Color => Mix::Color,
+        MixBlendMode::Luminosity => Mix::Luminosity,
+    };
+    Some(BlendMode::new(mix, Compose::SrcOver))
+}
+
+// Color matrices from the Filter Effects specification.
+
+fn brightness_matrix(amount: f32) -> ColorMatrix {
+    let a = amount.max(0.0);
+    [a, 0., 0., 0., 0., 0., a, 0., 0., 0., 0., 0., a, 0., 0., 0., 0., 0., 1., 0.]
+}
+
+fn contrast_matrix(amount: f32) -> ColorMatrix {
+    let (a, o) = (amount.max(0.0), 0.5 - 0.5 * amount.max(0.0));
+    [a, 0., 0., 0., o, 0., a, 0., 0., o, 0., 0., a, 0., o, 0., 0., 0., 1., 0.]
+}
+
+fn invert_matrix(a: f32) -> ColorMatrix {
+    let d = 1.0 - 2.0 * a;
+    [d, 0., 0., 0., a, 0., d, 0., 0., a, 0., 0., d, 0., a, 0., 0., 0., 1., 0.]
+}
+
+fn saturate_matrix(s: f32) -> ColorMatrix {
+    let s = s.max(0.0);
+    [
+        0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s, 0., 0.,
+        0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s, 0., 0.,
+        0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s, 0., 0.,
+        0., 0., 0., 1., 0.,
+    ]
+}
+
+fn sepia_matrix(a: f32) -> ColorMatrix {
+    let i = 1.0 - a;
+    [
+        0.393 + 0.607 * i, 0.769 - 0.769 * i, 0.189 - 0.189 * i, 0., 0.,
+        0.349 - 0.349 * i, 0.686 + 0.314 * i, 0.168 - 0.168 * i, 0., 0.,
+        0.272 - 0.272 * i, 0.534 - 0.534 * i, 0.131 + 0.869 * i, 0., 0.,
+        0., 0., 0., 1., 0.,
+    ]
+}
+
+fn hue_rotate_matrix(degrees: f32) -> ColorMatrix {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    [
+        0.213 + cos * 0.787 - sin * 0.213,
+        0.715 - cos * 0.715 - sin * 0.715,
+        0.072 - cos * 0.072 + sin * 0.928,
+        0., 0.,
+        0.213 - cos * 0.213 + sin * 0.143,
+        0.715 + cos * 0.285 + sin * 0.140,
+        0.072 - cos * 0.072 - sin * 0.283,
+        0., 0.,
+        0.213 - cos * 0.213 - sin * 0.787,
+        0.715 - cos * 0.715 + sin * 0.715,
+        0.072 + cos * 0.928 + sin * 0.072,
+        0., 0.,
+        0., 0., 0., 1., 0.,
+    ]
+}
+
+/// `after * before`: apply `before`, then `after`.
+fn multiply(after: &ColorMatrix, before: &ColorMatrix) -> ColorMatrix {
+    let mut result = [0.0; 20];
+    for row in 0..4 {
+        for column in 0..5 {
+            let mut value = if column == 4 { after[row * 5 + 4] } else { 0.0 };
+            for k in 0..4 {
+                value += after[row * 5 + k] * before[k * 5 + column];
+            }
+            result[row * 5 + column] = value;
+        }
+    }
+    result
+}
+
+/// Apply a color matrix to premultiplied RGBA pixels, in unpremultiplied space.
+fn apply_color_matrix(pixmap: &mut Pixmap, matrix: &ColorMatrix) {
+    for pixel in pixmap.data_as_u8_slice_mut().chunks_exact_mut(4) {
+        let alpha = pixel[3] as f32 / 255.0;
+        if alpha == 0.0 {
+            continue;
+        }
+        let channel = |value: u8| (value as f32 / 255.0) / alpha;
+        let input = [channel(pixel[0]), channel(pixel[1]), channel(pixel[2]), alpha];
+        let mut output = [0.0f32; 4];
+        for (row, out) in output.iter_mut().enumerate() {
+            let m = &matrix[row * 5..row * 5 + 5];
+            *out = (m[0] * input[0] + m[1] * input[1] + m[2] * input[2] + m[3] * input[3] + m[4])
+                .clamp(0.0, 1.0);
+        }
+        let new_alpha = output[3];
+        for index in 0..3 {
+            pixel[index] = (output[index] * new_alpha * 255.0 + 0.5) as u8;
+        }
+        pixel[3] = (new_alpha * 255.0 + 0.5) as u8;
+    }
 }
