@@ -586,16 +586,14 @@ impl<'a> Renderer<'a> {
     }
 
     /// Rasterize this stacking context's `mask-image` layers (from its clip
-    /// chain) into one canvas-sized alpha mask. Layers are combined in
-    /// declaration order (the first-listed, topmost layer processed first)
-    /// per each layer's own `mask-composite`
-    /// (<https://drafts.fxtf.org/css-masking-1/#the-mask-composite>): the
-    /// running composite-so-far (built from the layers before this one) is
-    /// the "destination", this layer is the "source". A lone first layer is
-    /// therefore composited against a fully transparent destination, which
-    /// only `add`/`exclude` pass through unchanged -- `subtract`/`intersect`
-    /// as the very first layer's own composite value spec-correctly yield
-    /// nothing.
+    /// chain) into one canvas-sized alpha mask. Layers are combined
+    /// bottom-up (the last-listed layer first) per each layer's own
+    /// `mask-composite`
+    /// (<https://drafts.fxtf.org/css-masking-1/#the-mask-composite>): a
+    /// layer is the "source", the composite of the layers below it (listed
+    /// after it) is the "destination". The bottommost layer has nothing
+    /// below it, so per spec its own `mask-composite` is ignored and it
+    /// simply seeds the accumulator.
     fn image_masks(&mut self, chain: Option<ClipChainId>) -> Option<Mask> {
         let mut shapes = Vec::new();
         let mut next = chain;
@@ -624,7 +622,8 @@ impl<'a> Renderer<'a> {
         }
         let (width, height) = (self.context.width(), self.context.height());
         let mut combined: Vec<u8> = vec![0; width as usize * height as usize];
-        for (spatial, id) in shapes {
+        let mut is_bottom = true;
+        for (spatial, id) in shapes.into_iter().rev() {
             let Some(Clip {
                 shape:
                     ClipShape::ImageMask {
@@ -709,8 +708,12 @@ impl<'a> Renderer<'a> {
                     let luma = r * 0.2126 + g * 0.7152 + b * 0.0722;
                     (luma * 255.0 + 0.5) as u8
                 };
-                *acc = composite_mask(composite, source, *acc);
+                // The bottommost layer has no layer below it to combine
+                // with, so per spec its own `mask-composite` is ignored: it
+                // just seeds the accumulator with its own mask value.
+                *acc = if is_bottom { source } else { composite_mask(composite, source, *acc) };
             }
+            is_bottom = false;
         }
         Some(Mask::from_parts(combined, width, height))
     }
@@ -1170,7 +1173,7 @@ fn composite_mask(op: MaskComposite, source: u8, dest: u8) -> u8 {
     let ab = a * b / 255;
     match op {
         MaskComposite::Add => a + b - ab,
-        MaskComposite::Subtract => b - ab,
+        MaskComposite::Subtract => a - ab,
         MaskComposite::Intersect => ab,
         MaskComposite::Exclude => a + b - 2 * ab,
     }

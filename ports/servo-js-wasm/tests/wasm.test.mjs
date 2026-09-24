@@ -1077,14 +1077,18 @@ test('screenshots apply gradient mask-image layers and mask-composite', async ()
     <div style="position:absolute;left:110px;top:0;width:60px;height:60px;background:rgb(255, 0, 0);
       padding:15px;box-sizing:border-box;
       mask:linear-gradient(black, black), linear-gradient(black, black) content-box;
-      mask-composite:add, subtract"></div>
+      mask-composite:subtract"></div>
     <div style="position:absolute;left:180px;top:0;width:60px;height:60px;background:rgb(255, 0, 0);
+      padding:15px;box-sizing:border-box;
+      mask:linear-gradient(black, black) content-box, linear-gradient(black, black);
+      mask-composite:subtract"></div>
+    <div style="position:absolute;left:250px;top:0;width:60px;height:60px;background:rgb(255, 0, 0);
       padding:15px;box-sizing:border-box;
       mask:linear-gradient(black,black) content-box, linear-gradient(black,black);
       mask-composite:exclude"></div>
-    <div style="position:absolute;left:250px;top:0;width:60px;height:60px;background:rgb(255, 0, 0);
+    <div style="position:absolute;left:320px;top:0;width:60px;height:60px;background:rgb(255, 0, 0);
       mask-image:url(missing.png), linear-gradient(black, black);
-      mask-composite:add, intersect"></div>
+      mask-composite:intersect"></div>
     </body>`, { url: 'https://shot.example/' });
   await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
 
@@ -1104,22 +1108,34 @@ test('screenshots apply gradient mask-image layers and mask-composite', async ()
   assert.ok(mid[0] === 255 && mid[1] > 20 && mid[1] < 235 && mid[1] === mid[2],
     `gradient mask midpoint should be a red/white blend (got rgba ${mid.join(',')})`);
 
-  // Order-sensitive `subtract`: a solid border-box mask (layer 0, default
-  // `add`) with a solid content-box mask subtracted from it (layer 1,
-  // `subtract`) leaves a ring -- the padding area is visible, the content
-  // box is masked out. This only holds with layer 0 processed before layer
-  // 1; reversing the order would subtract the (larger) border-box shape
-  // from the (smaller) content-box shape and mask out everything.
+  // Order-sensitive `subtract`: per
+  // <https://drafts.fxtf.org/css-masking-1/#the-mask-composite>, layers
+  // combine bottom-up -- each layer is the "source", the composite of the
+  // layers *below* it (listed *after* it) is the "destination" it combines
+  // into. `subtract` keeps the source only where the destination does not
+  // already cover it. Layer 0 (border-box, listed first, so on top) is the
+  // source combining onto layer 1 (content-box, listed last, so on the
+  // bottom and unaffected by its own composite value): the content box is
+  // subtracted out of the border box, leaving a ring.
   assert.deepEqual(png.pixel(112, 2), [255, 0, 0, 255], 'subtract ring: padding area visible');
   assert.deepEqual(png.pixel(140, 30), [255, 255, 255, 255], 'subtract ring: content area masked out');
 
-  // `mask-composite: exclude` (XOR) of a content-box and a border-box solid
-  // mask leaves the same ring shape.
-  assert.deepEqual(png.pixel(182, 2), [255, 0, 0, 255], 'exclude ring: padding area visible');
-  assert.deepEqual(png.pixel(210, 30), [255, 255, 255, 255], 'exclude ring: content area masked out');
+  // The same two shapes with the mask-image list order swapped: now the
+  // content-box layer is on top, subtracting itself out of the border-box
+  // layer below it. Since the content box is entirely inside the border
+  // box, this removes it completely and leaves nothing.
+  assert.deepEqual(png.pixel(182, 2), [255, 255, 255, 255], 'reordered subtract: padding area also masked out');
+  assert.deepEqual(png.pixel(210, 30), [255, 255, 255, 255], 'reordered subtract: content area masked out');
 
-  // `mask-composite: intersect` with a failed (never-loaded) first layer:
-  // the failed layer contributes as fully transparent, so intersecting the
-  // second (opaque) layer against it hides the element entirely.
-  assert.deepEqual(png.pixel(280, 30), [255, 255, 255, 255], 'intersect with a failed layer hides the element');
+  // `mask-composite: exclude` (XOR) of a content-box and a border-box solid
+  // mask leaves the same ring shape as the (non-reordered) subtract case --
+  // exclude is symmetric, so layer order does not matter for it.
+  assert.deepEqual(png.pixel(252, 2), [255, 0, 0, 255], 'exclude ring: padding area visible');
+  assert.deepEqual(png.pixel(280, 30), [255, 255, 255, 255], 'exclude ring: content area masked out');
+
+  // `mask-composite: intersect` with a failed (never-loaded) layer: the
+  // failed layer contributes as fully transparent, so intersecting it with
+  // the other (opaque) layer hides the element entirely, regardless of
+  // which of the two is on top.
+  assert.deepEqual(png.pixel(350, 30), [255, 255, 255, 255], 'intersect with a failed layer hides the element');
 });
