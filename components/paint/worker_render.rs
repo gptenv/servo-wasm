@@ -91,9 +91,16 @@ pub(crate) fn render_png(full_page: bool) -> Result<Vec<u8>, String> {
 enum ClipShape {
     Rect(LayoutRect),
     RoundedRect(LayoutRect, BorderRadius),
-    /// An image whose alpha masks content (`mask-image`); applied only to
-    /// stacking contexts, as a mask layer.
-    ImageMask(ImageKey, LayoutRect),
+    /// An image whose alpha (or, with `luminance`, its luminance) masks
+    /// content (`mask-image`); applied only to stacking contexts, as a mask
+    /// layer. `tile_size` may be smaller than `rect` when `mask-repeat`
+    /// tiles the image across it.
+    ImageMask {
+        key: ImageKey,
+        rect: LayoutRect,
+        tile_size: LayoutSize,
+        luminance: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -272,11 +279,25 @@ impl<'a> Renderer<'a> {
                     }
                 },
                 DisplayItem::ImageMaskClip(clip) => {
+                    let rect = clip.image_mask.rect;
+                    // Zero (WebRender's `Default`) means "one tile spanning `rect`".
+                    let tile_size = if clip.image_mask.tile_size.width > 0.0 &&
+                        clip.image_mask.tile_size.height > 0.0
+                    {
+                        clip.image_mask.tile_size
+                    } else {
+                        rect.size()
+                    };
                     self.clips.insert(
                         clip.id,
                         Clip {
                             spatial: (pipeline, clip.spatial_id.0),
-                            shape: ClipShape::ImageMask(clip.image_mask.image, clip.image_mask.rect),
+                            shape: ClipShape::ImageMask {
+                                key: clip.image_mask.image,
+                                rect,
+                                tile_size,
+                                luminance: clip.image_mask.luminance,
+                            },
                         },
                     );
                 },
@@ -537,7 +558,7 @@ impl<'a> Renderer<'a> {
                 ClipShape::RoundedRect(rect, radii) => {
                     transform * rounded_rect_of(rect, &radii).to_path(0.1)
                 },
-                ClipShape::ImageMask(..) => continue,
+                ClipShape::ImageMask { .. } => continue,
             };
             self.context.set_transform(Affine::IDENTITY);
             self.context.push_clip_layer(&path);
@@ -546,9 +567,13 @@ impl<'a> Renderer<'a> {
         pushed
     }
 
-    /// Rasterize the image mask clips of a stacking context's clip chain into
-    /// canvas-sized alpha masks.
-    fn image_masks(&mut self, chain: Option<ClipChainId>) -> Vec<Mask> {
+    /// Rasterize this stacking context's `mask-image` layers (from its clip
+    /// chain) into one canvas-sized alpha mask, combining several layers as
+    /// their union -- `mask-composite: add`, the default and the only
+    /// composite mode this renderer implements (see
+    /// `add_mask_image_clip`'s doc comment in layout for the full list of
+    /// what `mask-image` does not yet support).
+    fn image_masks(&mut self, chain: Option<ClipChainId>) -> Option<Mask> {
         let mut shapes = Vec::new();
         let mut next = chain;
         let mut guard = 0;
@@ -560,10 +585,16 @@ impl<'a> Renderer<'a> {
             for id in ids {
                 if let Some(Clip {
                     spatial,
-                    shape: ClipShape::ImageMask(key, rect),
+                    shape:
+                        ClipShape::ImageMask {
+                            key,
+                            rect,
+                            tile_size,
+                            luminance,
+                        },
                 }) = self.clips.get(id)
                 {
-                    shapes.push((*spatial, *key, *rect));
+                    shapes.push((*spatial, *key, *rect, *tile_size, *luminance));
                 }
             }
             next = *parent;
@@ -571,29 +602,71 @@ impl<'a> Renderer<'a> {
                 break;
             }
         }
+        if shapes.is_empty() {
+            return None;
+        }
         let (width, height) = (self.context.width(), self.context.height());
-        shapes
-            .into_iter()
-            .map(|(spatial, key, rect)| {
-                let transform = self.spatial_nodes.get(&spatial).copied().unwrap_or(Affine::IDENTITY);
-                let mut pixmap = Pixmap::new(width, height);
-                if let Some(image) = self.image(key, AlphaType::PremultipliedAlpha) {
-                    let settings = RenderSettings {
-                        level: vello_cpu::Level::try_detect().unwrap_or(vello_cpu::Level::baseline()),
-                        num_threads: 0,
-                    };
-                    let context = RenderContext::new_with(width, height, settings);
-                    let parent = std::mem::replace(&mut self.context, context);
-                    self.context.set_transform(transform);
-                    self.fill_image(image, rect, rect.size(), Extend::Pad);
-                    let mut context = std::mem::replace(&mut self.context, parent);
-                    context.flush();
-                    context.render(&mut pixmap, &mut self.resources);
-                }
-                // An image that has not loaded masks everything out.
-                Mask::new_alpha(&pixmap)
-            })
-            .collect()
+        let mut combined: Option<Vec<u8>> = None;
+        for (spatial, key, rect, tile_size, luminance) in shapes {
+            let transform = self.spatial_nodes.get(&spatial).copied().unwrap_or(Affine::IDENTITY);
+            let mut pixmap = Pixmap::new(width, height);
+            // An image that has not loaded (yet) masks this layer out entirely,
+            // by leaving `pixmap` fully transparent.
+            if let Some(image) = self.image(key, AlphaType::PremultipliedAlpha) {
+                let settings = RenderSettings {
+                    level: vello_cpu::Level::try_detect().unwrap_or(vello_cpu::Level::baseline()),
+                    num_threads: 0,
+                };
+                let context = RenderContext::new_with(width, height, settings);
+                let parent = std::mem::replace(&mut self.context, context);
+                self.context.set_transform(transform);
+                let extend = if tile_size.width < rect.width() || tile_size.height < rect.height() {
+                    Extend::Repeat
+                } else {
+                    Extend::Pad
+                };
+                self.fill_image(image, rect, tile_size, extend);
+                let mut context = std::mem::replace(&mut self.context, parent);
+                context.flush();
+                context.render(&mut pixmap, &mut self.resources);
+            }
+            // Per-pixel mask value: the alpha channel, or with `mask-mode:
+            // luminance`, the (alpha-premultiplied) luminance. Mirrors
+            // `vello_common::mask::Mask::new_with`, whose two constructors
+            // (`new_alpha`/`new_luminance`) only produce a standalone `Mask`
+            // each, with no way to combine several first.
+            let layer: Vec<u8> = pixmap
+                .data()
+                .iter()
+                .map(|pixel| {
+                    if !luminance {
+                        pixel.a
+                    } else {
+                        let r = f32::from(pixel.r) / 255.0;
+                        let g = f32::from(pixel.g) / 255.0;
+                        let b = f32::from(pixel.b) / 255.0;
+                        // See CSS Masking Module Level 1 § 7.10.1
+                        // <https://www.w3.org/TR/css-masking-1/#MaskValues>.
+                        let luma = r * 0.2126 + g * 0.7152 + b * 0.0722;
+                        (luma * 255.0 + 0.5) as u8
+                    }
+                })
+                .collect();
+            combined = Some(match combined {
+                None => layer,
+                // `mask-composite: add` (the default): union the masks via
+                // Porter-Duff "over", `a + b * (1 - a)` -- symmetric in `a`
+                // and `b`, so layer order does not matter here.
+                Some(mut acc) => {
+                    for (a, b) in acc.iter_mut().zip(layer) {
+                        let (a32, b32) = (u16::from(*a), u16::from(b));
+                        *a = (a32 + (255 - a32) * b32 / 255) as u8;
+                    }
+                    acc
+                },
+            });
+        }
+        combined.map(|data| Mask::from_parts(data, width, height))
     }
 
     fn image(&mut self, key: ImageKey, alpha_type: AlphaType) -> Option<Arc<Pixmap>> {
@@ -844,7 +917,7 @@ impl<'a> Renderer<'a> {
         blend: MixBlendMode,
         filters: &[FilterOp],
         transform: Affine,
-        masks: Vec<Mask>,
+        mask: Option<Mask>,
     ) -> StackingEntry {
         let mut opacity = 1.0f32;
         let mut matrix: Option<ColorMatrix> = None;
@@ -898,7 +971,7 @@ impl<'a> Renderer<'a> {
             self.context.push_blend_layer(mix);
             layers += 1;
         }
-        for mask in masks {
+        if let Some(mask) = mask {
             self.context.push_mask_layer(mask);
             layers += 1;
         }

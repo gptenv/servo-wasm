@@ -530,15 +530,20 @@ impl DisplayListBuilder<'_> {
         true
     }
 
-    /// Apply `mask-image` to a stacking context: the topmost layer that is a
-    /// loaded image becomes a WebRender image mask clip (its alpha masks the
-    /// element), sized and positioned by `mask-size`, `mask-position` and
-    /// `mask-origin` like a background layer. Returns the stacking context's
-    /// clip chain with the mask added.
+    /// Apply `mask-image` to a stacking context: every layer that is a loaded
+    /// raster image becomes a WebRender image mask clip (`mask-size`,
+    /// `mask-position`, `mask-origin` and `mask-repeat` all apply, like a
+    /// background layer), and `mask-mode: luminance` is carried through. All
+    /// resolved layers are chained onto the same clip chain, which the Worker
+    /// renderer composites together as `mask-composite: add` (their union) --
+    /// the default and by far the most common value of that property.
+    /// Returns the stacking context's clip chain with the mask(s) added.
     ///
-    /// TODO: gradient masks, repeated mask tiles, several composited layers,
-    /// `mask-mode: luminance` and SVG `<mask>` references are not supported;
-    /// such masks leave the element unmasked.
+    /// TODO: gradient masks (`mask-image: linear-gradient(...)`), explicit
+    /// `mask-composite` values other than the default `add`, and SVG `<mask>`
+    /// element references (`mask-image: url(#id)`) are not supported; layers
+    /// using them are skipped, which for a single-layer mask leaves the
+    /// element unmasked.
     fn add_mask_image_clip(
         &mut self,
         fragment: &Arc<BoxFragment>,
@@ -546,8 +551,9 @@ impl DisplayListBuilder<'_> {
         spatial_id: SpatialId,
         clip_chain_id: Option<ClipChainId>,
     ) -> Option<ClipChainId> {
+        use style::computed_values::mask_mode::single_value::T as MaskMode;
         use style::computed_values::mask_origin::single_value::T as MaskOrigin;
-        use style::values::specified::background::BackgroundRepeatKeyword;
+        use style::values::specified::background::BackgroundRepeat as RepeatXY;
 
         let style = fragment.style();
         if !style.has_mask_image() {
@@ -557,7 +563,10 @@ impl DisplayListBuilder<'_> {
         let with_style = fragment.with_style();
         let fragment_builder = BuilderForBoxFragment::new(&with_style, containing_block_origin);
         let node = fragment.base.tag.map(|tag| tag.node);
+        let mut mask_ids = Vec::new();
         for (index, image) in svg.mask_image.0.iter().enumerate() {
+            // Not yet supported: a gradient mask, or an SVG `<mask>`
+            // reference. Also skips a raster image that has not loaded yet.
             let Ok(ResolvedImage::Image { image, size }) =
                 self.image_resolver.resolve_image(node, image)
             else {
@@ -574,11 +583,12 @@ impl DisplayListBuilder<'_> {
                 positioning_area.size(),
                 &natural_sizes,
             ) else {
-                return clip_chain_id;
+                continue;
             };
+            let RepeatXY(repeat_x, repeat_y) = *background::get_cyclic(&svg.mask_repeat.0, index);
             let x = background::layout_1d(
                 &mut tile_size.width,
-                BackgroundRepeatKeyword::NoRepeat,
+                repeat_x,
                 background::get_cyclic(&svg.mask_position_x.0, index),
                 0.,
                 positioning_area.width(),
@@ -586,7 +596,7 @@ impl DisplayListBuilder<'_> {
             );
             let y = background::layout_1d(
                 &mut tile_size.height,
-                BackgroundRepeatKeyword::NoRepeat,
+                repeat_y,
                 background::get_cyclic(&svg.mask_position_y.0, index),
                 0.,
                 positioning_area.height(),
@@ -594,7 +604,7 @@ impl DisplayListBuilder<'_> {
             );
             let rect = LayoutRect::from_origin_and_size(
                 positioning_area.min + LayoutVector2D::new(x.bounds_origin, y.bounds_origin),
-                tile_size,
+                LayoutSize::new(x.bounds_size, y.bounds_size),
             );
             let scale = self.device_pixel_ratio.get();
             let device_size: DeviceIntSize =
@@ -605,18 +615,27 @@ impl DisplayListBuilder<'_> {
             else {
                 continue;
             };
+            let luminance = matches!(
+                background::get_cyclic(&svg.mask_mode.0, index),
+                MaskMode::Luminance
+            );
             let mask = self.wr().define_clip_image_mask(
                 spatial_id,
                 wr::ImageMask {
                     image: image_key,
                     rect,
+                    tile_size,
+                    luminance,
                 },
                 &[],
                 wr::FillRule::Nonzero,
             );
-            return Some(self.wr().define_clip_chain(clip_chain_id, [mask]));
+            mask_ids.push(mask);
         }
-        clip_chain_id
+        if mask_ids.is_empty() {
+            return clip_chain_id;
+        }
+        Some(self.wr().define_clip_chain(clip_chain_id, mask_ids))
     }
 
     fn common_properties(

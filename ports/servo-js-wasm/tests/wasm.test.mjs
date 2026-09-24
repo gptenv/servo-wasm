@@ -1003,3 +1003,64 @@ test('screenshots apply mask-image (icons drawn as masked colored boxes)', async
   assert.deepEqual(png.pixel(135, 30), [255, 255, 255, 255], '-webkit-mask shorthand, masked part');
   assert.deepEqual(png.pixel(112, 30), [255, 255, 255, 255], 'outside the mask tile is masked out');
 });
+
+test('screenshots tile a repeating mask-image and blend luminance and multiple mask layers', async () => {
+  // A 10x10 tile, opaque (black) in its left half only.
+  const stripeSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">' +
+    '<rect width="5" height="10" fill="#000"/></svg>';
+  // A 20x20 box, opaque (mid-gray, so alpha and luminance masking differ) in
+  // its top or bottom half.
+  const topSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">' +
+    '<rect width="20" height="10" fill="#808080"/></svg>';
+  const bottomSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">' +
+    '<rect y="10" width="20" height="10" fill="#808080"/></svg>';
+  const svgByPath = { 'stripe.svg': stripeSvg, 'top.svg': topSvg, 'bottom.svg': bottomSvg };
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 200,
+    height: 100,
+    fetchImpl: async (url) => {
+      const name = url.split('/').pop();
+      return name in svgByPath
+        ? new Response(svgByPath[name], { headers: { 'content-type': 'image/svg+xml' } })
+        : new Response('{}');
+    },
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <div style="position:absolute;left:0;top:0;width:40px;height:20px;background:rgb(255, 0, 0);
+      mask-image:url(stripe.svg);mask-size:10px 10px;mask-repeat:repeat"></div>
+    <div style="position:absolute;left:60px;top:0;width:20px;height:20px;background:rgb(255, 0, 0);
+      mask-image:url(top.svg);mask-mode:alpha"></div>
+    <div style="position:absolute;left:100px;top:0;width:20px;height:20px;background:rgb(255, 0, 0);
+      mask-image:url(top.svg);mask-mode:luminance"></div>
+    <div style="position:absolute;left:140px;top:0;width:20px;height:20px;background:rgb(255, 0, 0);
+      mask-image:url(top.svg), url(bottom.svg)"></div>
+    </body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const png = decodePng(await runtime.screenshot());
+  // mask-repeat: repeat, three tiles across a 40px-wide box.
+  assert.deepEqual(png.pixel(2, 10), [255, 0, 0, 255], 'first tile, visible half');
+  assert.deepEqual(png.pixel(7, 10), [255, 255, 255, 255], 'first tile, masked half');
+  assert.deepEqual(png.pixel(22, 10), [255, 0, 0, 255], 'third tile, visible half (repeat wrapped)');
+  assert.deepEqual(png.pixel(27, 10), [255, 255, 255, 255], 'third tile, masked half (repeat wrapped)');
+
+  // mask-mode: alpha (the default): the gray mask pixel is fully opaque, so
+  // it fully unmasks the red box regardless of its mid-gray color.
+  assert.deepEqual(png.pixel(70, 5), [255, 0, 0, 255], 'mask-mode: alpha, top half fully visible');
+  assert.deepEqual(png.pixel(70, 15), [255, 255, 255, 255], 'mask-mode: alpha, bottom half masked out');
+
+  // mask-mode: luminance: the same gray pixel's luminance (~0.5) partially
+  // unmasks the red box, blending it toward the white background -- unlike
+  // the fully-opaque result above.
+  const [r, g, b, a] = png.pixel(110, 5);
+  assert.deepEqual([r, a], [255, 255], 'mask-mode: luminance, red channel unaffected over white');
+  assert.ok(g > 90 && g < 160 && g === b, `mask-mode: luminance should partially unmask (got rgba ${r},${g},${b},${a})`);
+  assert.deepEqual(png.pixel(110, 15), [255, 255, 255, 255], 'mask-mode: luminance, bottom half still masked out');
+
+  // Two mask-image layers (top.svg, bottom.svg), each opaque in a different
+  // half. `mask-composite: add` (the default) unions them, so both halves
+  // are visible -- unlike naive intersection, which would mask out the
+  // entire box since neither layer alone covers it.
+  assert.deepEqual(png.pixel(150, 5), [255, 0, 0, 255], 'unioned mask layers, top half visible');
+  assert.deepEqual(png.pixel(150, 15), [255, 0, 0, 255], 'unioned mask layers, bottom half visible');
+});

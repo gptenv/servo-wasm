@@ -33,7 +33,7 @@ pub(super) struct BackgroundLayer {
 pub(super) struct Layout1DResult {
     repeat: bool,
     pub bounds_origin: f32,
-    bounds_size: f32,
+    pub bounds_size: f32,
     tile_spacing: f32,
 }
 
