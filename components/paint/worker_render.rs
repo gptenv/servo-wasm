@@ -13,8 +13,11 @@
 //! stacking-context opacity, blend modes and filters, and iframes. 3D
 //! transforms are drawn flattened.
 
+use std::cell::RefCell;
 use std::io::Write;
 use std::sync::Arc;
+
+use flate2::{Compress, Compression, FlushCompress};
 
 use paint_api::display_list::{ScrollTree, SpatialTreeNodeInfo};
 use vello_common::filter_effects::{EdgeMode, Filter, FilterFunction, FilterPrimitive};
@@ -57,6 +60,157 @@ const MAX_FULL_PAGE_PIXELS: u32 = 8 * 1024 * 1024;
 /// the same allocation sizes on every pass, so `memory.grow` stops growing
 /// after the first strip instead of drifting with page content.
 const STRIP_HEIGHT: u32 = 1024;
+
+struct PngStream {
+    width: u32,
+    height: u32,
+    next_y: u32,
+    scale: f32,
+    root: PipelineId,
+    full_page: bool,
+    compressor: Compress,
+}
+
+thread_local! {
+    static PNG_STREAM: RefCell<Option<PngStream>> = const { RefCell::new(None) };
+}
+
+/// Start a pull-based PNG capture. The returned bytes contain the PNG
+/// signature and IHDR; subsequent calls return IDAT chunks for one strip.
+pub(crate) fn stream_png_begin(full_page: bool) -> Result<Vec<u8>, String> {
+    let (root, width, height, scale) = worker_frame::with_display_lists(|lists| {
+        let root = worker_frame::root_pipeline(lists).ok_or("No page has been rendered yet")?;
+        let info = &lists[&root].info;
+        let scale = info.viewport_details.hidpi_scale_factor.get();
+        let mut size = info.viewport_details.size;
+        if full_page {
+            if let Some((_, content)) = scroll_nodes(&info.scroll_tree).get(&1) {
+                size.width = size.width.max(content.width);
+                size.height = size.height.max(content.height);
+            }
+        }
+        let size = size * scale;
+        let width = (size.width.ceil() as u32).clamp(1, MAX_DIMENSION);
+        let mut height = (size.height.ceil() as u32).clamp(1, MAX_DIMENSION);
+        if full_page {
+            height = height.min((MAX_FULL_PAGE_PIXELS / width).max(1));
+        }
+        Ok::<_, String>((root, width, height, scale))
+    })?;
+
+    PNG_STREAM.with(|slot| {
+        *slot.borrow_mut() = Some(PngStream {
+            width,
+            height,
+            next_y: 0,
+            scale,
+            root,
+            full_page,
+            compressor: Compress::new(Compression::default(), true),
+        });
+    });
+
+    let mut output = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+    append_png_chunk(&mut output, *b"IHDR", &ihdr);
+    Ok(output)
+}
+
+/// Render and encode the next strip as one IDAT chunk. `None` means all rows
+/// have been emitted; call [`stream_png_finish`] to terminate the PNG stream.
+pub(crate) fn stream_png_next() -> Result<Option<Vec<u8>>, String> {
+    PNG_STREAM.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let state = slot.as_mut().ok_or("PNG stream was not started")?;
+        if state.next_y >= state.height {
+            return Ok(None);
+        }
+        let strip_y = state.next_y;
+        let strip_height = STRIP_HEIGHT.min(state.height - strip_y);
+        let (width, root, scale, full_page) =
+            (state.width, state.root, state.scale, state.full_page);
+        let raw = worker_frame::with_display_lists(|lists| {
+            let base = Affine::translate((0.0, -(strip_y as f64)))
+                * Affine::scale(scale as f64);
+            worker_frame::with_resources(|resources| {
+                let mut renderer =
+                    Renderer::new(width as u16, strip_height as u16, lists, resources);
+                renderer.full_page = full_page;
+                renderer.draw_pipeline(root, base, 0);
+                let mut pixmap = renderer.finish();
+                transform_inplace(
+                    pixmap.data_as_u8_slice_mut(),
+                    Multiply::UnMultiply,
+                    false,
+                    false,
+                );
+                let pixels = pixmap.data_as_u8_slice();
+                let row_bytes = width as usize * 4;
+                let mut filtered = Vec::with_capacity((row_bytes + 1) * strip_height as usize);
+                for row in pixels.chunks_exact(row_bytes) {
+                    filtered.push(0);
+                    filtered.extend_from_slice(row);
+                }
+                filtered
+            })
+        });
+
+        let mut compressed = vec![0; raw.len() + raw.len() / 100 + 1024];
+        let before = state.compressor.total_out();
+        state
+            .compressor
+            .compress(&raw, &mut compressed, FlushCompress::None)
+            .map_err(|error| format!("PNG compression failed: {error}"))?;
+        let written = (state.compressor.total_out() - before) as usize;
+        compressed.truncate(written);
+        state.next_y += strip_height;
+        let mut output = Vec::with_capacity(compressed.len() + 12);
+        append_png_chunk(&mut output, *b"IDAT", &compressed);
+        Ok(Some(output))
+    })
+}
+
+/// Finish the zlib stream and PNG container after all strips were pulled.
+pub(crate) fn stream_png_finish() -> Result<Vec<u8>, String> {
+    PNG_STREAM.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let mut state = slot.take().ok_or("PNG stream was not started")?;
+        if state.next_y < state.height {
+            *slot = Some(state);
+            return Err("PNG stream still has unrendered rows".to_owned());
+        }
+        let mut compressed = vec![0; 256 * 1024];
+        let before = state.compressor.total_out();
+        state
+            .compressor
+            .compress(&[], &mut compressed, FlushCompress::Finish)
+            .map_err(|error| format!("PNG compression finish failed: {error}"))?;
+        compressed.truncate((state.compressor.total_out() - before) as usize);
+        let mut output = Vec::with_capacity(compressed.len() + 24);
+        if !compressed.is_empty() {
+            append_png_chunk(&mut output, *b"IDAT", &compressed);
+        }
+        append_png_chunk(&mut output, *b"IEND", &[]);
+        Ok(output)
+    })
+}
+
+fn append_png_chunk(output: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) {
+    output.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    output.extend_from_slice(&kind);
+    output.extend_from_slice(data);
+    let mut crc = !0u32;
+    for byte in kind.iter().chain(data) {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb8_8320 & (0u32.wrapping_sub(crc & 1)));
+        }
+    }
+    output.extend_from_slice(&(!crc).to_be_bytes());
+}
 
 /// Render the latest top-level document to a PNG: the viewport, or with
 /// `full_page` the whole document from its top (height capped for memory).

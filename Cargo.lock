@@ -9194,6 +9194,7 @@ dependencies = [
  "crossbeam-channel",
  "dpi",
  "euclid",
+ "flate2",
  "gleam",
  "image",
  "log",

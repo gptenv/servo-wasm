@@ -291,6 +291,21 @@ impl Paint {
         crate::worker_render::render_png(full_page)
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub fn worker_stream_png_begin(&self, full_page: bool) -> Result<Vec<u8>, String> {
+        crate::worker_render::stream_png_begin(full_page)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn worker_stream_png_next(&self) -> Result<Option<Vec<u8>>, String> {
+        crate::worker_render::stream_png_next()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn worker_stream_png_finish(&self) -> Result<Vec<u8>, String> {
+        crate::worker_render::stream_png_finish()
+    }
+
     pub fn register_rendering_context(
         &mut self,
         rendering_context: Rc<dyn RenderingContext>,

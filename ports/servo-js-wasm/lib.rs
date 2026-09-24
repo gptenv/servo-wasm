@@ -183,6 +183,61 @@ pub extern "C" fn servo_worker_render_png(flags: u32) -> u32 {
     }
 }
 
+/// Begin a pull-based PNG capture. Each call leaves only its current chunk in
+/// the result buffer; the host must pull every strip before requesting finish.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_stream_png_begin(flags: u32) -> u32 {
+    let result = BROWSER.with(|browser| match browser.borrow().as_ref() {
+        Some(browser) => browser.servo.worker_stream_png_begin(flags & 1 != 0),
+        None => Err("Servo has not been bootstrapped".to_owned()),
+    });
+    store_png_stream_result(result)
+}
+
+/// Pull the next strip's IDAT chunk. Returns zero when all image rows have
+/// been emitted or on error; call `servo_worker_stream_png_finish` either way.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_stream_png_next() -> u32 {
+    let result = BROWSER.with(|browser| match browser.borrow().as_ref() {
+        Some(browser) => browser.servo.worker_stream_png_next(),
+        None => Err("Servo has not been bootstrapped".to_owned()),
+    });
+    match result {
+        Ok(Some(bytes)) => store_png_stream_result(Ok(bytes)),
+        Ok(None) => {
+            LAST_FRAME_PNG.with(|slot| slot.borrow_mut().clear());
+            0
+        },
+        Err(error) => store_png_stream_result(Err(error)),
+    }
+}
+
+/// Finish the compressed stream and write the PNG IEND chunk.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_stream_png_finish() -> u32 {
+    let result = BROWSER.with(|browser| match browser.borrow().as_ref() {
+        Some(browser) => browser.servo.worker_stream_png_finish(),
+        None => Err("Servo has not been bootstrapped".to_owned()),
+    });
+    store_png_stream_result(result)
+}
+
+fn store_png_stream_result(result: Result<Vec<u8>, String>) -> u32 {
+    match result {
+        Ok(bytes) => LAST_FRAME_PNG.with(|slot| {
+            let len = bytes.len() as u32;
+            *slot.borrow_mut() = bytes;
+            len
+        }),
+        Err(error) => {
+            LAST_FRAME_PNG.with(|slot| slot.borrow_mut().clear());
+            let message = format!("Worker PNG stream failed: {error}");
+            unsafe { host_log_error(message.as_ptr(), message.len()) };
+            0
+        },
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn servo_worker_frame_png_ptr() -> *const u8 {
     LAST_FRAME_PNG.with(|slot| slot.borrow().as_ptr())

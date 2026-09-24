@@ -106,12 +106,22 @@ of the current page: the viewport at its current scroll position, or with
 at 8 Mpixels to fit the 128 MB isolate). It asks the page to update its rendering
 once (layout otherwise stays idle on the Worker), pumps until settled, and repeats
 while a frame starts new image, font or canvas loads (up to `maxPasses`, default 4),
-then rasterizes on the CPU. Underlying exports: `servo_worker_request_frame()`,
-`servo_worker_frame_resource_generation()`, `servo_worker_render_png(flags)` (bit 0:
-full page; returns the PNG length, or zero with the reason logged) and
-`servo_worker_frame_png_ptr/len()`. `servo_worker_frame_item_count()` and
+then rasterizes on the CPU. The legacy `servo_worker_render_png(flags)` export
+(bit 0: full page) returns a complete PNG in the frame result buffer.
+`servo_worker_request_frame()`, `servo_worker_frame_resource_generation()`,
+`servo_worker_frame_png_ptr/len()`, `servo_worker_frame_item_count()` and
 `servo_worker_frame_describe()` (a text dump of the captured spatial trees and
 scroll offsets, in the same result buffer) are diagnostics.
+
+For large captures, `await runtime.screenshotStream(options)` returns a PNG
+`ReadableStream`. It settles the page before returning, then renders and
+compresses one 1024-pixel strip on each pull. Passing the stream directly to
+`new Response(stream)` avoids retaining the full PNG in either the WASM heap or
+the JavaScript heap. `screenshot()` remains available and collects this stream
+into a `Uint8Array` for compatibility. The stream exports are
+`servo_worker_stream_png_begin(flags)`, `servo_worker_stream_png_next()`, and
+`servo_worker_stream_png_finish()`; the PNG header and each strip are exposed
+through `servo_worker_frame_png_ptr/len()` one chunk at a time.
 
 The renderer interprets Servo's WebRender display list with vello_cpu: 2D
 transforms, scroll offsets, rect and rounded-rect clips, backgrounds, text, images

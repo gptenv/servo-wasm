@@ -106,7 +106,7 @@ async function screenshot() {
     </body>`, { url: 'https://workerd.example/' });
   await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
   const started = Date.now();
-  const png = await runtime.screenshot();
+  const png = await runtime.screenshotStream();
   return new Response(png, { headers: {
     'content-type': 'image/png', 'x-render-ms': String(Date.now() - started) } });
 }

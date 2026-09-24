@@ -159,6 +159,7 @@ class ServoWorkerRuntime {
   #settling = false;
   #trap = null;
   #evaluationPending = false;
+  #screenshotStreamActive = false;
 
   constructor(instance, fetchImpl, log, maxResponseBytes, maxSubrequests) {
     // A WASM trap does not unwind Rust state (held RefCell borrows, partial
@@ -675,7 +676,17 @@ class ServoWorkerRuntime {
    * from the top (height capped to keep memory within Worker limits). Runs "update the rendering" once, pumps until settled, then
    * rasterizes on the CPU. Throws if the page has not produced a rendering.
    */
-  async screenshot({ maxDurationMs = 5_000, maxPasses = 4, fullPage = false, networkIdleMs = 500 } = {}) {
+  async screenshot(options = {}) {
+    const response = await new Response(await this.screenshotStream(options)).arrayBuffer();
+    return new Uint8Array(response);
+  }
+
+  /**
+   * Render the current page as a pull-based PNG ReadableStream. Only one
+   * 1024-pixel strip is rendered and compressed per pull, so callers can pass
+   * this directly as a Worker Response body without retaining the full PNG.
+   */
+  async screenshotStream({ maxDurationMs = 5_000, maxPasses = 4, fullPage = false, networkIdleMs = 500 } = {}) {
     // A frame can start loads (CSS background images, web fonts, canvas
     // frames) that only a later frame shows; repeat until a frame adds none.
     const exports = this.instance.exports;
@@ -704,10 +715,40 @@ class ServoWorkerRuntime {
         quietPasses = 0;
       }
     }
-    const length = this.instance.exports.servo_worker_render_png(fullPage ? 1 : 0);
-    if (!length) throw new Error('Servo could not render the page (see the host log)');
-    const ptr = this.instance.exports.servo_worker_frame_png_ptr();
-    return new Uint8Array(this.instance.exports.memory.buffer, ptr, length).slice();
+    if (this.#screenshotStreamActive) {
+      throw new Error('A screenshot stream is already active on this runtime');
+    }
+    const length = exports.servo_worker_stream_png_begin(fullPage ? 1 : 0);
+    if (!length) throw new Error('Servo could not start the PNG stream (see the host log)');
+    this.#screenshotStreamActive = true;
+    const copyResult = (length) => {
+      const ptr = exports.servo_worker_frame_png_ptr();
+      return new Uint8Array(exports.memory.buffer, ptr, length).slice();
+    };
+    return new ReadableStream({
+      start(controller) {
+        controller.enqueue(copyResult(length));
+      },
+      pull(controller) {
+        const length = exports.servo_worker_stream_png_next();
+        if (length) {
+          controller.enqueue(copyResult(length));
+          return;
+        }
+        const finishLength = exports.servo_worker_stream_png_finish();
+        if (!finishLength) {
+          this.#screenshotStreamActive = false;
+          controller.error(new Error('Servo could not finish the PNG stream (see the host log)'));
+          return;
+        }
+        controller.enqueue(copyResult(finishLength));
+        this.#screenshotStreamActive = false;
+        controller.close();
+      },
+      cancel: () => {
+        this.#screenshotStreamActive = false;
+      },
+    });
   }
 
   /** The WebAssembly.RuntimeError that made this runtime unusable, if any. */

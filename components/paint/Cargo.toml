@@ -65,6 +65,7 @@ surfman = { workspace = true }
 # display lists on the CPU with the same vello_cpu backend as canvas 2D.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 bytemuck = { workspace = true }
+flate2 = { workspace = true }
 fonts_traits = { workspace = true }
 pixels = { workspace = true }
 vello_cpu = { workspace = true }
