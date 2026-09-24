@@ -13,16 +13,16 @@
 //! stacking-context opacity, blend modes and filters, and iframes. 3D
 //! transforms are drawn flattened.
 
+use std::io::Write;
 use std::sync::Arc;
 
-use euclid::default::Size2D;
 use paint_api::display_list::{ScrollTree, SpatialTreeNodeInfo};
 use vello_common::filter_effects::{EdgeMode, Filter, FilterFunction, FilterPrimitive};
 use vello_cpu::kurbo::{self, Affine, BezPath, Cap, Rect, RoundedRect, RoundedRectRadii, Shape, Stroke};
 use vello_cpu::peniko::{
     self, BlendMode, Color, ColorStop, Compose, Extend, Gradient, ImageQuality, ImageSampler, Mix,
 };
-use pixels::{EncodedImageType, Snapshot, SnapshotAlphaMode, SnapshotPixelFormat};
+use pixels::{Multiply, transform_inplace};
 use rustc_hash::FxHashMap;
 use vello_cpu::{Glyph, Mask, Pixmap, RenderContext, RenderSettings, Resources};
 use webrender_api::units::{LayoutRect, LayoutSize, LayoutTransform};
@@ -39,14 +39,29 @@ use crate::worker_frame::{self, WorkerResources};
 const MAX_DIMENSION: u32 = 16_384;
 /// Iframes nested deeper than this are not drawn.
 const MAX_IFRAME_DEPTH: usize = 8;
-/// Largest full-page capture in pixels (32 MiB as RGBA); Worker isolates have
-/// 128 MB of memory in total.
+/// Largest full-page capture in pixels (32 MiB as RGBA); this now bounds only
+/// output size and encoding time, not peak memory (see [`STRIP_HEIGHT`]).
 const MAX_FULL_PAGE_PIXELS: u32 = 8 * 1024 * 1024;
+
+/// Device-pixel height of each render pass. A capture taller than one strip
+/// is rendered and PNG-encoded strip by strip, each with its own fresh
+/// [`Renderer`] (spatial tree, clip tables and, importantly, image cache).
+/// Without this, a capture sized to the whole document would decode and
+/// cache every image the page references and give `vello_cpu` a working set
+/// proportional to total document content, so peak memory would grow with
+/// page length and image count instead of staying roughly flat like a
+/// single-viewport capture. The tradeoff: an effect that samples pixels
+/// across a strip boundary (a blur, a box/text shadow, an SVG filter) can
+/// show a faint seam there, since neighbouring strips are rendered with no
+/// knowledge of each other. Fixed-size strips also mean the allocator sees
+/// the same allocation sizes on every pass, so `memory.grow` stops growing
+/// after the first strip instead of drifting with page content.
+const STRIP_HEIGHT: u32 = 1024;
 
 /// Render the latest top-level document to a PNG: the viewport, or with
 /// `full_page` the whole document from its top (height capped for memory).
 pub(crate) fn render_png(full_page: bool) -> Result<Vec<u8>, String> {
-    let (width, height, pixmap) = worker_frame::with_display_lists(|lists| {
+    worker_frame::with_display_lists(|lists| {
         let root = worker_frame::root_pipeline(lists).ok_or("No page has been rendered yet")?;
         let info = &lists[&root].info;
         let scale = info.viewport_details.hidpi_scale_factor.get();
@@ -63,28 +78,48 @@ pub(crate) fn render_png(full_page: bool) -> Result<Vec<u8>, String> {
         if full_page {
             height = height.min((MAX_FULL_PAGE_PIXELS / width).max(1));
         }
-        let pixmap = worker_frame::with_resources(|resources| {
-            let mut renderer = Renderer::new(width as u16, height as u16, lists, resources);
-            renderer.full_page = full_page;
-            renderer.draw_pipeline(root, Affine::scale(scale as f64), 0);
-            renderer.finish()
-        });
-        Ok::<_, String>((width, height, pixmap))
-    })?;
 
-    let mut snapshot = Snapshot::from_vec(
-        Size2D::new(width, height),
-        SnapshotPixelFormat::RGBA,
-        SnapshotAlphaMode::Transparent {
-            premultiplied: true,
-        },
-        pixmap.data_as_u8_slice().to_vec(),
-    );
-    let mut png = Vec::new();
-    snapshot
-        .encode_for_mime_type(&EncodedImageType::Png, None, &mut png)
-        .map_err(|error| format!("PNG encoding failed: {error:?}"))?;
-    Ok(png)
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder
+                .write_header()
+                .map_err(|error| format!("PNG header failed: {error:?}"))?;
+            let mut stream = writer
+                .stream_writer()
+                .map_err(|error| format!("PNG stream failed: {error:?}"))?;
+
+            let mut strip_y = 0u32;
+            while strip_y < height {
+                let strip_height = STRIP_HEIGHT.min(height - strip_y);
+                let base =
+                    Affine::translate((0.0, -(strip_y as f64))) * Affine::scale(scale as f64);
+                let mut pixmap = worker_frame::with_resources(|resources| {
+                    let mut renderer =
+                        Renderer::new(width as u16, strip_height as u16, lists, resources);
+                    renderer.full_page = full_page;
+                    renderer.draw_pipeline(root, base, 0);
+                    renderer.finish()
+                });
+                transform_inplace(
+                    pixmap.data_as_u8_slice_mut(),
+                    Multiply::UnMultiply,
+                    false,
+                    false,
+                );
+                stream
+                    .write_all(pixmap.data_as_u8_slice())
+                    .map_err(|error| format!("PNG write failed: {error}"))?;
+                strip_y += strip_height;
+            }
+            stream
+                .finish()
+                .map_err(|error| format!("PNG finish failed: {error:?}"))?;
+        }
+        Ok(png)
+    })
 }
 
 #[derive(Clone)]

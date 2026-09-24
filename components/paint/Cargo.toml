@@ -35,6 +35,7 @@ log = { workspace = true }
 malloc_size_of = { workspace = true }
 media = { workspace = true }
 paint_api = { workspace = true }
+png = { workspace = true }
 profile_traits = { workspace = true }
 rayon = { workspace = true }
 rustc-hash = { workspace = true }

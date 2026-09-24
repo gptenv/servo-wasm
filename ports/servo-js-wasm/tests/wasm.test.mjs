@@ -976,6 +976,34 @@ test('screenshots draw shadows and filters, follow scrolling, and capture full p
   assert.deepEqual(full.pixel(150, 1500), [0, 128, 0, 255], 'full page reaches the bottom');
 });
 
+test('full-page screenshots stitch content across a render-strip boundary seamlessly', async () => {
+  // Full-page captures are rendered in fixed-height device strips (each with
+  // its own renderer, to bound memory) and joined into one PNG. A box tall
+  // enough to straddle a strip boundary must still come out as one unbroken
+  // block of color, with no seam, gap, or duplicated/missing row at the join.
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 100,
+    height: 200,
+    fetchImpl: async () => new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <div style="position:absolute;left:0;top:950px;width:100px;height:150px;background:rgb(255, 128, 0)"></div>
+    <div style="position:absolute;left:0;top:1400px;width:100px;height:10px;background:rgb(0, 0, 0)"></div>
+    </body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const full = decodePng(await runtime.screenshot({ fullPage: true }));
+  assert.equal(full.width, 100);
+  assert.equal(full.height, 1410);
+  // The box spans device rows 950..1099, straddling the strip boundary
+  // (wherever a multiple of the internal strip height falls in that range).
+  assert.deepEqual(full.pixel(50, 949), [255, 255, 255, 255], 'row above the box is background');
+  for (const y of [950, 1000, 1023, 1024, 1025, 1050, 1099]) {
+    assert.deepEqual(full.pixel(50, y), [255, 128, 0, 255], `row ${y} is inside the box, unbroken across strips`);
+  }
+  assert.deepEqual(full.pixel(50, 1150), [255, 255, 255, 255], 'row below the box is background again');
+});
+
 test('screenshots apply mask-image (icons drawn as masked colored boxes)', async () => {
   // Left half opaque, right half transparent.
   const maskSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">' +
