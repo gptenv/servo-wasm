@@ -86,6 +86,12 @@ Concurrent settling calls are rejected. This is a quiescence heuristic, not a
 browser load event or proof that no future page work is possible. It cannot stop
 an infinite page script inside a synchronous WASM call.
 
+With `networkIdleMs`, pending or recurring timers alone no longer keep the page
+busy: once no fetch has been queued or in flight for that long, it returns
+`{settled:true, timersPending:true}`. Use it for real sites with polling,
+carousels or analytics timers, which otherwise never settle. `screenshot()`
+uses `networkIdleMs: 500` by default.
+
 `reset()` cancels network work, retires callbacks, clears results and queues
 `about:blank`; callers must pump the reset or queue a replacement load. It is not
 a secure erase of all storage or a full engine destroy. A fresh WASM instance is

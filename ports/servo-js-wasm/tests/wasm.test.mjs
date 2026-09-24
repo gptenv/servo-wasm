@@ -569,6 +569,17 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   for (let i = 0; i < 10; i++) await turn();
   assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
 
+  // A recurring timer never lets a strict settle finish, but with the network
+  // idle it counts as settled under networkIdleMs.
+  assert.equal(runtime.evaluatePage('window.poll = setInterval(() => {}, 50); 1'), true);
+  for (let i = 0; i < 5; i++) await turn();
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 600 })).settled, false);
+  const idleStatus = await runtime.pumpUntilSettled({ maxDurationMs: 3_000, networkIdleMs: 200 });
+  assert.equal(idleStatus.settled, true, JSON.stringify(idleStatus));
+  assert.equal(idleStatus.timersPending, true);
+  assert.equal(runtime.evaluatePage('clearInterval(window.poll); 1'), true);
+  for (let i = 0; i < 5; i++) await turn();
+
   const heapBeforeRepeatLoads = runtime.instance.exports.memory.buffer.byteLength;
   for (let page = 0; page < 4; page++) {
     assert.equal(runtime.loadPage(`https://example.test/repeat-${page}`), true);

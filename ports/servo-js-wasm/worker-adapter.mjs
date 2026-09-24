@@ -524,11 +524,20 @@ class ServoWorkerRuntime {
     }
   }
 
-  /** Pump queued work and wait for Worker fetches and browser timers to progress. */
-  async pumpUntilSettled({ maxDurationMs = 10_000, maxTurns = 1_000, until } = {}) {
+  /**
+   * Pump queued work and wait for Worker fetches and browser timers to progress.
+   * With `networkIdleMs`, pending timers alone do not keep the page busy: once
+   * no fetch has been queued or in flight for that long, the page counts as
+   * settled (`{ settled: true, timersPending: true }`). Pages with recurring
+   * timers (carousels, analytics, polling) otherwise never settle.
+   */
+  async pumpUntilSettled({ maxDurationMs = 10_000, maxTurns = 1_000, until, networkIdleMs } = {}) {
     if (!Number.isFinite(maxDurationMs) || maxDurationMs < 0 ||
         !Number.isSafeInteger(maxTurns) || maxTurns < 0) {
       throw new RangeError('Pump budgets must be finite and non-negative; maxTurns must be an integer');
+    }
+    if (networkIdleMs !== undefined && (!Number.isFinite(networkIdleMs) || networkIdleMs < 0)) {
+      throw new RangeError('networkIdleMs must be finite and non-negative');
     }
     if (until !== undefined && typeof until !== 'function') {
       throw new TypeError('until must be a synchronous predicate');
@@ -536,16 +545,17 @@ class ServoWorkerRuntime {
     if (this.#settling) throw new Error('A Servo settling operation is already running');
     this.#settling = true;
     try {
-      return await this.#pumpUntilSettled(maxDurationMs, maxTurns, until);
+      return await this.#pumpUntilSettled(maxDurationMs, maxTurns, until, networkIdleMs);
     } finally {
       this.#settling = false;
     }
   }
 
-  async #pumpUntilSettled(maxDurationMs, maxTurns, until) {
+  async #pumpUntilSettled(maxDurationMs, maxTurns, until, networkIdleMs) {
     const startedAt = performance.now();
     let turns = 0;
     let quietTurns = 0;
+    let networkIdleSince = null;
     while (turns < maxTurns && performance.now() - startedAt < maxDurationMs) {
       turns++;
       const activityVersion = this.#activityVersion;
@@ -554,6 +564,16 @@ class ServoWorkerRuntime {
 
       if (progressed || this.#activityVersion !== activityVersion) {
         quietTurns = 0;
+        // Timer-driven progress with the network idle still counts as idle.
+        if (networkIdleMs !== undefined && !this.#evaluationPending &&
+            this.#inFlightFetches.size === 0 && this.#fetchQueue.length === 0) {
+          networkIdleSince ??= performance.now();
+          if (performance.now() - networkIdleSince >= networkIdleMs && (!until || until())) {
+            return { settled: true, turns, timersPending: true };
+          }
+        } else {
+          networkIdleSince = null;
+        }
         await this.#wait(0);
         continue;
       }
@@ -580,12 +600,25 @@ class ServoWorkerRuntime {
       }
       quietTurns = 0;
 
-      const remaining = maxDurationMs - (performance.now() - startedAt);
+      const now = performance.now();
+      let idleDeadline = null;
+      if (networkIdleMs !== undefined && this.#inFlightFetches.size === 0 && this.#fetchQueue.length === 0) {
+        networkIdleSince ??= now;
+        if (now - networkIdleSince >= networkIdleMs && (!until || until())) {
+          return { settled: true, turns, timersPending: true };
+        }
+        idleDeadline = networkIdleSince + networkIdleMs - now;
+      } else {
+        networkIdleSince = null;
+      }
+
+      const remaining = maxDurationMs - (now - startedAt);
       if (remaining <= 0) break;
       const controller = new AbortController();
       const activity = this.#waitForActivity();
       const waits = [...this.#inFlightFetches, activity.promise];
       if (timerDelay !== null) waits.push(this.#wait(Math.min(timerDelay, remaining), controller.signal));
+      if (idleDeadline !== null) waits.push(this.#wait(Math.min(idleDeadline, remaining), controller.signal));
       waits.push(this.#wait(remaining, controller.signal));
       try {
         await Promise.race(waits);
@@ -642,7 +675,7 @@ class ServoWorkerRuntime {
    * from the top (height capped to keep memory within Worker limits). Runs "update the rendering" once, pumps until settled, then
    * rasterizes on the CPU. Throws if the page has not produced a rendering.
    */
-  async screenshot({ maxDurationMs = 5_000, maxPasses = 4, fullPage = false } = {}) {
+  async screenshot({ maxDurationMs = 5_000, maxPasses = 4, fullPage = false, networkIdleMs = 500 } = {}) {
     // A frame can start loads (CSS background images, web fonts, canvas
     // frames) that only a later frame shows; repeat until a frame adds none.
     const exports = this.instance.exports;
@@ -651,7 +684,7 @@ class ServoWorkerRuntime {
       if (exports.servo_worker_request_frame() !== 1) {
         throw new Error('Servo has not been bootstrapped');
       }
-      await this.pumpUntilSettled({ maxDurationMs });
+      await this.pumpUntilSettled({ maxDurationMs, networkIdleMs });
       if (exports.servo_worker_frame_resource_generation() === resourcesBefore) break;
     }
     const length = this.instance.exports.servo_worker_render_png(fullPage ? 1 : 0);
