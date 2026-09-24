@@ -899,9 +899,14 @@ test('screenshots rasterize backgrounds, borders, text, images and canvas', asyn
   const runtime = await createServoWorkerRuntime(wasm, {
     width: 400,
     height: 300,
-    fetchImpl: async () => new Response('{}'),
+    fetchImpl: async (url) => url.endsWith('.svg')
+      ? new Response('<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#f0f"/></svg>',
+        { headers: { 'content-type': 'image/svg+xml' } })
+      : new Response('{}'),
   });
   runtime.loadHtml(`<!doctype html><body style="margin:0;background:rgb(10, 20, 30)">
+    <div style="position:absolute;left:330px;top:20px;width:10px;height:10px;
+      background:url(t.svg), linear-gradient(transparent, transparent) no-repeat;background-size:10px"></div>
     <div id="box" style="position:absolute;left:20px;top:20px;width:100px;height:50px;
       background:rgb(0, 200, 0);border:5px solid rgb(0, 0, 255)"></div>
     <canvas id="canvas" width="40" height="40" style="position:absolute;left:200px;top:20px"></canvas>
@@ -928,6 +933,7 @@ test('screenshots rasterize backgrounds, borders, text, images and canvas', asyn
   assert.deepEqual(png.pixel(22, 50), [0, 0, 255, 255], 'box border');
   assert.deepEqual(png.pixel(220, 40), [255, 0, 0, 255], 'canvas content');
   assert.deepEqual(png.pixel(280, 40), [255, 255, 0, 255], 'image content');
+  assert.deepEqual(png.pixel(335, 25), [255, 0, 255, 255], 'SVG background image');
   let inked = 0;
   for (let y = 150; y < 185; y++) {
     for (let x = 20; x < 90; x++) {

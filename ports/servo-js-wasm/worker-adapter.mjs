@@ -679,13 +679,18 @@ class ServoWorkerRuntime {
     // A frame can start loads (CSS background images, web fonts, canvas
     // frames) that only a later frame shows; repeat until a frame adds none.
     const exports = this.instance.exports;
+    // Resources can also arrive one frame before the display list that uses
+    // them (e.g. an SVG background rasterized at its used size), so stop only
+    // once a pass changes neither the resources nor the display list.
     for (let pass = 0; pass < maxPasses; pass++) {
       const resourcesBefore = exports.servo_worker_frame_resource_generation();
+      const itemsBefore = exports.servo_worker_frame_item_count();
       if (exports.servo_worker_request_frame() !== 1) {
         throw new Error('Servo has not been bootstrapped');
       }
       await this.pumpUntilSettled({ maxDurationMs, networkIdleMs });
-      if (exports.servo_worker_frame_resource_generation() === resourcesBefore) break;
+      if (exports.servo_worker_frame_resource_generation() === resourcesBefore &&
+          exports.servo_worker_frame_item_count() === itemsBefore) break;
     }
     const length = this.instance.exports.servo_worker_render_png(fullPage ? 1 : 0);
     if (!length) throw new Error('Servo could not render the page (see the host log)');
