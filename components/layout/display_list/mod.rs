@@ -13,6 +13,7 @@ use euclid::{Box2D, Point2D, Rect, Scale, SideOffsets2D, Size2D, UnknownUnit, Ve
 use fonts::ShapedTextSlice;
 use gradient::WebRenderGradient;
 use layout_api::ReflowStatistics;
+use net_traits::image_cache::Image as CachedImage;
 use paint_api::display_list::{PaintDisplayListInfo, SpatialTreeNodeInfo};
 use servo_arc::Arc as ServoArc;
 use servo_base::id::{PipelineId, ScrollTreeNodeId};
@@ -34,6 +35,7 @@ use style::properties::ComputedValues;
 use style::properties::longhands::visibility::computed_value::T as Visibility;
 use style::properties::style_structs::Border;
 use style::values::computed::basic_shape::ClipPath as ComputedClipPath;
+use style::values::computed::image::Gradient;
 use style::values::computed::{
     BorderImageSideWidth, BorderImageWidth, BorderStyle, LengthPercentage,
     NonNegativeLengthOrNumber, NumberOrPercentage, OutlineStyle,
@@ -530,20 +532,28 @@ impl DisplayListBuilder<'_> {
         true
     }
 
-    /// Apply `mask-image` to a stacking context: every layer that is a loaded
-    /// raster image becomes a WebRender image mask clip (`mask-size`,
-    /// `mask-position`, `mask-origin` and `mask-repeat` all apply, like a
-    /// background layer), and `mask-mode: luminance` is carried through. All
-    /// resolved layers are chained onto the same clip chain, which the Worker
-    /// renderer composites together as `mask-composite: add` (their union) --
-    /// the default and by far the most common value of that property.
-    /// Returns the stacking context's clip chain with the mask(s) added.
+    /// Apply `mask-image` to a stacking context: every layer becomes a
+    /// WebRender image mask clip, all chained onto the same clip chain,
+    /// which the Worker renderer composites together in order per each
+    /// layer's `mask-composite` (`add`, the default, unions them; the other
+    /// three values are also implemented). A layer is one of:
+    ///  - A loaded raster image, sized/positioned/tiled by `mask-size`,
+    ///    `mask-position`, `mask-repeat`, `mask-origin` and `mask-clip`
+    ///    exactly like a background layer, with `mask-mode: luminance`
+    ///    carried through.
+    ///  - A CSS gradient (`mask-image: linear-gradient(...)` etc.), built
+    ///    the same way a background gradient layer is.
+    ///  - Fully transparent: `mask-image: none`, a still-pending or failed
+    ///    raster image, or a kind this build does not implement (an SVG
+    ///    `<mask>`/`<clipPath>` reference, `cross-fade()`, a paint
+    ///    worklet). Per the spec every layer participates in compositing
+    ///    even when it cannot be rendered, so this is a real (transparent)
+    ///    layer rather than one that is skipped -- skipping would only be
+    ///    equivalent to this for the default `add` composite; for
+    ///    `intersect`/`subtract` it would wrongly leave other layers
+    ///    unaffected by a layer that failed to load.
     ///
-    /// TODO: gradient masks (`mask-image: linear-gradient(...)`), explicit
-    /// `mask-composite` values other than the default `add`, and SVG `<mask>`
-    /// element references (`mask-image: url(#id)`) are not supported; layers
-    /// using them are skipped, which for a single-layer mask leaves the
-    /// element unmasked.
+    /// Returns the stacking context's clip chain with the mask(s) added.
     fn add_mask_image_clip(
         &mut self,
         fragment: &Arc<BoxFragment>,
@@ -551,6 +561,8 @@ impl DisplayListBuilder<'_> {
         spatial_id: SpatialId,
         clip_chain_id: Option<ClipChainId>,
     ) -> Option<ClipChainId> {
+        use style::computed_values::mask_clip::single_value::T as MaskClip;
+        use style::computed_values::mask_composite::single_value::T as MaskCompositeKeyword;
         use style::computed_values::mask_mode::single_value::T as MaskMode;
         use style::computed_values::mask_origin::single_value::T as MaskOrigin;
         use style::values::specified::background::BackgroundRepeat as RepeatXY;
@@ -565,60 +577,101 @@ impl DisplayListBuilder<'_> {
         let node = fragment.base.tag.map(|tag| tag.node);
         let mut mask_ids = Vec::new();
         for (index, image) in svg.mask_image.0.iter().enumerate() {
-            // Not yet supported: a gradient mask, or an SVG `<mask>`
-            // reference. Also skips a raster image that has not loaded yet.
-            let Ok(ResolvedImage::Image { image, size }) =
-                self.image_resolver.resolve_image(node, image)
-            else {
-                continue;
-            };
             let positioning_area = match background::get_cyclic(&svg.mask_origin.0, index) {
                 MaskOrigin::ContentBox => *fragment_builder.content_rect(),
                 MaskOrigin::PaddingBox => *fragment_builder.padding_rect(),
                 _ => fragment_builder.border_rect,
             };
-            let natural_sizes = NaturalSizes::from_width_and_height(size.width, size.height);
-            let Some(mut tile_size) = background::tile_size(
+            let painting_area = match background::get_cyclic(&svg.mask_clip.0, index) {
+                MaskClip::ContentBox => *fragment_builder.content_rect(),
+                MaskClip::PaddingBox => *fragment_builder.padding_rect(),
+                _ => fragment_builder.border_rect,
+            };
+
+            enum Layer<'a> {
+                Image(CachedImage),
+                Gradient(&'a Gradient),
+                /// Includes `none`, a not-yet-loaded or failed image, and any
+                /// kind this build does not implement.
+                Transparent,
+            }
+            let (natural_sizes, layer) = match self.image_resolver.resolve_image(node, image) {
+                Ok(ResolvedImage::Image { image, size }) => (
+                    NaturalSizes::from_width_and_height(size.width, size.height),
+                    Layer::Image(image),
+                ),
+                Ok(ResolvedImage::Gradient(gradient)) => {
+                    (NaturalSizes::empty(), Layer::Gradient(gradient))
+                },
+                _ => (NaturalSizes::empty(), Layer::Transparent),
+            };
+
+            let mut tile_size = background::tile_size(
                 background::get_cyclic(&svg.mask_size.0, index),
                 positioning_area.size(),
                 &natural_sizes,
-            ) else {
-                continue;
-            };
+            )
+            // A degenerate (zero-area) tile size still needs a real
+            // geometry so this layer keeps its place in the composited
+            // order; painting nothing at that geometry is equivalent to a
+            // transparent layer covering it.
+            .unwrap_or_else(|| positioning_area.size());
             let RepeatXY(repeat_x, repeat_y) = *background::get_cyclic(&svg.mask_repeat.0, index);
             let x = background::layout_1d(
                 &mut tile_size.width,
                 repeat_x,
                 background::get_cyclic(&svg.mask_position_x.0, index),
-                0.,
-                positioning_area.width(),
+                painting_area.min.x - positioning_area.min.x,
+                painting_area.width(),
                 positioning_area.width(),
             );
             let y = background::layout_1d(
                 &mut tile_size.height,
                 repeat_y,
                 background::get_cyclic(&svg.mask_position_y.0, index),
-                0.,
-                positioning_area.height(),
+                painting_area.min.y - positioning_area.min.y,
+                painting_area.height(),
                 positioning_area.height(),
             );
             let rect = LayoutRect::from_origin_and_size(
                 positioning_area.min + LayoutVector2D::new(x.bounds_origin, y.bounds_origin),
                 LayoutSize::new(x.bounds_size, y.bounds_size),
             );
-            let scale = self.device_pixel_ratio.get();
-            let device_size: DeviceIntSize =
-                Size2D::new(tile_size.width * scale, tile_size.height * scale).to_i32();
-            let Some(image_key) =
-                self.image_resolver
-                    .image_key_from_cached_image(&image, device_size, node)
-            else {
-                continue;
+
+            let (image_key, gradient) = match layer {
+                Layer::Image(image) => {
+                    let scale = self.device_pixel_ratio.get();
+                    let device_size: DeviceIntSize =
+                        Size2D::new(tile_size.width * scale, tile_size.height * scale).to_i32();
+                    let key = self
+                        .image_resolver
+                        .image_key_from_cached_image(&image, device_size, node)
+                        // Not yet ready this pass: transparent for now: a
+                        // later resource update will trigger a new frame.
+                        .unwrap_or(wr::ImageKey::DUMMY);
+                    (key, wr::MaskGradient::None)
+                },
+                Layer::Gradient(gradient_value) => {
+                    let built = gradient::build(&style, gradient_value, tile_size, self);
+                    let gradient = match built {
+                        WebRenderGradient::Linear(g) => wr::MaskGradient::Linear(g),
+                        WebRenderGradient::Radial(g) => wr::MaskGradient::Radial(g),
+                        WebRenderGradient::Conic(g) => wr::MaskGradient::Conic(g),
+                    };
+                    (wr::ImageKey::DUMMY, gradient)
+                },
+                Layer::Transparent => (wr::ImageKey::DUMMY, wr::MaskGradient::None),
             };
             let luminance = matches!(
                 background::get_cyclic(&svg.mask_mode.0, index),
                 MaskMode::Luminance
             );
+            let composite = match background::get_cyclic(&svg.mask_composite.0, index) {
+                MaskCompositeKeyword::Add => wr::MaskComposite::Add,
+                MaskCompositeKeyword::Subtract => wr::MaskComposite::Subtract,
+                MaskCompositeKeyword::Intersect => wr::MaskComposite::Intersect,
+                MaskCompositeKeyword::Exclude => wr::MaskComposite::Exclude,
+            };
             let mask = self.wr().define_clip_image_mask(
                 spatial_id,
                 wr::ImageMask {
@@ -626,6 +679,8 @@ impl DisplayListBuilder<'_> {
                     rect,
                     tile_size,
                     luminance,
+                    composite,
+                    gradient,
                 },
                 &[],
                 wr::FillRule::Nonzero,

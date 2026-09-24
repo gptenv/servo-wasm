@@ -29,8 +29,8 @@ use webrender_api::units::{LayoutRect, LayoutSize, LayoutTransform};
 use webrender_api::{
     AlphaType, BorderDetails, BorderRadius, BorderSide, BorderStyle, BoxShadowClipMode,
     BuiltDisplayList, ClipChainId, ClipId, ClipMode, ColorF, DisplayItem, ExtendMode, FilterOp,
-    GradientStop, ImageFormat, ImageKey, MixBlendMode, PipelineId, PropertyBinding,
-    ReferenceFrameKind, ReferenceTransformBinding, Shadow, SpatialTreeItem,
+    GradientStop, ImageFormat, ImageKey, MaskComposite, MaskGradient, MixBlendMode, PipelineId,
+    PropertyBinding, ReferenceFrameKind, ReferenceTransformBinding, Shadow, SpatialTreeItem,
 };
 
 use crate::worker_frame::{self, WorkerResources};
@@ -91,15 +91,20 @@ pub(crate) fn render_png(full_page: bool) -> Result<Vec<u8>, String> {
 enum ClipShape {
     Rect(LayoutRect),
     RoundedRect(LayoutRect, BorderRadius),
-    /// An image whose alpha (or, with `luminance`, its luminance) masks
-    /// content (`mask-image`); applied only to stacking contexts, as a mask
-    /// layer. `tile_size` may be smaller than `rect` when `mask-repeat`
-    /// tiles the image across it.
+    /// One `mask-image` layer (an image or a gradient), whose alpha (or,
+    /// with `luminance`, its luminance) masks content; applied only to
+    /// stacking contexts, as a mask layer combined with the layers below it
+    /// per `composite`. `tile_size` may be smaller than `rect` when
+    /// `mask-repeat` tiles it.
     ImageMask {
+        /// Used when `gradient` is `MaskGradient::None`.
         key: ImageKey,
         rect: LayoutRect,
         tile_size: LayoutSize,
         luminance: bool,
+        composite: MaskComposite,
+        gradient: MaskGradient,
+        stops: Vec<GradientStop>,
     },
 }
 
@@ -288,6 +293,11 @@ impl<'a> Renderer<'a> {
                     } else {
                         rect.size()
                     };
+                    // For a gradient layer, its stops are conveyed the same
+                    // way a normal Gradient/RadialGradient/ConicGradient
+                    // display item's are: a SetGradientStops marker pushed
+                    // immediately before this item.
+                    let stops: Vec<GradientStop> = item.gradient_stops().iter().collect();
                     self.clips.insert(
                         clip.id,
                         Clip {
@@ -297,6 +307,9 @@ impl<'a> Renderer<'a> {
                                 rect,
                                 tile_size,
                                 luminance: clip.image_mask.luminance,
+                                composite: clip.image_mask.composite,
+                                gradient: clip.image_mask.gradient,
+                                stops,
                             },
                         },
                     );
@@ -408,40 +421,45 @@ impl<'a> Renderer<'a> {
                 },
                 DisplayItem::Gradient(gradient) => {
                     let stops = stops_of(item.gradient_stops().iter());
-                    let start = point_in(gradient.bounds, gradient.gradient.start_point);
-                    let end = point_in(gradient.bounds, gradient.gradient.end_point);
-                    let mut paint = Gradient::new_linear(start, end);
-                    paint.stops = stops;
-                    paint.extend = extend_of(gradient.gradient.extend_mode);
                     let bounds = gradient.bounds;
+                    let Some((paint, transform)) =
+                        gradient_paint(&MaskGradient::Linear(gradient.gradient), bounds, stops)
+                    else {
+                        continue;
+                    };
                     self.draw(pipeline, &gradient.common, bounds, |renderer| {
                         renderer.context.set_paint(paint);
+                        renderer.context.set_paint_transform(transform);
                         renderer.context.fill_rect(&rect_of(bounds));
+                        renderer.context.reset_paint_transform();
                     });
                 },
                 DisplayItem::RadialGradient(gradient) => {
-                    let spec = gradient.gradient;
-                    if spec.radius.width <= 0.0 || spec.radius.height <= 0.0 {
-                        continue;
-                    }
-                    // Draw a circle of the horizontal radius, scaled to the ellipse.
-                    let center = point_in(gradient.bounds, spec.center);
-                    let radius = spec.radius.width;
-                    let mut paint = Gradient::new_two_point_radial(
-                        center,
-                        radius * spec.start_offset,
-                        center,
-                        radius * spec.end_offset,
-                    );
-                    paint.stops = stops_of(item.gradient_stops().iter());
-                    paint.extend = extend_of(spec.extend_mode);
-                    let squash = Affine::translate(center.to_vec2()) *
-                        Affine::scale_non_uniform(1.0, (spec.radius.height / radius) as f64) *
-                        Affine::translate(-center.to_vec2());
+                    let stops = stops_of(item.gradient_stops().iter());
                     let bounds = gradient.bounds;
+                    let Some((paint, transform)) =
+                        gradient_paint(&MaskGradient::Radial(gradient.gradient), bounds, stops)
+                    else {
+                        continue;
+                    };
                     self.draw(pipeline, &gradient.common, bounds, |renderer| {
                         renderer.context.set_paint(paint);
-                        renderer.context.set_paint_transform(squash);
+                        renderer.context.set_paint_transform(transform);
+                        renderer.context.fill_rect(&rect_of(bounds));
+                        renderer.context.reset_paint_transform();
+                    });
+                },
+                DisplayItem::ConicGradient(gradient) => {
+                    let stops = stops_of(item.gradient_stops().iter());
+                    let bounds = gradient.bounds;
+                    let Some((paint, transform)) =
+                        gradient_paint(&MaskGradient::Conic(gradient.gradient), bounds, stops)
+                    else {
+                        continue;
+                    };
+                    self.draw(pipeline, &gradient.common, bounds, |renderer| {
+                        renderer.context.set_paint(paint);
+                        renderer.context.set_paint_transform(transform);
                         renderer.context.fill_rect(&rect_of(bounds));
                         renderer.context.reset_paint_transform();
                     });
@@ -568,11 +586,16 @@ impl<'a> Renderer<'a> {
     }
 
     /// Rasterize this stacking context's `mask-image` layers (from its clip
-    /// chain) into one canvas-sized alpha mask, combining several layers as
-    /// their union -- `mask-composite: add`, the default and the only
-    /// composite mode this renderer implements (see
-    /// `add_mask_image_clip`'s doc comment in layout for the full list of
-    /// what `mask-image` does not yet support).
+    /// chain) into one canvas-sized alpha mask. Layers are combined in
+    /// declaration order (the first-listed, topmost layer processed first)
+    /// per each layer's own `mask-composite`
+    /// (<https://drafts.fxtf.org/css-masking-1/#the-mask-composite>): the
+    /// running composite-so-far (built from the layers before this one) is
+    /// the "destination", this layer is the "source". A lone first layer is
+    /// therefore composited against a fully transparent destination, which
+    /// only `add`/`exclude` pass through unchanged -- `subtract`/`intersect`
+    /// as the very first layer's own composite value spec-correctly yield
+    /// nothing.
     fn image_masks(&mut self, chain: Option<ClipChainId>) -> Option<Mask> {
         let mut shapes = Vec::new();
         let mut next = chain;
@@ -585,16 +608,10 @@ impl<'a> Renderer<'a> {
             for id in ids {
                 if let Some(Clip {
                     spatial,
-                    shape:
-                        ClipShape::ImageMask {
-                            key,
-                            rect,
-                            tile_size,
-                            luminance,
-                        },
+                    shape: ClipShape::ImageMask { .. },
                 }) = self.clips.get(id)
                 {
-                    shapes.push((*spatial, *key, *rect, *tile_size, *luminance));
+                    shapes.push((*spatial, *id));
                 }
             }
             next = *parent;
@@ -606,67 +623,96 @@ impl<'a> Renderer<'a> {
             return None;
         }
         let (width, height) = (self.context.width(), self.context.height());
-        let mut combined: Option<Vec<u8>> = None;
-        for (spatial, key, rect, tile_size, luminance) in shapes {
+        let mut combined: Vec<u8> = vec![0; width as usize * height as usize];
+        for (spatial, id) in shapes {
+            let Some(Clip {
+                shape:
+                    ClipShape::ImageMask {
+                        key,
+                        rect,
+                        tile_size,
+                        luminance,
+                        composite,
+                        gradient,
+                        stops,
+                    },
+                ..
+            }) = self.clips.get(&id).cloned()
+            else {
+                continue;
+            };
             let transform = self.spatial_nodes.get(&spatial).copied().unwrap_or(Affine::IDENTITY);
             let mut pixmap = Pixmap::new(width, height);
-            // An image that has not loaded (yet) masks this layer out entirely,
-            // by leaving `pixmap` fully transparent.
-            if let Some(image) = self.image(key, AlphaType::PremultipliedAlpha) {
-                let settings = RenderSettings {
-                    level: vello_cpu::Level::try_detect().unwrap_or(vello_cpu::Level::baseline()),
-                    num_threads: 0,
-                };
-                let context = RenderContext::new_with(width, height, settings);
-                let parent = std::mem::replace(&mut self.context, context);
-                self.context.set_transform(transform);
-                let extend = if tile_size.width < rect.width() || tile_size.height < rect.height() {
-                    Extend::Repeat
-                } else {
-                    Extend::Pad
-                };
-                self.fill_image(image, rect, tile_size, extend);
-                let mut context = std::mem::replace(&mut self.context, parent);
-                context.flush();
-                context.render(&mut pixmap, &mut self.resources);
+            // A raster image that has not loaded (yet), a gradient with no
+            // visible extent, or an unsupported/transparent layer (see the
+            // doc comment on layout's `add_mask_image_clip`) masks this
+            // layer out entirely by leaving `pixmap` fully transparent.
+            match gradient {
+                MaskGradient::None => {
+                    if let Some(image) = self.image(key, AlphaType::PremultipliedAlpha) {
+                        let settings = RenderSettings {
+                            level: vello_cpu::Level::try_detect()
+                                .unwrap_or(vello_cpu::Level::baseline()),
+                            num_threads: 0,
+                        };
+                        let context = RenderContext::new_with(width, height, settings);
+                        let parent = std::mem::replace(&mut self.context, context);
+                        self.context.set_transform(transform);
+                        let extend = if tile_size.width < rect.width() ||
+                            tile_size.height < rect.height()
+                        {
+                            Extend::Repeat
+                        } else {
+                            Extend::Pad
+                        };
+                        self.fill_image(image, rect, tile_size, extend);
+                        let mut context = std::mem::replace(&mut self.context, parent);
+                        context.flush();
+                        context.render(&mut pixmap, &mut self.resources);
+                    }
+                },
+                _ => {
+                    let stops = stops_of(stops.iter().copied());
+                    if let Some((paint, paint_transform)) = gradient_paint(&gradient, rect, stops) {
+                        let settings = RenderSettings {
+                            level: vello_cpu::Level::try_detect()
+                                .unwrap_or(vello_cpu::Level::baseline()),
+                            num_threads: 0,
+                        };
+                        let context = RenderContext::new_with(width, height, settings);
+                        let parent = std::mem::replace(&mut self.context, context);
+                        self.context.set_transform(transform);
+                        self.context.set_paint(paint);
+                        self.context.set_paint_transform(paint_transform);
+                        self.context.fill_rect(&rect_of(rect));
+                        self.context.reset_paint_transform();
+                        let mut context = std::mem::replace(&mut self.context, parent);
+                        context.flush();
+                        context.render(&mut pixmap, &mut self.resources);
+                    }
+                },
             }
             // Per-pixel mask value: the alpha channel, or with `mask-mode:
             // luminance`, the (alpha-premultiplied) luminance. Mirrors
             // `vello_common::mask::Mask::new_with`, whose two constructors
             // (`new_alpha`/`new_luminance`) only produce a standalone `Mask`
             // each, with no way to combine several first.
-            let layer: Vec<u8> = pixmap
-                .data()
-                .iter()
-                .map(|pixel| {
-                    if !luminance {
-                        pixel.a
-                    } else {
-                        let r = f32::from(pixel.r) / 255.0;
-                        let g = f32::from(pixel.g) / 255.0;
-                        let b = f32::from(pixel.b) / 255.0;
-                        // See CSS Masking Module Level 1 § 7.10.1
-                        // <https://www.w3.org/TR/css-masking-1/#MaskValues>.
-                        let luma = r * 0.2126 + g * 0.7152 + b * 0.0722;
-                        (luma * 255.0 + 0.5) as u8
-                    }
-                })
-                .collect();
-            combined = Some(match combined {
-                None => layer,
-                // `mask-composite: add` (the default): union the masks via
-                // Porter-Duff "over", `a + b * (1 - a)` -- symmetric in `a`
-                // and `b`, so layer order does not matter here.
-                Some(mut acc) => {
-                    for (a, b) in acc.iter_mut().zip(layer) {
-                        let (a32, b32) = (u16::from(*a), u16::from(b));
-                        *a = (a32 + (255 - a32) * b32 / 255) as u8;
-                    }
-                    acc
-                },
-            });
+            for (acc, pixel) in combined.iter_mut().zip(pixmap.data()) {
+                let source = if !luminance {
+                    pixel.a
+                } else {
+                    let r = f32::from(pixel.r) / 255.0;
+                    let g = f32::from(pixel.g) / 255.0;
+                    let b = f32::from(pixel.b) / 255.0;
+                    // See CSS Masking Module Level 1 § 7.10.1
+                    // <https://www.w3.org/TR/css-masking-1/#MaskValues>.
+                    let luma = r * 0.2126 + g * 0.7152 + b * 0.0722;
+                    (luma * 255.0 + 0.5) as u8
+                };
+                *acc = composite_mask(composite, source, *acc);
+            }
         }
-        combined.map(|data| Mask::from_parts(data, width, height))
+        Some(Mask::from_parts(combined, width, height))
     }
 
     fn image(&mut self, key: ImageKey, alpha_type: AlphaType) -> Option<Arc<Pixmap>> {
@@ -1102,6 +1148,84 @@ fn extend_of(mode: ExtendMode) -> Extend {
     match mode {
         ExtendMode::Clamp => Extend::Pad,
         ExtendMode::Repeat => Extend::Repeat,
+    }
+}
+
+/// Build a vello_cpu gradient paint, plus the paint-space transform it needs
+/// (identity, except a radial gradient's ellipse squash), from a WebRender
+/// gradient description and its stops. Shared between the ordinary
+/// `Gradient`/`RadialGradient`/`ConicGradient` display items and
+/// `mask-image` gradient layers. `None` for a gradient with no visible
+/// extent (a radial gradient with a zero radius): paints nothing, which for
+/// a mask layer means fully transparent.
+/// Combine a `mask-image` layer's own mask value (`source`) with the
+/// composite of the layers before it (`dest`), per the layer's own
+/// `mask-composite`. All four operators are Porter-Duff-style alpha
+/// combinations of two single-channel (0..=255) values; see
+/// <https://drafts.fxtf.org/css-masking-1/#the-mask-composite>.
+fn composite_mask(op: MaskComposite, source: u8, dest: u8) -> u8 {
+    let (a, b) = (u16::from(source), u16::from(dest));
+    // a*b/255 never exceeds a or b (both operands in 0..=255), so every
+    // subtraction below stays non-negative.
+    let ab = a * b / 255;
+    match op {
+        MaskComposite::Add => a + b - ab,
+        MaskComposite::Subtract => b - ab,
+        MaskComposite::Intersect => ab,
+        MaskComposite::Exclude => a + b - 2 * ab,
+    }
+    .min(255) as u8
+}
+
+fn gradient_paint(
+    gradient: &MaskGradient,
+    bounds: LayoutRect,
+    stops: peniko::ColorStops,
+) -> Option<(Gradient, Affine)> {
+    match gradient {
+        MaskGradient::None => None,
+        MaskGradient::Linear(g) => {
+            let start = point_in(bounds, g.start_point);
+            let end = point_in(bounds, g.end_point);
+            let mut paint = Gradient::new_linear(start, end);
+            paint.stops = stops;
+            paint.extend = extend_of(g.extend_mode);
+            Some((paint, Affine::IDENTITY))
+        },
+        MaskGradient::Radial(g) => {
+            if g.radius.width <= 0.0 || g.radius.height <= 0.0 {
+                return None;
+            }
+            // Draw a circle of the horizontal radius, scaled to the ellipse.
+            let center = point_in(bounds, g.center);
+            let radius = g.radius.width;
+            let mut paint = Gradient::new_two_point_radial(
+                center,
+                radius * g.start_offset,
+                center,
+                radius * g.end_offset,
+            );
+            paint.stops = stops;
+            paint.extend = extend_of(g.extend_mode);
+            let squash = Affine::translate(center.to_vec2()) *
+                Affine::scale_non_uniform(1.0, (g.radius.height / radius) as f64) *
+                Affine::translate(-center.to_vec2());
+            Some((paint, squash))
+        },
+        MaskGradient::Conic(g) => {
+            let center = point_in(bounds, g.center);
+            // CSS conic-gradient angles are measured from up (+Y is down in
+            // this renderer's screen space), clockwise. vello_cpu's sweep
+            // gradient measures from the +X axis, also clockwise in a
+            // Y-down space, hence the -90-degree offset.
+            const FULL_TURN: f32 = std::f32::consts::TAU;
+            let base = g.angle - std::f32::consts::FRAC_PI_2;
+            let mut paint =
+                Gradient::new_sweep(center, base + FULL_TURN * g.start_offset, base + FULL_TURN * g.end_offset);
+            paint.stops = stops;
+            paint.extend = extend_of(g.extend_mode);
+            Some((paint, Affine::IDENTITY))
+        },
     }
 }
 

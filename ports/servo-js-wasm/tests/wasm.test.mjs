@@ -1064,3 +1064,62 @@ test('screenshots tile a repeating mask-image and blend luminance and multiple m
   assert.deepEqual(png.pixel(150, 5), [255, 0, 0, 255], 'unioned mask layers, top half visible');
   assert.deepEqual(png.pixel(150, 15), [255, 0, 0, 255], 'unioned mask layers, bottom half visible');
 });
+
+test('screenshots apply gradient mask-image layers and mask-composite', async () => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 400,
+    height: 200,
+    fetchImpl: async () => new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <div style="position:absolute;left:0;top:0;width:100px;height:60px;background:rgb(255, 0, 0);
+      mask-image:linear-gradient(to right, black, transparent)"></div>
+    <div style="position:absolute;left:110px;top:0;width:60px;height:60px;background:rgb(255, 0, 0);
+      padding:15px;box-sizing:border-box;
+      mask:linear-gradient(black, black), linear-gradient(black, black) content-box;
+      mask-composite:add, subtract"></div>
+    <div style="position:absolute;left:180px;top:0;width:60px;height:60px;background:rgb(255, 0, 0);
+      padding:15px;box-sizing:border-box;
+      mask:linear-gradient(black,black) content-box, linear-gradient(black,black);
+      mask-composite:exclude"></div>
+    <div style="position:absolute;left:250px;top:0;width:60px;height:60px;background:rgb(255, 0, 0);
+      mask-image:url(missing.png), linear-gradient(black, black);
+      mask-composite:add, intersect"></div>
+    </body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const png = decodePng(await runtime.screenshot());
+
+  // Linear gradient fade: nearly opaque at the left edge, nearly
+  // transparent at the right (a couple of pixels in from each edge, since
+  // the interpolated stop value right at x=0/x=100 is only asymptotically
+  // exact).
+  const opaqueEnd = png.pixel(2, 30);
+  assert.ok(opaqueEnd[0] === 255 && opaqueEnd[1] < 15 && opaqueEnd[1] === opaqueEnd[2],
+    `gradient mask should be nearly fully visible near the opaque end (got rgba ${opaqueEnd.join(',')})`);
+  const transparentEnd = png.pixel(98, 30);
+  assert.ok(transparentEnd[0] === 255 && transparentEnd[1] > 240 && transparentEnd[1] === transparentEnd[2],
+    `gradient mask should be nearly fully masked near the transparent end (got rgba ${transparentEnd.join(',')})`);
+  const mid = png.pixel(50, 30);
+  assert.ok(mid[0] === 255 && mid[1] > 20 && mid[1] < 235 && mid[1] === mid[2],
+    `gradient mask midpoint should be a red/white blend (got rgba ${mid.join(',')})`);
+
+  // Order-sensitive `subtract`: a solid border-box mask (layer 0, default
+  // `add`) with a solid content-box mask subtracted from it (layer 1,
+  // `subtract`) leaves a ring -- the padding area is visible, the content
+  // box is masked out. This only holds with layer 0 processed before layer
+  // 1; reversing the order would subtract the (larger) border-box shape
+  // from the (smaller) content-box shape and mask out everything.
+  assert.deepEqual(png.pixel(112, 2), [255, 0, 0, 255], 'subtract ring: padding area visible');
+  assert.deepEqual(png.pixel(140, 30), [255, 255, 255, 255], 'subtract ring: content area masked out');
+
+  // `mask-composite: exclude` (XOR) of a content-box and a border-box solid
+  // mask leaves the same ring shape.
+  assert.deepEqual(png.pixel(182, 2), [255, 0, 0, 255], 'exclude ring: padding area visible');
+  assert.deepEqual(png.pixel(210, 30), [255, 255, 255, 255], 'exclude ring: content area masked out');
+
+  // `mask-composite: intersect` with a failed (never-loaded) first layer:
+  // the failed layer contributes as fully transparent, so intersecting the
+  // second (opaque) layer against it hides the element entirely.
+  assert.deepEqual(png.pixel(280, 30), [255, 255, 255, 255], 'intersect with a failed layer hides the element');
+});
