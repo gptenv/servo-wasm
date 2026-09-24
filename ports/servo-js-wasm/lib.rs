@@ -23,7 +23,10 @@ use net_traits::{
 };
 use net_traits::{set_worker_fetch_cancel_handler, set_worker_fetch_request_handler};
 use servo::{
-    RenderingContext, Servo, ServoBuilder, SoftwareRenderingContext, WebView, WebViewBuilder,
+    Code, DevicePoint, InputEvent, Key, KeyState, KeyboardEvent, Location, Modifiers, MouseButton,
+    MouseButtonAction, MouseButtonEvent, MouseMoveEvent, RenderingContext, Servo, ServoBuilder,
+    SoftwareRenderingContext, WebView, WebViewBuilder, WebViewPoint, WheelDelta, WheelEvent,
+    WheelMode,
 };
 use servo::{WorkerFetchHandler, pump_worker_fetches, set_worker_fetch_handler};
 use servo_url::ServoUrl;
@@ -55,7 +58,7 @@ struct WorkerFetchEntry {
     response_started: bool,
 }
 
-const WORKER_ABI_VERSION: u32 = 2;
+const WORKER_ABI_VERSION: u32 = 3;
 
 #[derive(serde::Serialize)]
 struct WorkerHostMessage<'a> {
@@ -343,6 +346,156 @@ pub unsafe extern "C" fn servo_worker_load_page(url_ptr: *const u8, url_len: usi
         // host requests made between pumps so reset followed by load does
         // not discard the requested page in favor of about:blank.
         browser.pending_navigation = Some(url);
+        1
+    })
+}
+
+/// Traverse one entry in the current page's session history.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_go_back() -> i32 {
+    BROWSER.with(|browser| {
+        let binding = browser.borrow();
+        let Some(browser) = binding.as_ref() else {
+            return 0;
+        };
+        if !browser.webview.can_go_back() {
+            return 0;
+        }
+        browser.webview.go_back(1);
+        1
+    })
+}
+
+/// Traverse forward one entry in the current page's session history.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_go_forward() -> i32 {
+    BROWSER.with(|browser| {
+        let binding = browser.borrow();
+        let Some(browser) = binding.as_ref() else {
+            return 0;
+        };
+        if !browser.webview.can_go_forward() {
+            return 0;
+        }
+        browser.webview.go_forward(1);
+        1
+    })
+}
+
+/// Reload the current page.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_reload() -> i32 {
+    BROWSER.with(|browser| {
+        let binding = browser.borrow();
+        let Some(browser) = binding.as_ref() else {
+            return 0;
+        };
+        browser.webview.reload();
+        1
+    })
+}
+
+/// Dispatch a pointer move in device pixels.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_pointer_move(x: f32, y: f32) -> i32 {
+    if !valid_input_point(x, y) {
+        return 0;
+    }
+    with_worker_webview(|webview| {
+        webview.notify_input_event(InputEvent::MouseMove(MouseMoveEvent::new(
+            WebViewPoint::Device(DevicePoint::new(x, y)),
+        )));
+    })
+}
+
+/// Dispatch a mouse button event. `action`: 0 down, 1 up; `button` uses the
+/// DOM button numbering (0 primary, 1 auxiliary, 2 secondary).
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_mouse_button(action: u32, button: u32, x: f32, y: f32) -> i32 {
+    if action > 1 || button > 4 || !valid_input_point(x, y) {
+        return 0;
+    }
+    with_worker_webview(|webview| {
+        let action = if action == 0 {
+            MouseButtonAction::Down
+        } else {
+            MouseButtonAction::Up
+        };
+        webview.notify_input_event(InputEvent::MouseButton(MouseButtonEvent::new(
+            action,
+            MouseButton::from(button),
+            WebViewPoint::Device(DevicePoint::new(x, y)),
+        )));
+    })
+}
+
+/// Dispatch a pixel-mode wheel event at the given device-pixel point.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_scroll_by(delta_x: f64, delta_y: f64, x: f32, y: f32) -> i32 {
+    if !valid_input_point(x, y) || !delta_x.is_finite() || !delta_y.is_finite() {
+        return 0;
+    }
+    with_worker_webview(|webview| {
+        webview.notify_input_event(InputEvent::Wheel(WheelEvent::new(
+            WheelDelta {
+                x: delta_x,
+                y: delta_y,
+                z: 0.0,
+                mode: WheelMode::DeltaPixel,
+            },
+            WebViewPoint::Device(DevicePoint::new(x, y)),
+        )));
+    })
+}
+
+/// Dispatch a keyboard key down/up event. The key is a DOM key value such as
+/// `a`, `Enter`, or `ArrowDown`; `state`: 0 down, 1 up.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_key(
+    key_ptr: *const u8,
+    key_len: usize,
+    state: u32,
+    modifiers: u32,
+) -> i32 {
+    const ALLOWED_MODIFIERS: u32 = 0x249;
+    if key_ptr.is_null() || key_len == 0 || key_len > 64 || state > 1
+        || modifiers & !ALLOWED_MODIFIERS != 0
+    {
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
+    let Ok(key_string) = std::str::from_utf8(bytes) else {
+        return 0;
+    };
+    let Ok(key) = Key::from_str(key_string) else {
+        return 0;
+    };
+    with_worker_webview(|webview| {
+        webview.focus();
+        let state = if state == 0 { KeyState::Down } else { KeyState::Up };
+        webview.notify_input_event(InputEvent::Keyboard(KeyboardEvent::new_without_event(
+            state,
+            key,
+            Code::Unidentified,
+            Location::Standard,
+            Modifiers::from_bits_truncate(modifiers),
+            false,
+            false,
+        )));
+    })
+}
+
+fn valid_input_point(x: f32, y: f32) -> bool {
+    x.is_finite() && y.is_finite() && x.abs() <= 1_000_000.0 && y.abs() <= 1_000_000.0
+}
+
+fn with_worker_webview(action: impl FnOnce(&WebView)) -> i32 {
+    BROWSER.with(|browser| {
+        let binding = browser.borrow();
+        let Some(browser) = binding.as_ref() else {
+            return 0;
+        };
+        action(&browser.webview);
         1
     })
 }

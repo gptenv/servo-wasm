@@ -1,7 +1,7 @@
-# Raw Worker ABI, version 2
+# Raw Worker ABI, version 3
 
 The JavaScript adapter and WASM artifact are a matched pair. The adapter checks
-`servo_worker_abi_version() === 2` before running constructors or bootstrap. Rebuild
+`servo_worker_abi_version() === 3` before running constructors or bootstrap. Rebuild
 the artifact whenever the interface or serialized request representation changes.
 This is a project-internal protocol, not an MCP protocol or a stable upstream Servo API.
 
@@ -17,8 +17,8 @@ Exactly five function imports exist, all in `env`:
 | `worker_monotonic_now_ns()` | Return monotonic nanoseconds as a JavaScript `bigint`. |
 | `worker_unix_time_now_ns()` | Return Unix-epoch nanoseconds as a JavaScript `bigint`. |
 
-The fetch import carries either `{version:2, kind:"fetch", request:...}` or
-`{version:2, kind:"cancel", request_ids:[...]}`. IDs serialize as UUID strings.
+The fetch import carries either `{version:3, kind:"fetch", request:...}` or
+`{version:3, kind:"cancel", request_ids:[...]}`. IDs serialize as UUID strings.
 The request uses Servo's `RequestBuilder` serialization (including URL, method,
 byte-string headers, destination, mode, credentials and redirect policy). A body
 is currently supported only via `body.worker_bytes`, limited to 256 KiB.
@@ -97,6 +97,26 @@ uses `networkIdleMs: 500` by default.
 a secure erase of all storage or a full engine destroy. A fresh WASM instance is
 required for isolation between unrelated users. Drop host references when the
 invocation ends; Servo's native blocking shutdown path is not used.
+
+## Navigation and input
+
+`loadPage(url)` performs native top-level navigation. `goBack()`, `goForward()`,
+and `reload()` expose session-history traversal and reload; each returns whether
+Servo accepted the action. Pump the runtime afterward to complete navigation.
+
+`pointerMove(x, y)`, `mouseDown(x, y, button)`, `mouseUp(x, y, button)`,
+`click(x, y, button)`, `scrollBy(deltaX, deltaY, {x, y})`, `keyDown(key)`,
+`keyUp(key)`, `pressKey(key)`, and `typeText(text)` dispatch Servo input events
+through `WebView::notify_input_event`.
+Coordinates are viewport device pixels, (0, 0) is the top-left, mouse buttons use
+DOM numbering, and wheel deltas are pixels. Keyboard names use DOM key values
+such as `a`, `Enter`, and `ArrowDown`; the view is focused before key events.
+Hold modifiers with `keyDown("Control")`/`keyUp("Control")` (or Shift, Alt,
+Meta) while dispatching another key. These are browser input events rather than
+DOM events synthesized by page script.
+The corresponding exports are `servo_worker_go_back/forward`,
+`servo_worker_reload`, `servo_worker_pointer_move`,
+`servo_worker_mouse_button`, `servo_worker_scroll_by`, and `servo_worker_key`.
 
 ## Screenshots
 

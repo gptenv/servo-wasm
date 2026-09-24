@@ -13,7 +13,7 @@ const MAX_REDIRECTS = 10;
 const MAX_OUTGOING_CONNECTIONS = 6;
 const MAX_PENDING_FETCHES = 50;
 const FREE_TIER_SUBREQUESTS = 50;
-const WORKER_ABI_VERSION = 2;
+const WORKER_ABI_VERSION = 3;
 const encoder = new TextEncoder();
 
 function bytesToString(bytes) {
@@ -160,6 +160,7 @@ class ServoWorkerRuntime {
   #trap = null;
   #evaluationPending = false;
   #screenshotStreamActive = false;
+  #pressedModifiers = new Set();
 
   constructor(instance, fetchImpl, log, maxResponseBytes, maxSubrequests) {
     // A WASM trap does not unwind Rust state (held RefCell borrows, partial
@@ -482,6 +483,116 @@ class ServoWorkerRuntime {
       this.#inlinePage = null;
       throw error;
     }
+  }
+
+  /** Traverse one entry in the page's session history, if available. */
+  goBack() {
+    return this.instance.exports.servo_worker_go_back() === 1;
+  }
+
+  /** Traverse forward one entry in the page's session history, if available. */
+  goForward() {
+    return this.instance.exports.servo_worker_go_forward() === 1;
+  }
+
+  /** Reload the current page. Pump the runtime afterward to complete loading. */
+  reload() {
+    return this.instance.exports.servo_worker_reload() === 1;
+  }
+
+  /** Move the native pointer in viewport device pixels. */
+  pointerMove(x, y) {
+    return this.#inputResult(this.instance.exports.servo_worker_pointer_move(x, y));
+  }
+
+  /** Press a mouse button at viewport device-pixel coordinates. */
+  mouseDown(x, y, button = 0) {
+    return this.#mouseButton(0, button, x, y);
+  }
+
+  /** Release a mouse button at viewport device-pixel coordinates. */
+  mouseUp(x, y, button = 0) {
+    return this.#mouseButton(1, button, x, y);
+  }
+
+  /** Move to a point and dispatch a complete native mouse click there. */
+  click(x, y, button = 0) {
+    this.pointerMove(x, y);
+    this.mouseDown(x, y, button);
+    return this.mouseUp(x, y, button);
+  }
+
+  /** Dispatch a wheel scroll in pixels at viewport device-pixel coordinates. */
+  scrollBy(deltaX, deltaY, { x = 0, y = 0 } = {}) {
+    return this.#inputResult(this.instance.exports.servo_worker_scroll_by(deltaX, deltaY, x, y));
+  }
+
+  /** Dispatch a native keydown event. Use keyUp to release it. */
+  keyDown(key) {
+    return this.#key(key, 0);
+  }
+
+  /** Dispatch a native keyup event. */
+  keyUp(key) {
+    return this.#key(key, 1);
+  }
+
+  /** Dispatch a native keyboard key down and up. Examples: "a", "Enter", "ArrowDown". */
+  pressKey(key) {
+    this.keyDown(key);
+    return this.keyUp(key);
+  }
+
+  #key(key, state) {
+    if (typeof key !== 'string' || !key || encoder.encode(key).length > 64) {
+      throw new TypeError('key must be a non-empty string of at most 64 UTF-8 bytes');
+    }
+    const modifier = key === 'Shift' ? 'shift'
+      : key === 'Control' ? 'control'
+      : key === 'Alt' ? 'alt'
+      : key === 'Meta' ? 'meta'
+      : null;
+    const modifierBits = { alt: 0x001, control: 0x008, meta: 0x040, shift: 0x200 };
+    let modifiers = 0;
+    for (const pressed of this.#pressedModifiers) modifiers |= modifierBits[pressed];
+    const [ptr, len] = this.#write(key);
+    try {
+      if (this.instance.exports.servo_worker_key(ptr, len, state, modifiers) !== 1) {
+        throw new Error(`Servo rejected keyboard input for ${JSON.stringify(key)}`);
+      }
+      if (modifier) {
+        if (state === 0) this.#pressedModifiers.add(modifier);
+        else this.#pressedModifiers.delete(modifier);
+      }
+      return true;
+    } finally {
+      this.#free(ptr, len);
+    }
+  }
+
+  /** Type text by dispatching native character key events. */
+  typeText(text) {
+    if (typeof text !== 'string' || [...text].length > 4096) {
+      throw new TypeError('text must be a string of at most 4096 characters');
+    }
+    for (const character of text) {
+      this.pressKey(character === '\n' || character === '\r'
+        ? 'Enter'
+        : character === '\t' ? 'Tab' : character);
+    }
+  }
+
+  #mouseButton(action, button, x, y) {
+    if (!Number.isInteger(button) || button < 0 || button > 4) {
+      throw new RangeError('button must be between 0 (primary) and 4 (forward)');
+    }
+    return this.#inputResult(
+      this.instance.exports.servo_worker_mouse_button(action, button, x, y));
+  }
+
+  #inputResult(result) {
+    if (result !== 1) throw new Error('Servo rejected the input event or its coordinates');
+    return true;
   }
 
   evaluatePage(source) {

@@ -156,7 +156,7 @@ test('SpiderMonkey smoke export runs in wasm', () => {
 });
 
 test('Worker lifecycle exports are present and initially idle', () => {
-  assert.equal(instance.exports.servo_worker_abi_version(), 2);
+  assert.equal(instance.exports.servo_worker_abi_version(), 3);
   assert.equal(typeof instance.exports.servo_worker_reset, 'function');
   assert.equal(typeof instance.exports.servo_worker_pump_status, 'function');
   assert.equal(typeof instance.exports.servo_worker_pending_fetch_count, 'function');
