@@ -680,8 +680,16 @@ class ServoWorkerRuntime {
     // frames) that only a later frame shows; repeat until a frame adds none.
     const exports = this.instance.exports;
     // Resources can also arrive one frame before the display list that uses
-    // them (e.g. an SVG background rasterized at its used size), so stop only
-    // once a pass changes neither the resources nor the display list.
+    // them (e.g. an SVG background rasterized at its used size), so a pass
+    // that changes neither is not enough on its own to stop: a same-document
+    // mask reference (mask-image: url(#id)) takes three passes to resolve
+    // (one to notice and queue it, one for script to resolve it between
+    // frames, one for layout to pick up the resolved source) with an
+    // unchanged item count throughout (a mask clip's resource key isn't
+    // reflected in the count) and only a one-pass resource-generation bump
+    // in the middle -- so require two consecutive quiet passes, not one,
+    // before concluding nothing further is arriving.
+    let quietPasses = 0;
     for (let pass = 0; pass < maxPasses; pass++) {
       const resourcesBefore = exports.servo_worker_frame_resource_generation();
       const itemsBefore = exports.servo_worker_frame_item_count();
@@ -690,7 +698,11 @@ class ServoWorkerRuntime {
       }
       await this.pumpUntilSettled({ maxDurationMs, networkIdleMs });
       if (exports.servo_worker_frame_resource_generation() === resourcesBefore &&
-          exports.servo_worker_frame_item_count() === itemsBefore) break;
+          exports.servo_worker_frame_item_count() === itemsBefore) {
+        if (++quietPasses >= 2) break;
+      } else {
+        quietPasses = 0;
+      }
     }
     const length = this.instance.exports.servo_worker_render_png(fullPage ? 1 : 0);
     if (!length) throw new Error('Servo could not render the page (see the host log)');

@@ -76,6 +76,29 @@ impl SVGSVGElement {
     }
 
     pub(crate) fn serialize_and_cache_subtree(&self, cx: &mut js::context::JSContext) {
+        let Some(xml_source) = self.serialized_subtree_source(cx) else {
+            *self.cached_serialized_data_url.borrow_mut() = Some(Err(()));
+            return;
+        };
+
+        let base64_encoded_source = base64::engine::general_purpose::STANDARD.encode(xml_source);
+        let data_url = format!("data:image/svg+xml;base64,{base64_encoded_source}");
+        match ServoUrl::parse(&data_url) {
+            Ok(url) => *self.cached_serialized_data_url.borrow_mut() = Some(Ok(url)),
+            Err(error) => error!("Unable to parse serialized SVG data url: {error}"),
+        };
+    }
+
+    /// Clone this `<svg>`'s subtree, resolve any `<use>` elements within it
+    /// (see `process_use_elements`), and serialize the result to XML source
+    /// text. Used both for `serialize_and_cache_subtree`'s own data: url
+    /// (this element rendered as replaced content) and, unlike that method,
+    /// for a `mask-image: url(#id)` (or similar) reference into this `<svg>`
+    /// from elsewhere in the document -- which needs the raw source to embed
+    /// in a wrapper document, and works even when this `<svg>` never gets a
+    /// box of its own (e.g. a `display: none` icon sprite sheet), since
+    /// nothing here depends on layout having asked for it.
+    pub(crate) fn serialized_subtree_source(&self, cx: &mut js::context::JSContext) -> Option<String> {
         let document_fragment = self.owner_document().CreateDocumentFragment(cx);
         let cloned_node = Node::clone(
             cx,
@@ -90,24 +113,13 @@ impl SVGSVGElement {
             .is_err()
         {
             error!("Unable to clone SVG tree");
-            *self.cached_serialized_data_url.borrow_mut() = Some(Err(()));
-            return;
+            return None;
         }
 
         self.process_use_elements(cx, &cloned_node);
 
-        let Ok(xml_source) = cloned_node.xml_serialize(TraversalScope::IncludeNode) else {
-            *self.cached_serialized_data_url.borrow_mut() = Some(Err(()));
-            return;
-        };
-
-        let xml_source: String = xml_source.into();
-        let base64_encoded_source = base64::engine::general_purpose::STANDARD.encode(xml_source);
-        let data_url = format!("data:image/svg+xml;base64,{base64_encoded_source}");
-        match ServoUrl::parse(&data_url) {
-            Ok(url) => *self.cached_serialized_data_url.borrow_mut() = Some(Ok(url)),
-            Err(error) => error!("Unable to parse serialized SVG data url: {error}"),
-        };
+        let xml_source = cloned_node.xml_serialize(TraversalScope::IncludeNode).ok()?;
+        Some(xml_source.into())
     }
 
     fn process_use_elements(&self, cx: &mut JSContext, root_node: &Node) {

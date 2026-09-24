@@ -594,6 +594,15 @@ impl<'a> Renderer<'a> {
     /// after it) is the "destination". The bottommost layer has nothing
     /// below it, so per spec its own `mask-composite` is ignored and it
     /// simply seeds the accumulator.
+    ///
+    /// The offscreen `Pixmap`/`RenderContext` used to rasterize a single
+    /// layer are sized to that layer's own device-space bounds, not the
+    /// whole canvas -- a masked icon is typically far smaller than a
+    /// (possibly full-page) capture, and wasm's linear memory never shrinks
+    /// once grown, so a canvas-sized offscreen buffer per layer would leave
+    /// a permanent, easily multi-tens-of-MB high-water mark for a page with
+    /// several masked elements. Only the final combined `Mask` handed to
+    /// vello needs to be canvas-sized.
     fn image_masks(&mut self, chain: Option<ClipChainId>) -> Option<Mask> {
         let mut shapes = Vec::new();
         let mut next = chain;
@@ -641,25 +650,36 @@ impl<'a> Renderer<'a> {
                 continue;
             };
             let transform = self.spatial_nodes.get(&spatial).copied().unwrap_or(Affine::IDENTITY);
-            let mut pixmap = Pixmap::new(width, height);
+
+            // Bound the offscreen render to this layer's own device-space
+            // extent, clipped to the canvas, instead of the full canvas.
+            let device_bounds = transform.transform_rect_bbox(rect_of(rect)).intersect(self.device_rect);
+            let bbox = (!device_bounds.is_zero_area()).then(|| {
+                let x0 = device_bounds.x0.floor().max(0.0) as u16;
+                let y0 = device_bounds.y0.floor().max(0.0) as u16;
+                let x1 = (device_bounds.x1.ceil() as i64).clamp(x0 as i64, width as i64) as u16;
+                let y1 = (device_bounds.y1.ceil() as i64).clamp(y0 as i64, height as i64) as u16;
+                (x0, y0, x1 - x0, y1 - y0)
+            });
+
             // A raster image that has not loaded (yet), a gradient with no
-            // visible extent, or an unsupported/transparent layer (see the
-            // doc comment on layout's `add_mask_image_clip`) masks this
-            // layer out entirely by leaving `pixmap` fully transparent.
-            match gradient {
-                MaskGradient::None => {
-                    if let Some(image) = self.image(key, AlphaType::PremultipliedAlpha) {
+            // visible extent, an empty device-space bbox, or an unsupported/
+            // transparent layer (see the doc comment on layout's
+            // `add_mask_image_clip`) masks this layer out entirely: `None`
+            // here, handled as "source = 0 everywhere" below.
+            let rendered = bbox.filter(|(_, _, w, h)| *w > 0 && *h > 0).and_then(|(bx, by, bw, bh)| {
+                let mut pixmap = Pixmap::new(bw, bh);
+                let offset = Affine::translate((-(bx as f64), -(by as f64))) * transform;
+                let ok = match gradient {
+                    MaskGradient::None => self.image(key, AlphaType::PremultipliedAlpha).is_some_and(|image| {
                         let settings = RenderSettings {
-                            level: vello_cpu::Level::try_detect()
-                                .unwrap_or(vello_cpu::Level::baseline()),
+                            level: vello_cpu::Level::try_detect().unwrap_or(vello_cpu::Level::baseline()),
                             num_threads: 0,
                         };
-                        let context = RenderContext::new_with(width, height, settings);
+                        let context = RenderContext::new_with(bw, bh, settings);
                         let parent = std::mem::replace(&mut self.context, context);
-                        self.context.set_transform(transform);
-                        let extend = if tile_size.width < rect.width() ||
-                            tile_size.height < rect.height()
-                        {
+                        self.context.set_transform(offset);
+                        let extend = if tile_size.width < rect.width() || tile_size.height < rect.height() {
                             Extend::Repeat
                         } else {
                             Extend::Pad
@@ -668,50 +688,92 @@ impl<'a> Renderer<'a> {
                         let mut context = std::mem::replace(&mut self.context, parent);
                         context.flush();
                         context.render(&mut pixmap, &mut self.resources);
-                    }
-                },
-                _ => {
-                    let stops = stops_of(stops.iter().copied());
-                    if let Some((paint, paint_transform)) = gradient_paint(&gradient, rect, stops) {
-                        let settings = RenderSettings {
-                            level: vello_cpu::Level::try_detect()
-                                .unwrap_or(vello_cpu::Level::baseline()),
-                            num_threads: 0,
-                        };
-                        let context = RenderContext::new_with(width, height, settings);
-                        let parent = std::mem::replace(&mut self.context, context);
-                        self.context.set_transform(transform);
-                        self.context.set_paint(paint);
-                        self.context.set_paint_transform(paint_transform);
-                        self.context.fill_rect(&rect_of(rect));
-                        self.context.reset_paint_transform();
-                        let mut context = std::mem::replace(&mut self.context, parent);
-                        context.flush();
-                        context.render(&mut pixmap, &mut self.resources);
-                    }
-                },
-            }
-            // Per-pixel mask value: the alpha channel, or with `mask-mode:
-            // luminance`, the (alpha-premultiplied) luminance. Mirrors
-            // `vello_common::mask::Mask::new_with`, whose two constructors
-            // (`new_alpha`/`new_luminance`) only produce a standalone `Mask`
-            // each, with no way to combine several first.
-            for (acc, pixel) in combined.iter_mut().zip(pixmap.data()) {
-                let source = if !luminance {
-                    pixel.a
-                } else {
-                    let r = f32::from(pixel.r) / 255.0;
-                    let g = f32::from(pixel.g) / 255.0;
-                    let b = f32::from(pixel.b) / 255.0;
-                    // See CSS Masking Module Level 1 § 7.10.1
-                    // <https://www.w3.org/TR/css-masking-1/#MaskValues>.
-                    let luma = r * 0.2126 + g * 0.7152 + b * 0.0722;
-                    (luma * 255.0 + 0.5) as u8
+                        true
+                    }),
+                    _ => {
+                        let stops = stops_of(stops.iter().copied());
+                        gradient_paint(&gradient, rect, stops).is_some_and(|(paint, paint_transform)| {
+                            let settings = RenderSettings {
+                                level: vello_cpu::Level::try_detect().unwrap_or(vello_cpu::Level::baseline()),
+                                num_threads: 0,
+                            };
+                            let context = RenderContext::new_with(bw, bh, settings);
+                            let parent = std::mem::replace(&mut self.context, context);
+                            self.context.set_transform(offset);
+                            self.context.set_paint(paint);
+                            self.context.set_paint_transform(paint_transform);
+                            self.context.fill_rect(&rect_of(rect));
+                            self.context.reset_paint_transform();
+                            let mut context = std::mem::replace(&mut self.context, parent);
+                            context.flush();
+                            context.render(&mut pixmap, &mut self.resources);
+                            true
+                        })
+                    },
                 };
-                // The bottommost layer has no layer below it to combine
-                // with, so per spec its own `mask-composite` is ignored: it
-                // just seeds the accumulator with its own mask value.
-                *acc = if is_bottom { source } else { composite_mask(composite, source, *acc) };
+                ok.then_some((pixmap, bx, by, bw, bh))
+            });
+
+            // Whether a pixel this layer's own rendered bbox does not reach
+            // keeps `combined`'s existing value (true for `add`/`exclude`,
+            // where a layer that misses a pixel leaves whatever the layers
+            // below it already left there) or must become fully transparent
+            // (`subtract`/`intersect`, and always for the bottommost layer,
+            // which has no previous value to preserve). See
+            // `composite_mask`'s doc comment: this is just `composite_mask`
+            // applied with `source = 0`, worked out algebraically to avoid
+            // touching most of the canvas for the common `add` case.
+            let preserves_outside =
+                !is_bottom && matches!(composite, MaskComposite::Add | MaskComposite::Exclude);
+
+            match rendered {
+                None => {
+                    if !preserves_outside {
+                        for acc in combined.iter_mut() {
+                            *acc = if is_bottom { 0 } else { composite_mask(composite, 0, *acc) };
+                        }
+                    }
+                },
+                Some((pixmap, bx, by, bw, bh)) => {
+                    for cy in 0..height {
+                        let in_y = cy >= by && cy < by + bh;
+                        for cx in 0..width {
+                            let idx = cy as usize * width as usize + cx as usize;
+                            if !(in_y && cx >= bx && cx < bx + bw) {
+                                if !preserves_outside {
+                                    combined[idx] =
+                                        if is_bottom { 0 } else { composite_mask(composite, 0, combined[idx]) };
+                                }
+                                continue;
+                            }
+                            // Per-pixel mask value: the alpha channel, or
+                            // with `mask-mode: luminance`, the (alpha-
+                            // premultiplied) luminance. Mirrors
+                            // `vello_common::mask::Mask::new_with`, whose two
+                            // constructors (`new_alpha`/`new_luminance`)
+                            // only produce a standalone `Mask` each, with no
+                            // way to combine several first.
+                            let pixel = pixmap.data()[(cy - by) as usize * bw as usize + (cx - bx) as usize];
+                            let source = if !luminance {
+                                pixel.a
+                            } else {
+                                let r = f32::from(pixel.r) / 255.0;
+                                let g = f32::from(pixel.g) / 255.0;
+                                let b = f32::from(pixel.b) / 255.0;
+                                // See CSS Masking Module Level 1 § 7.10.1
+                                // <https://www.w3.org/TR/css-masking-1/#MaskValues>.
+                                let luma = r * 0.2126 + g * 0.7152 + b * 0.0722;
+                                (luma * 255.0 + 0.5) as u8
+                            };
+                            // The bottommost layer has no layer below it to
+                            // combine with, so per spec its own
+                            // `mask-composite` is ignored: it just seeds the
+                            // accumulator with its own mask value.
+                            combined[idx] =
+                                if is_bottom { source } else { composite_mask(composite, source, combined[idx]) };
+                        }
+                    }
+                },
             }
             is_bottom = false;
         }
@@ -1166,6 +1228,12 @@ fn extend_of(mode: ExtendMode) -> Extend {
 /// `mask-composite`. All four operators are Porter-Duff-style alpha
 /// combinations of two single-channel (0..=255) values; see
 /// <https://drafts.fxtf.org/css-masking-1/#the-mask-composite>.
+///
+/// With `source = 0` (used for a pixel outside a layer's rendered bounds,
+/// which is never anything but transparent there), this reduces to `dest`
+/// for `Add`/`Exclude` and to `0` for `Subtract`/`Intersect` -- callers use
+/// that to skip touching most of the canvas for the (default, most common)
+/// `Add` case instead of calling this per pixel with a known-zero `source`.
 fn composite_mask(op: MaskComposite, source: u8, dest: u8) -> u8 {
     let (a, b) = (u16::from(source), u16::from(dest));
     // a*b/255 never exceeds a or b (both operands in 0..=255), so every

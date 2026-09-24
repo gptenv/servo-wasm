@@ -23,6 +23,7 @@ use servo_base::id::PainterId;
 use servo_url::{ImmutableOrigin, ServoUrl};
 use style::context::SharedStyleContext;
 use style::dom::OpaqueNode;
+use style::url::ComputedUrl;
 use style::values::computed::color::Color;
 use style::values::computed::image::{Gradient, Image};
 use style_traits::DevicePixel;
@@ -111,6 +112,22 @@ pub(crate) struct ImageResolver {
     /// The origin of the `Document` that this [`ImageResolver`] resolves images for.
     pub origin: ImmutableOrigin,
 
+    /// The URL of the `Document` that this [`ImageResolver`] resolves images
+    /// for. Used to detect a same-document `mask-image: url(#id)` (or
+    /// similar) reference: unlike a plain `url()` path, a fragment-only url
+    /// token (e.g. `url(#id)`) is specified to resolve against the document
+    /// even when it appears in an external stylesheet with a different own
+    /// URL (<https://drafts.csswg.org/css-values/#local-urls>), which
+    /// Servo's eager URL resolution does not implement (it resolves against
+    /// the stylesheet, like any other `url()`). Comparing the resolved URL
+    /// (with its fragment stripped) against this one is a same-document
+    /// heuristic that is exact for the common case of an inline `style=""`
+    /// attribute or an embedded `<style>` element (whose base URL already
+    /// is the document's), and only falls short of the spec for a fragment
+    /// reference written in an external stylesheet -- which, absent this
+    /// heuristic, would not be treated as a same-document reference at all.
+    pub document_url: ServoUrl,
+
     /// Reference to the script thread image cache.
     pub image_cache: Arc<dyn ImageCache>,
 
@@ -137,6 +154,26 @@ pub(crate) struct ImageResolver {
     // for `background-image` or `content` property) to the final resolved image data.
     pub resolved_images_cache: Arc<RwLock<HashMap<ServoUrl, CachedImageOrError>>>,
 
+    /// A cache mapping the `id` of an SVG `<mask>`/`<clipPath>` element to the
+    /// XML source of its containing `<svg>` subtree, resolved by script (see
+    /// `Window::resolve_pending_mask_references`) the same way
+    /// `SVGSVGElement::serialize_and_cache_subtree` resolves whole `<svg>`
+    /// elements used as replaced content -- except this also works for an
+    /// `<svg>` that is never laid out itself (e.g. a `display: none` sprite
+    /// sheet), since nothing here depends on it having a box. `None` means
+    /// resolution was attempted and failed (no such element, or it is not
+    /// inside an `<svg>`); the entry still exists so layout does not queue
+    /// the same id on every reflow.
+    pub mask_reference_sources: Arc<RwLock<HashMap<String, Option<String>>>>,
+
+    /// `(node, id)` pairs seen during layout whose `mask_reference_sources`
+    /// entry does not exist yet, to be resolved by script the same way
+    /// `pending_svg_elements_for_serialization` is. `node` is the element
+    /// with the `mask-image: url(#id)` (or similar) that referenced `id`,
+    /// re-dirtied once resolution completes so layout runs again with the
+    /// answer.
+    pub pending_mask_references: Mutex<Vec<(UntrustedNodeAddress, String)>>,
+
     /// The current animation timeline value used to properly initialize animating images.
     pub animation_timeline_value: f64,
 }
@@ -151,6 +188,7 @@ impl Drop for ImageResolver {
                     .lock()
                     .is_empty()
             );
+            assert!(self.pending_mask_references.lock().is_empty());
         }
     }
 }
@@ -294,6 +332,41 @@ impl ImageResolver {
         self.pending_svg_elements_for_serialization
             .lock()
             .push(element.opaque().into())
+    }
+
+    /// If `image` is a `url()` value that (per the heuristic documented on
+    /// [`Self::document_url`]) is a same-document reference, returns its
+    /// fragment (the referenced element's id).
+    pub(crate) fn same_document_fragment_id<'a>(&self, image: &'a Image) -> Option<&'a str> {
+        fn without_fragment(s: &str) -> &str {
+            s.split('#').next().unwrap_or(s)
+        }
+
+        let Image::Url(ComputedUrl::Valid(url)) = image else {
+            return None;
+        };
+        let id = url.fragment()?;
+        if id.is_empty() {
+            return None;
+        }
+        (without_fragment(url.as_str()) == without_fragment(self.document_url.as_str())).then_some(id)
+    }
+
+    /// Look up the XML source of the `<svg>` subtree containing the element
+    /// with id `id`, for a same-document `mask-image: url(#id)` reference.
+    /// Queues it for script to resolve if it has not been already. Returns
+    /// `None` both while resolution is pending and if it has already failed;
+    /// callers cannot distinguish the two (both currently mean "render
+    /// nothing"), which is fine since either way a later reflow, triggered
+    /// once resolution completes, is what would pick up a fix.
+    pub(crate) fn mask_reference_source(&self, node: OpaqueNode, id: &str) -> Option<String> {
+        if let Some(source) = self.mask_reference_sources.read().get(id) {
+            return source.clone();
+        }
+        self.pending_mask_references
+            .lock()
+            .push((node.into(), id.to_owned()));
+        None
     }
 
     pub(crate) fn resolve_image<'a>(

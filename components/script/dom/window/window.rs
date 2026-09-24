@@ -33,6 +33,7 @@ use fonts::{
     CspViolationHandler, FontContext, NetworkTimingHandler, WebFontDocumentContext,
     WebFontSetDifference,
 };
+use html5ever::{local_name, ns};
 use js::context::{JSContext, NoGC};
 use js::conversions::ToJSValConvertible;
 use js::glue::DumpJSStack;
@@ -165,6 +166,7 @@ use crate::dom::html::htmlcollection::{CollectionFilter, HTMLCollection};
 use crate::dom::html::htmliframeelement::HTMLIFrameElement;
 use crate::dom::idbfactory::IDBFactory;
 use crate::dom::inputevent::HitTestResult;
+use crate::dom::iterators::ShadowIncluding;
 use crate::dom::location::Location;
 use crate::dom::medialist::MediaList;
 use crate::dom::mediaquerylist::{MediaQueryList, MediaQueryListMatchState};
@@ -2756,6 +2758,7 @@ impl Window {
             animation_timeline_value: document.current_animation_timeline_value(),
             animations: document.animation_manager().sets(),
             animating_images: document.animation_manager().animating_images(),
+            mask_reference_sources: document.mask_reference_sources(),
             highlighted_dom_node: document.highlighted_dom_node().map(|node| node.to_opaque()),
             halt_lcp: self.has_dispatched_scroll_event.get() ||
                 self.has_dispatched_input_event.get(),
@@ -2782,6 +2785,7 @@ impl Window {
             reflow_result.pending_images,
             reflow_result.pending_rasterization_images,
             reflow_result.pending_svg_elements_for_serialization,
+            reflow_result.pending_mask_references,
         );
 
         if let Some(candidate) = reflow_result.lcp_candidate {
@@ -3779,6 +3783,25 @@ impl Window {
         document.store_lcp_candidate(candidate, element.as_deref());
     }
 
+    /// Resolve a same-document `mask-image: url(#id)` (or similar)
+    /// reference: `id` must name an SVG-namespace `<mask>` element, and
+    /// that element's containing `<svg>` subtree is serialized the same way
+    /// `SVGSVGElement::serialize_and_cache_subtree` serializes one used as
+    /// replaced content -- except this also works when that `<svg>` is
+    /// never laid out itself (e.g. a `display: none` icon sprite sheet).
+    fn resolve_mask_reference(&self, cx: &mut JSContext, id: &str) -> Option<String> {
+        let document = self.Document();
+        let element = document.GetElementById(cx, DOMString::from(id))?;
+        if element.namespace() != &ns!(svg) || element.local_name() != &local_name!("mask") {
+            return None;
+        }
+        let svg_root = element
+            .upcast::<Node>()
+            .inclusive_ancestors_unrooted(cx.no_gc(), ShadowIncluding::No)
+            .find_map(|ancestor| ancestor.downcast::<SVGSVGElement>().map(DomRoot::from_ref))?;
+        svg_root.serialized_subtree_source(cx)
+    }
+
     #[expect(unsafe_code)]
     fn handle_pending_images_post_reflow(
         &self,
@@ -3786,6 +3809,7 @@ impl Window {
         pending_images: Vec<PendingImage>,
         pending_rasterization_images: Vec<PendingRasterizationImage>,
         pending_svg_element_for_serialization: Vec<UntrustedNodeAddress>,
+        pending_mask_references: Vec<(UntrustedNodeAddress, String)>,
     ) {
         let pipeline_id = self.pipeline_id();
         let image_cache = self.image_cache();
@@ -3852,6 +3876,24 @@ impl Window {
             let svg = node.downcast::<SVGSVGElement>().unwrap();
             svg.serialize_and_cache_subtree(cx);
             node.dirty(cx.no_gc(), NodeDamage::Other);
+        }
+
+        if !pending_mask_references.is_empty() {
+            let sources = self.Document().mask_reference_sources();
+            for (node, id) in pending_mask_references {
+                // Loop guard: never re-resolve an id already in the map
+                // (`Some` or `None`), whether from an earlier reflow or an
+                // earlier element in this same batch referencing the same
+                // id -- otherwise dirtying the referencing node below would
+                // queue the same id again next reflow, forever.
+                if sources.read().contains_key(&id) {
+                    continue;
+                }
+                let result = self.resolve_mask_reference(cx, &id);
+                sources.write().insert(id, result);
+                let node = unsafe { from_untrusted_node_address(node) };
+                node.dirty(cx.no_gc(), NodeDamage::Other);
+            }
         }
     }
 

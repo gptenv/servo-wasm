@@ -51,6 +51,7 @@ use net_traits::request::{
 };
 use net_traits::{ReferrerPolicy, ResourceFetchTiming};
 use paint_api::display_list::PaintTimingInfo;
+use parking_lot::RwLock as StdRwLock;
 use percent_encoding::percent_decode;
 use profile_traits::mem::{Report, ReportKind};
 use profile_traits::time::TimerMetadataFrameType;
@@ -595,6 +596,16 @@ pub(crate) struct Document {
     timeline: Dom<DocumentTimeline>,
     /// Animations for this Document
     animation_manager: AnimationManager,
+    /// Cache mapping the `id` of an SVG `<mask>`/`<clipPath>` element to the
+    /// XML source of its containing `<svg>` subtree, for a same-document
+    /// `mask-image: url(#id)` (or similar) reference. Shared with layout via
+    /// `ReflowRequest::mask_reference_sources` the same way
+    /// `animation_manager`'s `animating_images` is; see that field and
+    /// `ImageResolver::mask_reference_sources` for the full round trip.
+    /// `None` means resolution was attempted and failed.
+    #[ignore_malloc_size_of = "Arc"]
+    #[no_trace]
+    mask_reference_sources: StdArc<StdRwLock<HashMap<String, Option<String>>>>,
     /// The nearest inclusive ancestors to all the nodes that require a restyle.
     dirty_root: MutNullableDom<Element>,
     /// <https://html.spec.whatwg.org/multipage/#will-declaratively-refresh>
@@ -4134,6 +4145,7 @@ impl Document {
             selection: MutNullableDom::new(None),
             timeline: Dom::from_ref(timeline),
             animation_manager: AnimationManager::new(),
+            mask_reference_sources: Default::default(),
             dirty_root: Default::default(),
             declarative_refresh: Default::default(),
             resize_observers: Default::default(),
@@ -4957,6 +4969,12 @@ impl Document {
 
     pub(crate) fn animation_manager(&self) -> &AnimationManager {
         &self.animation_manager
+    }
+
+    pub(crate) fn mask_reference_sources(
+        &self,
+    ) -> StdArc<StdRwLock<HashMap<String, Option<String>>>> {
+        self.mask_reference_sources.clone()
     }
 
     pub(crate) fn update_animations_post_reflow(&self) {

@@ -1139,3 +1139,43 @@ test('screenshots apply gradient mask-image layers and mask-composite', async ()
   // which of the two is on top.
   assert.deepEqual(png.pixel(350, 30), [255, 255, 255, 255], 'intersect with a failed layer hides the element');
 });
+
+test('screenshots apply a same-document SVG <mask> reference (mask-image: url(#id))', async () => {
+  const fetched = [];
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 200,
+    height: 100,
+    fetchImpl: async (url) => { fetched.push(url); return new Response('{}'); },
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <svg style="display:none">
+      <defs>
+        <mask id="m">
+          <rect x="0" y="0" width="50" height="100" fill="white"/>
+        </mask>
+      </defs>
+    </svg>
+    <div style="position:absolute;left:0;top:0;width:100px;height:60px;background:rgb(255, 0, 0);
+      mask-image:url(#m)"></div>
+    <div style="position:absolute;left:110px;top:0;width:60px;height:60px;background:rgb(255, 0, 0);
+      mask-image:url(#missing)"></div>
+    </body>`, { url: 'https://shot.example/' });
+  const settled = await runtime.pumpUntilSettled({ maxDurationMs: 5_000 });
+
+  const png = decodePng(await runtime.screenshot({ maxPasses: 8 }));
+  // Masked in by a <mask> inside a `display: none` sprite sheet -- this only
+  // works because resolving the reference does not depend on that <svg>
+  // ever being laid out as replaced content.
+  assert.deepEqual(png.pixel(20, 30), [255, 0, 0, 255], 'masked-in half (from a hidden sprite <svg>) is visible');
+  assert.deepEqual(png.pixel(80, 30), [255, 255, 255, 255], 'masked-out half is not');
+  // A missing id contributes as fully transparent, like any other
+  // unresolvable mask-image layer, so the page must still settle rather
+  // than waiting forever on a reference that will never resolve.
+  assert.equal(settled.settled, true, 'the page must still settle with an unresolvable mask reference pending');
+  assert.deepEqual(png.pixel(140, 30), [255, 255, 255, 255], 'a missing id hides the element');
+  // A fragment-only reference must resolve against the document, not go out
+  // over the network as if it were an external image (which would, in this
+  // test, re-fetch the page itself).
+  assert.ok(!fetched.includes('https://shot.example/'),
+    `a same-document mask reference must not fetch the page itself (fetched: ${JSON.stringify(fetched)})`);
+});

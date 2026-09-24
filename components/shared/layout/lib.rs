@@ -16,6 +16,7 @@ mod layout_node;
 mod pseudo_element_chain;
 
 use std::any::Any;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicIsize;
@@ -652,6 +653,12 @@ pub struct ReflowResult {
     /// This is needed to support inline SVGs as the serialization needs to happen on
     /// the script thread.
     pub pending_svg_elements_for_serialization: Vec<UntrustedNodeAddress>,
+    /// `(node, id)` pairs from a same-document `mask-image: url(#id)` (or
+    /// similar) reference to an SVG `<mask>`/`<clipPath>` element whose
+    /// containing `<svg>` subtree has not been resolved to XML source yet.
+    /// Resolving this, like `pending_svg_elements_for_serialization`, needs
+    /// to happen on the script thread.
+    pub pending_mask_references: Vec<(UntrustedNodeAddress, String)>,
     /// The list of iframes in this layout and their sizes, used in order
     /// to communicate them with the Constellation and also the `Window`
     /// element of their content pages. Returning None if incremental reflow
@@ -745,6 +752,10 @@ pub struct ReflowRequest {
     pub animations: DocumentAnimationSet,
     /// An [`AnimatingImages`] struct used to track images that are animating.
     pub animating_images: Arc<RwLock<AnimatingImages>>,
+    /// See `ImageResolver::mask_reference_sources`. Owned by the `Document`
+    /// and shared with layout the same way `animating_images` is, so it
+    /// persists across reflows without layout needing to own it itself.
+    pub mask_reference_sources: Arc<RwLock<HashMap<String, Option<String>>>>,
     /// The node highlighted by the devtools, if any
     pub highlighted_dom_node: Option<OpaqueNode>,
     /// Whether LCP computation should be halted for this reflow.

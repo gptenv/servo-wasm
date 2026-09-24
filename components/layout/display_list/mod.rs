@@ -7,13 +7,15 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use app_units::{AU_PER_PX, Au};
+use base64::Engine;
 use clip::Clip;
 pub(crate) use clip::ClipId;
 use euclid::{Box2D, Point2D, Rect, Scale, SideOffsets2D, Size2D, UnknownUnit, Vector2D};
 use fonts::ShapedTextSlice;
 use gradient::WebRenderGradient;
-use layout_api::ReflowStatistics;
+use layout_api::{LayoutImageDestination, ReflowStatistics};
 use net_traits::image_cache::Image as CachedImage;
+use net_traits::request::InternalRequest;
 use paint_api::display_list::{PaintDisplayListInfo, SpatialTreeNodeInfo};
 use servo_arc::Arc as ServoArc;
 use servo_base::id::{PipelineId, ScrollTreeNodeId};
@@ -577,6 +579,74 @@ impl DisplayListBuilder<'_> {
         let node = fragment.base.tag.map(|tag| tag.node);
         let mut mask_ids = Vec::new();
         for (index, image) in svg.mask_image.0.iter().enumerate() {
+            // A same-document reference to an SVG `<mask>` element, e.g.
+            // `mask-image: url(#id)`: resolved by wrapping that element's
+            // containing `<svg>` subtree source in a small standalone SVG
+            // document (letting resvg -- via the ordinary image-decoding
+            // path -- apply the mask itself, including `mask-type`, so
+            // `luminance` is left `false` here to avoid applying it twice)
+            // and rasterizing that at the border box's size. This skips
+            // `mask-size`/`mask-position`/`mask-repeat`/`mask-origin`/
+            // `mask-clip`/`mask-mode`, which is also what a raster or
+            // gradient mask layer would use only when they are all left at
+            // their initial values (the common case for this feature).
+            let composite = match background::get_cyclic(&svg.mask_composite.0, index) {
+                MaskCompositeKeyword::Add => wr::MaskComposite::Add,
+                MaskCompositeKeyword::Subtract => wr::MaskComposite::Subtract,
+                MaskCompositeKeyword::Intersect => wr::MaskComposite::Intersect,
+                MaskCompositeKeyword::Exclude => wr::MaskComposite::Exclude,
+            };
+            if let Some(id) = self.image_resolver.same_document_fragment_id(image) {
+                let mask = (|| {
+                    let source_node = node?;
+                    let xml_source = self.image_resolver.mask_reference_source(source_node, id)?;
+                    let rect = fragment_builder.border_rect;
+                    let (width, height) = (rect.width().max(1.0), rect.height().max(1.0));
+                    let wrapped = format!(
+                        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" \
+                         height=\"{height}\"><defs>{xml_source}</defs><rect width=\"{width}\" \
+                         height=\"{height}\" fill=\"white\" mask=\"url(#{id})\"/></svg>"
+                    );
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(wrapped);
+                    let data_url = ServoUrl::parse(&format!("data:image/svg+xml;base64,{encoded}")).ok()?;
+                    let image = self
+                        .image_resolver
+                        .get_cached_image_for_url(
+                            source_node,
+                            data_url,
+                            LayoutImageDestination::DisplayListBuilding,
+                            InternalRequest::Yes,
+                        )
+                        .ok()?;
+                    let scale = self.device_pixel_ratio.get();
+                    let device_size: DeviceIntSize =
+                        Size2D::new(width * scale, height * scale).to_i32();
+                    let key =
+                        self.image_resolver
+                            .image_key_from_cached_image(&image, device_size, node)?;
+                    Some((key, rect))
+                })();
+                // Not yet resolved, failed, or this build's device_size/key
+                // lookup isn't ready this pass: a transparent layer, same as
+                // any other not-yet-loaded image (a later pass picks it up).
+                let (image_key, rect) = mask.unwrap_or((wr::ImageKey::DUMMY, fragment_builder.border_rect));
+                let mask_id = self.wr().define_clip_image_mask(
+                    spatial_id,
+                    wr::ImageMask {
+                        image: image_key,
+                        rect,
+                        tile_size: rect.size(),
+                        luminance: false,
+                        composite,
+                        gradient: wr::MaskGradient::None,
+                    },
+                    &[],
+                    wr::FillRule::Nonzero,
+                );
+                mask_ids.push(mask_id);
+                continue;
+            }
+
             let positioning_area = match background::get_cyclic(&svg.mask_origin.0, index) {
                 MaskOrigin::ContentBox => *fragment_builder.content_rect(),
                 MaskOrigin::PaddingBox => *fragment_builder.padding_rect(),
@@ -666,12 +736,6 @@ impl DisplayListBuilder<'_> {
                 background::get_cyclic(&svg.mask_mode.0, index),
                 MaskMode::Luminance
             );
-            let composite = match background::get_cyclic(&svg.mask_composite.0, index) {
-                MaskCompositeKeyword::Add => wr::MaskComposite::Add,
-                MaskCompositeKeyword::Subtract => wr::MaskComposite::Subtract,
-                MaskCompositeKeyword::Intersect => wr::MaskComposite::Intersect,
-                MaskCompositeKeyword::Exclude => wr::MaskComposite::Exclude,
-            };
             let mask = self.wr().define_clip_image_mask(
                 spatial_id,
                 wr::ImageMask {

@@ -8689,6 +8689,7 @@ dependencies = [
  "app_units",
  "arrayvec",
  "atomic_refcell",
+ "base64 0.23.1",
  "bitflags 2.13.2",
  "data-url",
  "euclid",

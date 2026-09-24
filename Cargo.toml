@@ -436,6 +436,16 @@ opt-level = "s"
 inherits = "production"
 strip = true
 
+# `servo-script` is one of the largest crates in the workspace, and compiling
+# it as a single `codegen-units = 1` unit (needed workspace-wide to hit the
+# 64 MiB Worker bundle ceiling) needs more peak memory than some build hosts
+# reliably have free, causing the whole build to OOM at exactly this crate
+# regardless of the LTO setting. Splitting its own codegen into a handful of
+# units trades a little of its own optimization (LTO still inlines across
+# crate boundaries at link time) for a build that actually completes.
+[profile.production-stripped.package.servo-script]
+codegen-units = 8
+
 [profile.profiling]
 inherits = "release"
 debug-assertions = false

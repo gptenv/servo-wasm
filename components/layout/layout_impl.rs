@@ -1045,12 +1045,15 @@ impl LayoutThread {
 
         let image_resolver = Arc::new(ImageResolver {
             origin: reflow_request.origin.clone(),
+            document_url: self.url.clone(),
             image_cache: self.image_cache.clone(),
             resolved_images_cache: self.resolved_images_cache.clone(),
             pending_images: Mutex::default(),
             pending_rasterization_images: Mutex::default(),
             pending_svg_elements_for_serialization: Mutex::default(),
             animating_images: reflow_request.animating_images.clone(),
+            mask_reference_sources: reflow_request.mask_reference_sources.clone(),
+            pending_mask_references: Mutex::default(),
             animation_timeline_value: reflow_request.animation_timeline_value,
         });
         let mut reflow_statistics = Default::default();
@@ -1091,6 +1094,8 @@ impl LayoutThread {
             std::mem::take(&mut *image_resolver.pending_rasterization_images.lock());
         let pending_svg_elements_for_serialization =
             std::mem::take(&mut *image_resolver.pending_svg_elements_for_serialization.lock());
+        let pending_mask_references =
+            std::mem::take(&mut *image_resolver.pending_mask_references.lock());
 
         let lcp_candidate = self
             .paint_timing_handler
@@ -1104,6 +1109,7 @@ impl LayoutThread {
             pending_images,
             pending_rasterization_images,
             pending_svg_elements_for_serialization,
+            pending_mask_references,
             iframe_sizes: Some(iframe_sizes),
             reflow_statistics,
             changed_web_fonts,
