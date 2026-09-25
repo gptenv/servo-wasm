@@ -49,6 +49,10 @@ console.log(JSON.stringify({
   gitSources,
   rustc: command('rustc', ['--version']),
   cargo: command('cargo', ['--version']),
+  hostClang: command('clang', ['--version']).split('\n')[0],
+  targetClang: process.env.SERVO_WASI_SDK_DIR
+    ? command(join(process.env.SERVO_WASI_SDK_DIR, 'bin', 'clang'), ['--version']).split('\n')[0]
+    : null,
   node: process.version,
   wrangler: '4.136.3',
 }, null, 2));

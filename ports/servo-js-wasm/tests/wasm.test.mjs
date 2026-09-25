@@ -179,6 +179,9 @@ test('adapter validates resource budgets before instantiating WASM', async () =>
   for (const maxSubrequests of [0, -1, Infinity, 0.5]) {
     await assert.rejects(createServoWorkerRuntime(wasm, { maxSubrequests }), RangeError);
   }
+  for (const maxSessionSubrequests of [0, -1, Infinity, 0.5]) {
+    await assert.rejects(createServoWorkerRuntime(wasm, { maxSessionSubrequests }), RangeError);
+  }
 });
 
 for (const [name, source, expected] of [
@@ -1187,11 +1190,12 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   });
 });
 
-test('host subrequest budget counts redirects and survives reset', async () => {
+test('host subrequest budget counts redirects and separates invocation from session caps', async () => {
   const requests = [];
   let discardedRedirectBody = false;
   const runtime = await createServoWorkerRuntime(wasm, {
     maxSubrequests: 2,
+    maxSessionSubrequests: 3,
     log: () => {},
     fetchImpl: async (url) => {
       requests.push(url);
@@ -1231,6 +1235,27 @@ test('host subrequest budget counts redirects and survives reset', async () => {
   await settle();
   assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
   assert.equal(requests.length, 2, 'reset must not replenish the invocation subrequest budget');
+
+  runtime.beginInvocation();
+  runtime.loadHtml('<!doctype html><body><script>fetch("/after-new-invocation")' +
+    '.then(r => r.text()).then(t => document.body.dataset.value = t);</script>',
+  { url: 'https://budget.example/renewed' });
+  await settle();
+  runtime.evaluatePage('document.body.dataset.value === "final" ? 42 : 0');
+  await settle();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.equal(requests.length, 3, 'new invocation should replenish only its own budget');
+
+  runtime.reset();
+  runtime.beginInvocation();
+  runtime.loadHtml('<!doctype html><body><script>fetch("/after-session-cap")' +
+    '.catch(e => document.body.dataset.failure = e.name);</script>',
+  { url: 'https://budget.example/session-cap' });
+  await settle();
+  runtime.evaluatePage('document.body.dataset.failure === "TypeError" ? 42 : 0');
+  await settle();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.equal(requests.length, 3, 'new invocation must not replenish the session cap');
 });
 
 test('screenshots rasterize backgrounds, borders, text, images and canvas', async () => {

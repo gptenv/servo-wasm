@@ -147,7 +147,16 @@ uses `networkIdleMs: 500` by default.
 `about:blank`; callers must pump the reset or queue a replacement load. It is not
 a secure erase of all storage or a full engine destroy. A fresh WASM instance is
 required for isolation between unrelated users. Drop host references when the
-invocation ends; Servo's native blocking shutdown path is not used.
+session ends; Servo's native blocking shutdown path is not used.
+
+`beginInvocation()` marks a new serialized host operation after pending fetches,
+settling and screenshot streaming have finished. It replenishes the adapter's
+`maxSubrequests` counter (default 50) for that host invocation. `reset()` does
+not replenish it. `maxSessionSubrequests` (default 10,000) remains a separate
+runtime-lifetime cap, including redirects and WebSocket handshakes; neither
+counter replaces Cloudflare's own per-invocation accounting. Hosts that reuse a
+runtime across MCP calls must call `beginInvocation()` once at each new call
+boundary and serialize those calls. A new runtime starts fresh counters.
 
 ## Navigation and input
 
@@ -252,10 +261,12 @@ kept in memory for the lifetime of the WASM instance only.
 
 ## Limits and intentionally incomplete behavior
 
-The default host limits are six simultaneous fetches, fifty pending requests and
-fifty actual network fetch calls (redirects count). The network-call budget lasts
-for the runtime's lifetime, including resets. Synthetic supplied HTML costs no
-network fetch. These bounds do not prove Cloudflare CPU or total-memory compliance.
+The default host limits are six simultaneous fetches, fifty pending requests,
+fifty actual network fetch calls per host invocation and ten thousand per runtime
+session (redirects count). `reset()` does not replenish either counter;
+`beginInvocation()` replenishes only the invocation counter. Synthetic supplied
+HTML costs no network fetch. These bounds do not prove Cloudflare CPU or
+total-memory compliance.
 
 Only simple non-credentialed direct cross-origin GET/HEAD requests have CORS
 support. Preflighted/credentialed requests and cross-origin script-fetch redirects

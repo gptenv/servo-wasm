@@ -13,6 +13,7 @@ const MAX_REDIRECTS = 10;
 const MAX_OUTGOING_CONNECTIONS = 6;
 const MAX_PENDING_FETCHES = 50;
 const FREE_TIER_SUBREQUESTS = 50;
+const DEFAULT_SESSION_SUBREQUESTS = 10_000;
 const WORKER_ABI_VERSION = 5;
 const encoder = new TextEncoder();
 
@@ -116,6 +117,7 @@ export async function createServoWorkerRuntime(wasmModule, {
   log = console.error,
   maxResponseBytes = MAX_RESPONSE_BYTES,
   maxSubrequests = FREE_TIER_SUBREQUESTS,
+  maxSessionSubrequests = DEFAULT_SESSION_SUBREQUESTS,
 } = {}) {
   if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 0 ||
       maxResponseBytes > 64 * 1024 * 1024) {
@@ -123,6 +125,9 @@ export async function createServoWorkerRuntime(wasmModule, {
   }
   if (!Number.isSafeInteger(maxSubrequests) || maxSubrequests < 1) {
     throw new RangeError('maxSubrequests must be a positive integer');
+  }
+  if (!Number.isSafeInteger(maxSessionSubrequests) || maxSessionSubrequests < 1) {
+    throw new RangeError('maxSessionSubrequests must be a positive integer');
   }
   let runtime;
   const imports = {
@@ -172,7 +177,8 @@ export async function createServoWorkerRuntime(wasmModule, {
     throw new Error('Servo Worker artifact lacks redirect-cookie support required by this adapter');
   }
   runtime = new ServoWorkerRuntime(
-    instance, fetchImpl, webSocketFactory, log, maxResponseBytes, maxSubrequests,
+    instance, fetchImpl, webSocketFactory, log, maxResponseBytes,
+    maxSubrequests, maxSessionSubrequests,
   );
   runtime.instance.exports.__wasm_call_ctors?.();
   runtime.instance.exports.servo_worker_install_fetch_adapter();
@@ -197,6 +203,8 @@ class ServoWorkerRuntime {
   #maxResponseBytes;
   #maxSubrequests;
   #subrequestCount = 0;
+  #maxSessionSubrequests;
+  #sessionSubrequestCount = 0;
   #inFlightFetches = new Set();
   #fetchControllers = new Map();
   #responseStartedFetches = new Set();
@@ -213,7 +221,8 @@ class ServoWorkerRuntime {
   #screenshotStreamActive = false;
   #pressedModifiers = new Set();
 
-  constructor(instance, fetchImpl, webSocketFactory, log, maxResponseBytes, maxSubrequests) {
+  constructor(instance, fetchImpl, webSocketFactory, log, maxResponseBytes,
+              maxSubrequests, maxSessionSubrequests) {
     // A WASM trap does not unwind Rust state (held RefCell borrows, partial
     // updates), so after the first trap every later export call would fail
     // with a misleading secondary panic. Refuse them explicitly instead.
@@ -238,6 +247,27 @@ class ServoWorkerRuntime {
     this.#log = log;
     this.#maxResponseBytes = maxResponseBytes;
     this.#maxSubrequests = maxSubrequests;
+    this.#maxSessionSubrequests = maxSessionSubrequests;
+  }
+
+  /** Start a new serialized host invocation after the previous one has settled. */
+  beginInvocation() {
+    if (this.#inFlightFetches.size || this.#fetchQueue.length ||
+        this.pendingFetchCount() || this.#settling || this.#screenshotStreamActive) {
+      throw new Error('Finish or cancel pending Worker work before a new invocation');
+    }
+    this.#subrequestCount = 0;
+  }
+
+  #reserveSubrequest() {
+    if (this.#subrequestCount >= this.#maxSubrequests) {
+      throw new Error(`Servo Worker exceeded ${this.#maxSubrequests} host subrequests in this invocation`);
+    }
+    if (this.#sessionSubrequestCount >= this.#maxSessionSubrequests) {
+      throw new Error(`Servo Worker exceeded ${this.#maxSessionSubrequests} host subrequests in this session`);
+    }
+    this.#subrequestCount++;
+    this.#sessionSubrequestCount++;
   }
 
   /** Machine-readable support report for this Worker ABI. */
@@ -343,9 +373,7 @@ class ServoWorkerRuntime {
       };
     }
     for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
-      if (++this.#subrequestCount > this.#maxSubrequests) {
-        throw new Error(`Servo Worker exceeded ${this.#maxSubrequests} host subrequests`);
-      }
+      this.#reserveSubrequest();
       const response = await this.#fetchImpl(url, {
         method, headers, body, redirect: 'manual', signal,
       });
@@ -516,8 +544,13 @@ class ServoWorkerRuntime {
   }
 
   connectWebSocket({ request_id: id, url, protocols = [] }) {
-    if (this.#webSockets.size >= MAX_PENDING_FETCHES ||
-        ++this.#subrequestCount > this.#maxSubrequests) {
+    if (this.#webSockets.size >= MAX_PENDING_FETCHES) {
+      this.#deliverWebSocketClose(id, 0xffffffff, '', true);
+      return;
+    }
+    try {
+      this.#reserveSubrequest();
+    } catch {
       this.#deliverWebSocketClose(id, 0xffffffff, '', true);
       return;
     }

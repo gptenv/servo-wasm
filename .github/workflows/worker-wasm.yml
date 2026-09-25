@@ -53,6 +53,7 @@ jobs:
       - name: Install Servo build dependencies
         run: |
           sudo apt update
+          sudo apt install --yes clang-19
           ./mach bootstrap --yes --skip-lints --skip-nextest
 
       - name: Add the raw WASM target
@@ -66,6 +67,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/wasi-sdk-29.0-x86_64-linux.tar.gz" -C "$RUNNER_TEMP"
           sdk="$RUNNER_TEMP/wasi-sdk-29.0-x86_64-linux"
           "$sdk/bin/clang" --version
+          /usr/bin/clang-19 --version
           test -f "$sdk/share/wasi-sysroot/lib/wasm32-wasi/libc.a"
           test -f "$sdk/share/wasi-sysroot/lib/wasm32-wasi/libc++.a"
           test -f "$sdk/share/wasi-sysroot/lib/wasm32-wasi/libc++abi.a"

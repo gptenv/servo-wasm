@@ -7,4 +7,4 @@ for argument in "$@"; do
     exec "$SERVO_WASI_SDK_DIR/bin/$compiler" "$@"
   fi
 done
-exec "/usr/bin/$compiler" "$@"
+exec "/usr/bin/$compiler-19" "$@"
