@@ -250,9 +250,15 @@ fn relevant_name_to_cache_map(
 
 impl CacheStorageMethods<crate::DomTypeHolder> for CacheStorage {
     /// <https://w3c.github.io/ServiceWorker/#dom-cachestorage-keys>
-    fn Keys(&self, cx: &mut JSContext) -> RootedPromise {
+    #[expect(unsafe_code)]
+    fn Keys(&self) -> RootedPromise {
         let global = self.global();
-        let promise = Promise::new(cx, &global);
+        // This WebIDL method returns a sequence of primitive values, so the
+        // generated binding does not pass a JS context. A JS call guarantees
+        // the script thread's context is available here.
+        let mut cx = unsafe { JSContext::get_from_thread() }
+            .expect("CacheStorage.keys must run on the script thread");
+        let promise = Promise::new(&mut cx, &global);
         let callback = self.get_or_setup_callback();
         if global
             .storage_threads()
@@ -263,7 +269,7 @@ impl CacheStorageMethods<crate::DomTypeHolder> for CacheStorage {
             .is_err()
         {
             promise.reject_error(
-                cx,
+                &mut cx,
                 Error::Operation(Some("Could not list caches.".to_string())),
             );
             return promise;
