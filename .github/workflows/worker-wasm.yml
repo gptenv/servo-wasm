@@ -58,18 +58,41 @@ jobs:
       - name: Add the raw WASM target
         run: rustup target add wasm32-unknown-unknown
 
+      - name: Install pinned WASI C and C++ archives
+        run: |
+          curl -fsSL --retry 3 --output "$RUNNER_TEMP/wasi-sysroot-29.0.tar.gz" \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-29/wasi-sysroot-29.0.tar.gz
+          echo 'd99d5c4b277a725b7b56bf9d591609972ecac3207520a66408927280f191f6c7  '"$RUNNER_TEMP/wasi-sysroot-29.0.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/wasi-sysroot-29.0.tar.gz" -C "$RUNNER_TEMP"
+          test -f "$RUNNER_TEMP/wasi-sysroot-29.0/lib/wasm32-wasi/libc.a"
+          test -f "$RUNNER_TEMP/wasi-sysroot-29.0/lib/wasm32-wasi/libc++.a"
+          test -f "$RUNNER_TEMP/wasi-sysroot-29.0/lib/wasm32-wasi/libc++abi.a"
+          test -f "$RUNNER_TEMP/wasi-sysroot-29.0/lib/wasm32-wasi/libwasi-emulated-getpid.a"
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: worker-wasm-production
 
       - name: Build the production Worker artifact incrementally
-        run: >-
-          ./mach build --target wasm32-unknown-unknown --no-default-features --jobs 2
-          --profile production-stripped --manifest-path ports/servo-js-wasm/Cargo.toml
+        env:
+          WASM_CXX_LIB_DIR: ${{ runner.temp }}/wasi-sysroot-29.0/lib/wasm32-wasi
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo build --locked --target wasm32-unknown-unknown --no-default-features --jobs 2 \
+            --profile production-stripped --manifest-path ports/servo-js-wasm/Cargo.toml \
+            2>&1 | tee "$RUNNER_TEMP/worker-build.log"
 
       - name: Check the production artifact and run Node integration coverage
         working-directory: ports/servo-js-wasm
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee "$RUNNER_TEMP/worker-tests.log"
+
+      - name: Record release artifact manifest
+        working-directory: ports/servo-js-wasm
+        run: node release-manifest.mjs > "$RUNNER_TEMP/worker-release-manifest.json"
 
       - name: Start local workerd and exercise the Worker smoke routes
         working-directory: ports/servo-js-wasm/workerd-smoke
@@ -100,3 +123,17 @@ jobs:
             assert.deepEqual([...new Uint8Array(await screenshot.arrayBuffer()).slice(0, 8)],
               [137, 80, 78, 71, 13, 10, 26, 10]);
           '
+
+      - name: Retain Worker build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-wasm-evidence-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/worker-build.log
+            ${{ runner.temp }}/worker-tests.log
+            ${{ runner.temp }}/workerd.log
+            ${{ runner.temp }}/worker-release-manifest.json
+            target/wasm32-unknown-unknown/production-stripped/servo_js_wasm.wasm

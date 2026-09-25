@@ -72,7 +72,7 @@ struct WorkerRedirectCookies {
     set_cookies: Vec<String>,
 }
 
-const WORKER_ABI_VERSION: u32 = 4;
+const WORKER_ABI_VERSION: u32 = 5;
 
 #[derive(serde::Serialize)]
 struct WorkerHostMessage<'a> {
@@ -820,7 +820,7 @@ fn install_fetch_adapter() {
                     },
                 };
                 let payload = encode_host_command(WorkerHostCommand::Fetch { request: &request });
-                let accepts_cookies = worker_accepts_response_cookies(&request);
+                let accepts_cookies = servo::worker_request_accepts_cookies(&request);
                 FETCH_CALLBACKS.with(|callbacks| {
                     callbacks.borrow_mut().insert(
                         request_id,
@@ -893,26 +893,6 @@ fn install_fetch_adapter() {
 fn apply_worker_redirect(request: &mut RequestBuilder, redirect: Option<ResponseInit>) {
     if let Some(Some(Ok(url))) = redirect.map(|response| response.location_url) {
         request.url = UrlWithBlobClaim::from_url_without_having_claimed_blob(url);
-    }
-}
-
-fn worker_accepts_response_cookies(request: &RequestBuilder) -> bool {
-    let origin = match &request.origin {
-        Origin::Origin(origin) => Some(origin),
-        Origin::Client => request
-            .client
-            .as_ref()
-            .and_then(|client| match &client.origin {
-                Origin::Origin(origin) => Some(origin),
-                Origin::Client => None,
-            }),
-    };
-    match request.credentials_mode {
-        CredentialsMode::Omit => false,
-        CredentialsMode::CredentialsSameOrigin => {
-            origin.is_some_and(|origin| *origin == request.url.origin())
-        },
-        CredentialsMode::Include => true,
     }
 }
 
@@ -1004,7 +984,7 @@ fn queue_worker_fetch(mut request: RequestBuilder, mut callback: net_traits::Box
         },
     };
     let payload = encode_host_command(WorkerHostCommand::Fetch { request: &request });
-    let accepts_cookies = worker_accepts_response_cookies(&request);
+    let accepts_cookies = servo::worker_request_accepts_cookies(&request);
     let callback = GenericCallback::new(move |message| {
         if let Ok(message) = message {
             callback(message);

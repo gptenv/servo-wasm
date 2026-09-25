@@ -13,7 +13,7 @@ const MAX_REDIRECTS = 10;
 const MAX_OUTGOING_CONNECTIONS = 6;
 const MAX_PENDING_FETCHES = 50;
 const FREE_TIER_SUBREQUESTS = 50;
-const WORKER_ABI_VERSION = 4;
+const WORKER_ABI_VERSION = 5;
 const encoder = new TextEncoder();
 
 const WORKER_CAPABILITIES = Object.freeze({
@@ -167,6 +167,9 @@ export async function createServoWorkerRuntime(wasmModule, {
     : instantiated.instance;
   if (instance.exports.servo_worker_abi_version?.() !== WORKER_ABI_VERSION) {
     throw new Error('Servo Worker ABI mismatch; rebuild the WASM artifact with this adapter');
+  }
+  if (typeof instance.exports.servo_worker_process_redirect_cookies !== 'function') {
+    throw new Error('Servo Worker artifact lacks redirect-cookie support required by this adapter');
   }
   runtime = new ServoWorkerRuntime(
     instance, fetchImpl, webSocketFactory, log, maxResponseBytes, maxSubrequests,

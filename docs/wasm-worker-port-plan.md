@@ -6,7 +6,7 @@ Target: a raw `wasm32-unknown-unknown` Servo module instantiated directly by a C
 
 ## 1. Current state
 
-The production-stripped artifact is **62,814,507 bytes** (about 59.9 MiB); the previous local Wrangler dry run bundled **60,945.86 KiB** uncompressed before the latest changes. The source and newly built production artifact report ABI 4 and import exactly five `env` functions, with no WASI or wasm-bindgen imports:
+The current ABI 5 production-stripped artifact is **62,814,347 bytes** (about 59.9 MiB), SHA-256 `2ced76ff5a522450486cfa1da8a88b3fcffeaea55b0f0464a4fd82cd4af3a48b`; the previous local Wrangler dry run bundled **60,945.86 KiB** uncompressed before the latest changes. The Worker imports exactly five `env` functions, with no WASI or wasm-bindgen imports:
 
 - `worker_fetch_request`
 - `worker_getrandom`
@@ -245,7 +245,7 @@ Every layer should run against the production profile in CI. Preserve build arti
 4. Broaden the independent fixture corpus: modules/external scripts, custom elements, mutation observers, nested/interval timers, CSS cascade and layout-facing APIs. Keep rendering-dependent expectations separate.
 5. Audit and implement or explicitly exclude storage, service workers, workers, media, WebGL and WebGPU. WebGL and WebGPU are intentional exclusions; WebSockets now use the Worker host WebSocket API. Report supported capabilities in the host API.
 6. Execute the optional rendering/font/screenshot workstream if required for the release; current DOM/CSS success does not imply visible pixels.
-7. A GitHub Actions workflow builds the exact Worker profile incrementally and runs import/size checks through the Node suite plus local workerd smoke routes. Its first run exposed missing Servo uv setup. The next run, with Servo's Python/uv setup action, failed at the production build step; public job logs were unavailable during this audit, so the remote cause remains unknown. The same incremental profile builds locally. Preserve existing build artifacts and do not require a clean build. Existing native-target gating warnings remain, and the forked native-target changes need validation where relevant.
+7. A GitHub Actions workflow builds the exact Worker profile incrementally and runs import/size checks through the Node suite plus local workerd smoke routes. The first run exposed missing Servo uv setup. The next two runs failed because the runner lacked WASI C/C++ archives; the authenticated job log identified `servo-allocator`'s missing `/usr/share/wasi-sysroot/lib/wasm32-wasi/libc.a`. The workflow now installs a pinned, checksum-verified WASI SDK 29 sysroot and uses `cargo build --locked`. A green remote run is still required. Preserve existing build artifacts and do not require a clean build. Existing native-target gating warnings remain, and the forked native-target changes need validation where relevant.
 8. Investigate production CPU and total-isolate memory honestly alongside porting. No unapproved deployment or alternate paid hosting is part of this plan.
 9. The separate `servo-mcp` Worker App is scaffolded and locally verified. Choose/implement access control for its intended audience, measure it under the intended Workers plan, and deploy only after bundle/CPU/memory limits are confirmed.
 
@@ -254,7 +254,7 @@ Every layer should run against the production profile in CI. Preserve build arti
 - [x] Worker ABI, exact five-import allowlist, deterministic navigation, DOM/CSSOM, inline scripts, fetch, timers, canvas, fonts, native input and CPU screenshots are implemented; existing Node/workerd coverage exists.
 - [x] Storage is in-memory per WASM instance; reset is documented as navigation/cancellation, not runtime destruction.
 - [x] CPU renderer limitations and unsupported service classes are documented in `WORKER-ABI.md`.
-- [x] Incremental production build passes; the module reports ABI 4, imports exactly the five allowed `env` functions, has no WASI/wasm-bindgen imports, and stays below the size limit.
+- [x] The ABI 5 production artifact builds incrementally with locked dependencies, imports exactly the five allowed `env` functions, has no WASI/wasm-bindgen imports, and stays below the size limit.
 - [x] Current artifact passes the 62-test Node suite, including IndexedDB open/write/read, ordered Cache Storage lifecycle, origin isolation across navigation, storage estimates, and same-origin final/redirect cookie forwarding; local workerd root smoke, 45 shared fixture runs over three rounds (15 distinct fixtures), and screenshot response also pass.
 - [x] Worker preferences expose IndexedDB and Cache Storage to page scripts, and CacheStorage.keys is implemented and covered by the Worker lifecycle test.
 - [x] Resolved fork revisions are recorded in Cargo.lock and each remote named branch matched local HEAD at the audit.
@@ -264,7 +264,7 @@ Every layer should run against the production profile in CI. Preserve build arti
 - [ ] Complete request streaming and Fetch semantics where required; until then fail closed for credentialed/preflight CORS and other unsupported paths.
 - [x] Verify ABI 4 Worker-driven one-shot and recurring `requestAnimationFrame` callbacks and WebSocket handshakes/messages/close against the production artifact. History traversal and other native blocking/API assumptions still need probes.
 - [x] Add a CI workflow for the Worker profile, exact imports, ABI, size, Node tests and local workerd, using incremental builds only. The fixture matrix now covers custom elements, MutationObserver records, nested timers, and repeated canceled navigation.
-- [ ] Diagnose the latest GitHub Actions production build failure and get the full CI workflow green; the public run shows build step exit 101 but does not expose logs without sign-in.
+- [ ] Get the full CI workflow green. The authenticated log exposed the missing WASI libc archive; the pinned-sysroot workflow fix needs a remote run.
 - [ ] Measure production CPU and total isolate memory on the intended Workers plan. The repeatable Node diagnostic now reports 331.447 ms CPU bootstrap, 250.463 ms page work, 36.313 ms maximum pump CPU, and four pumps over 10 ms; these are not production quota measurements. Workers Paid remains the recorded initial target.
 - [x] Keep the MCP host separate. The new MIT-licensed `servo-mcp` project passes TypeScript checks, 16 network-policy tests, Wrangler deploy dry-run and local MCP initialize/tool-call/screenshot smoke. Its deployment and access-control policy remain pending in that repository.
 

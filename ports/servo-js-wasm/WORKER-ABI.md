@@ -1,7 +1,8 @@
-# Raw Worker ABI, version 4
+# Raw Worker ABI, version 5
 
 The JavaScript adapter and WASM artifact are a matched pair. The adapter checks
-`servo_worker_abi_version() === 4` before running constructors or bootstrap. Rebuild
+`servo_worker_abi_version() === 5` and checks the required redirect-cookie export
+before running constructors or bootstrap. Rebuild
 the artifact whenever the interface or serialized request representation changes.
 This is a project-internal protocol, not an MCP protocol or a stable upstream Servo API.
 
@@ -17,10 +18,10 @@ Exactly five function imports exist, all in `env`:
 | `worker_monotonic_now_ns()` | Return monotonic nanoseconds as a JavaScript `bigint`. |
 | `worker_unix_time_now_ns()` | Return Unix-epoch nanoseconds as a JavaScript `bigint`. |
 
-The fetch import carries `{version:4, kind:"fetch", request:...}`,
-`{version:4, kind:"cancel", request_ids:[...]}`,
-`{version:4, kind:"web_socket_connect", request_id, url, protocols}`, or
-`{version:4, kind:"web_socket_action", request_id, action}`. IDs serialize as
+The fetch import carries `{version:5, kind:"fetch", request:...}`,
+`{version:5, kind:"cancel", request_ids:[...]}`,
+`{version:5, kind:"web_socket_connect", request_id, url, protocols}`, or
+`{version:5, kind:"web_socket_action", request_id, action}`. IDs serialize as
 UUID strings. The WebSocket commands use the Worker's `WebSocket` host API; the
 adapter reports open, message, close and error events through the
 `servo_worker_websocket_*` exports and forwards page send/close actions to the

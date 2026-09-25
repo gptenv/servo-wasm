@@ -156,7 +156,7 @@ test('SpiderMonkey smoke export runs in wasm', () => {
 });
 
 test('Worker lifecycle exports are present and initially idle', () => {
-  assert.equal(instance.exports.servo_worker_abi_version(), 4);
+  assert.equal(instance.exports.servo_worker_abi_version(), 5);
   assert.equal(typeof instance.exports.servo_worker_reset, 'function');
   assert.equal(typeof instance.exports.servo_worker_pump_status, 'function');
   assert.equal(typeof instance.exports.servo_worker_pending_fetch_count, 'function');
@@ -483,7 +483,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       return socket;
     },
   });
-  assert.equal(runtime.capabilities().abiVersion, 4);
+  assert.equal(runtime.capabilities().abiVersion, 5);
   assert.ok(runtime.capabilities().supported.includes('cpu-screenshots'));
   assert.ok(runtime.capabilities().partial.cookies);
   assert.ok(runtime.capabilities().supported.includes('indexeddb'));
@@ -1102,6 +1102,8 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     })()`), true);
     for (let i = 0; i < 80; i++) await turn();
     await checkPage('document.body.dataset.cookiePolicy === "true"');
+    assert.equal(requests.find(({ url }) => url.endsWith('/omit-cookie'))?.cookie, null,
+      'credentials: omit must not send existing jar cookies to the host');
   });
 
   await t.test('redirect cookies are sent on the next same-origin request', async () => {

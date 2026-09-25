@@ -113,17 +113,28 @@ pub mod resource_thread {
         })
     }
 
-    pub fn attach_worker_cookies(request: &mut RequestBuilder) {
-        let same_origin = match &request.origin {
-            Origin::Client => true,
-            Origin::Origin(origin) => origin == &request.url.origin(),
+    pub fn worker_request_accepts_cookies(request: &RequestBuilder) -> bool {
+        let origin = match &request.origin {
+            Origin::Origin(origin) => Some(origin),
+            Origin::Client => request.client.as_ref().and_then(|client| match &client.origin {
+                Origin::Origin(origin) => Some(origin),
+                Origin::Client => None,
+            }),
         };
-        let include_cookies = match request.credentials_mode {
+        match request.credentials_mode {
             CredentialsMode::Omit => false,
-            CredentialsMode::CredentialsSameOrigin => same_origin,
+            CredentialsMode::CredentialsSameOrigin => {
+                origin.is_some_and(|origin| *origin == request.url.origin())
+            },
             CredentialsMode::Include => true,
-        };
-        if !include_cookies {
+        }
+    }
+
+    pub fn attach_worker_cookies(request: &mut RequestBuilder) {
+        // Never pass a preexisting Cookie header to the privileged host fetch.
+        // The request's credentials mode and resolved client origin control it.
+        request.headers.remove(header::COOKIE);
+        if !worker_request_accepts_cookies(request) {
             return;
         }
 
