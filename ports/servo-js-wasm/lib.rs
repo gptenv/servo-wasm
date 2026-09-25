@@ -27,7 +27,7 @@ use servo::{
     Code, DevicePoint, InputEvent, Key, KeyState, KeyboardEvent, Location, Modifiers, MouseButton,
     MouseButtonAction, MouseButtonEvent, MouseMoveEvent, RenderingContext, Servo, ServoBuilder,
     SoftwareRenderingContext, WebView, WebViewBuilder, WebViewPoint, WheelDelta, WheelEvent,
-    WheelMode, attach_worker_cookies,
+    WheelMode, attach_worker_cookies, pump_worker_services,
 };
 use servo::{WorkerFetchHandler, pump_worker_fetches, set_worker_fetch_handler};
 use servo_url::ServoUrl;
@@ -569,6 +569,7 @@ fn pump_worker_once() -> (usize, bool) {
     // A Servo event-loop turn can enqueue a fetch, so pump once before and
     // once after it. The second pass is what makes a newly scheduled request
     // visible to the host without requiring an extra no-op turn.
+    pump_worker_services();
     let mut requests = pump_worker_fetches();
     let mut progressed = requests != 0;
     progressed |= BROWSER.with(|browser| {
@@ -583,6 +584,7 @@ fn pump_worker_once() -> (usize, bool) {
             false
         }
     });
+    pump_worker_services();
     requests += pump_worker_fetches();
     (requests, progressed || requests != 0)
 }

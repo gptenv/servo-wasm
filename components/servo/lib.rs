@@ -128,6 +128,11 @@ pub use net::resource_thread::{
     WorkerFetchHandler, attach_worker_cookies, pump_worker_fetches, set_worker_fetch_handler,
 };
 
+/// Run cooperative Worker services such as storage between browser turns.
+pub fn pump_worker_services() {
+    servo_base::worker_services::run_all();
+}
+
 #[cfg(feature = "webxr")]
 pub mod webxr {
     #[cfg(not(any(target_os = "android", target_env = "ohos")))]

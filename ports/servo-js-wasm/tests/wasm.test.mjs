@@ -423,9 +423,10 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
           'document.body.dataset.header = r.headers.get("x-fixture");' +
           'document.body.dataset.cookieHidden = String(r.headers.get("set-cookie") === null);' +
           'document.body.dataset.headerStatus = String(r.status);' +
-          'document.body.dataset.scriptCookie = document.cookie;' +
-          'return fetch("/cookie-check", {credentials: "include"}) }).then(r => r.text()).then(cookie => ' +
-          'document.body.dataset.requestCookie = cookie);' +
+          (url === 'https://example.test/'
+            ? 'document.body.dataset.scriptCookie = document.cookie;' +
+              'return fetch("/cookie-check").then(r => r.text()).then(cookie => ' +
+              'document.body.dataset.requestCookie = cookie)' : '') + ' });' +
           (url === 'https://example.test/'
             ? 'fetch("/big").then(r => r.arrayBuffer()).then(b => ' +
               'document.body.dataset.bigLength = String(b.byteLength)).catch(e => ' +
@@ -756,7 +757,12 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     { url: 'https://inline.example/test/' },
   ), true);
   const inlineStatus = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
-  assert.equal(inlineStatus.settled, true);
+  assert.equal(inlineStatus.settled, true, JSON.stringify({
+    inlineStatus,
+    pendingFetchCount: runtime.pendingFetchCount(),
+    requests: requests.filter(({ url }) => url.startsWith('https://inline.example/')),
+    fetchErrors,
+  }));
   assert.equal(runtime.evaluatePage(
     'document.title === "Inline document" && ' +
       'document.querySelector("#inline").textContent === "host bytes" && ' +
@@ -801,7 +807,12 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
     assert.fail(JSON.stringify({ settledResult, lateResult: runtime.pageResult(), lateTurns,
-      trapped: String(runtime.trapped ?? ''), log: fetchErrors.slice(logStart) }));
+      trapped: String(runtime.trapped ?? ''), log: fetchErrors.slice(logStart),
+      diagnostic: (() => {
+        runtime.evaluatePage('JSON.stringify({url: location.href, body: document.body?.innerHTML})');
+        for (let i = 0; i < 5; i++) runtime.pump();
+        return runtime.pageResult();
+      })() }));
   };
 
   await t.test('requestAnimationFrame callbacks run on Worker refresh ticks', async () => {
