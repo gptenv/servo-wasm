@@ -64,6 +64,18 @@ impl IndexedDBThreadFactory for GenericSender<IndexedDBThreadMsg> {
     }
 }
 
+/// Create an in-isolate IndexedDB manager for the Worker build. IndexedDB
+/// database contents are held in SQLite memory for the lifetime of the WASM
+/// instance and manager messages are serviced by the cooperative Worker pump.
+#[cfg(target_arch = "wasm32")]
+pub fn new_worker_indexeddb() -> GenericSender<IndexedDBThreadMsg> {
+    let (sender, receiver) = generic_channel::channel().expect("create Worker IndexedDB channel");
+    let manager_sender = sender.clone();
+    let mut manager = IndexedDBManager::new(receiver, manager_sender);
+    servo_base::worker_services::register(Box::new(move || manager.pump()));
+    sender
+}
+
 /// A key used to track databases.
 #[derive(Clone, Debug, Eq, Hash, MallocSizeOf, PartialEq)]
 pub struct IndexedDBDescription {
@@ -1065,99 +1077,113 @@ impl IndexedDBManager {
                     continue;
                 },
             };
-            match message {
-                IndexedDBThreadMsg::Sync(SyncOperation::Exit(sender)) => {
-                    let _ = sender.send(());
-                    break;
-                },
-                IndexedDBThreadMsg::Sync(operation) => {
-                    self.handle_sync_operation(operation);
-                },
-                IndexedDBThreadMsg::Async(
-                    origin,
-                    db_name,
-                    store_name,
-                    txn,
-                    _request_id,
-                    mode,
-                    operation,
-                ) => {
-                    if let Some(db) = self.get_database_mut(origin.clone(), db_name.clone()) {
-                        // Queues an operation for a transaction without starting it
-                        db.queue_operation(&store_name, txn, mode, operation);
-                        db.schedule_transactions(origin, &db_name);
-                    }
-                },
-                IndexedDBThreadMsg::EngineTxnBatchComplete {
-                    origin,
-                    db_name,
-                    txn,
-                } => {
-                    let should_notify = self
-                        .get_database_mut(origin.clone(), db_name.clone())
-                        .is_some_and(|db| {
-                            // Decide which running flag to clear based on txn mode.
-                            let mode = db.transactions.get(&txn).map(|t| t.mode.clone());
-
-                            match mode {
-                                Some(IndexedDBTxnMode::Readonly) => {
-                                    db.running_readonly.remove(&txn);
-                                },
-                                Some(_) if db.running_readwrite == Some(txn) => {
-                                    db.running_readwrite = None;
-                                },
-                                Some(_) => {},
-                                None => {
-                                    // txn might have been aborted/removed; nothing to clear
-                                },
-                            }
-
-                            if db.abort(&origin, &db_name, txn) {
-                                return false;
-                            }
-
-                            // If more requests were queued while this batch was running,
-                            // schedule again now.
-                            db.schedule_transactions(origin.clone(), &db_name);
-                            db.can_notify_txn_maybe_commit(txn)
-                        });
-
-                    if should_notify {
-                        self.handle_sync_operation(SyncOperation::TxnMaybeCommit {
-                            origin,
-                            db_name,
-                            txn,
-                        });
-                    }
-                },
-                IndexedDBThreadMsg::CollectMemoryReport(sender) => {
-                    let reports = self.collect_memory_reports();
-                    sender.send(ProcessReports::new(reports));
-                },
-                IndexedDBThreadMsg::AsyncSchemaOperation {
-                    origin,
-                    database_name,
-                    store_name,
-                    operation,
-                    transaction_serial_number,
-                } => {
-                    if let Some(database) =
-                        self.get_database_mut(origin.clone(), database_name.clone())
-                    {
-                        // Queues an operation for a transaction without starting it
-                        database.queue_operation(
-                            &store_name,
-                            transaction_serial_number,
-                            IndexedDBTxnMode::Versionchange,
-                            AsyncOperation::Schema(operation),
-                        );
-                        database.schedule_transactions(origin, &database_name);
-                    } else {
-                        operation.notify_error(BackendError::DbNotFound);
-                    }
-                },
+            if !self.handle_message(message) {
+                break;
             }
         }
+    }
+
+    fn pump(&mut self) {
+        while let Ok(message) = self.port.try_recv() {
+            if !self.handle_message(message) {
+                break;
+            }
+        }
+    }
+
+    fn handle_message(&mut self, message: IndexedDBThreadMsg) -> bool {
+        match message {
+            IndexedDBThreadMsg::Sync(SyncOperation::Exit(sender)) => {
+                let _ = sender.send(());
+                return false;
+            },
+            IndexedDBThreadMsg::Sync(operation) => {
+                self.handle_sync_operation(operation);
+            },
+            IndexedDBThreadMsg::Async(
+                origin,
+                db_name,
+                store_name,
+                txn,
+                _request_id,
+                mode,
+                operation,
+            ) => {
+                if let Some(db) = self.get_database_mut(origin.clone(), db_name.clone()) {
+                    // Queues an operation for a transaction without starting it
+                    db.queue_operation(&store_name, txn, mode, operation);
+                    db.schedule_transactions(origin, &db_name);
+                }
+            },
+            IndexedDBThreadMsg::EngineTxnBatchComplete {
+                origin,
+                db_name,
+                txn,
+            } => {
+                let should_notify = self
+                    .get_database_mut(origin.clone(), db_name.clone())
+                    .is_some_and(|db| {
+                        // Decide which running flag to clear based on txn mode.
+                        let mode = db.transactions.get(&txn).map(|t| t.mode.clone());
+
+                        match mode {
+                            Some(IndexedDBTxnMode::Readonly) => {
+                                db.running_readonly.remove(&txn);
+                            },
+                            Some(_) if db.running_readwrite == Some(txn) => {
+                                db.running_readwrite = None;
+                            },
+                            Some(_) => {},
+                            None => {
+                                // txn might have been aborted/removed; nothing to clear
+                            },
+                        }
+
+                        if db.abort(&origin, &db_name, txn) {
+                            return false;
+                        }
+
+                        // If more requests were queued while this batch was running,
+                        // schedule again now.
+                        db.schedule_transactions(origin.clone(), &db_name);
+                        db.can_notify_txn_maybe_commit(txn)
+                    });
+
+                if should_notify {
+                    self.handle_sync_operation(SyncOperation::TxnMaybeCommit {
+                        origin,
+                        db_name,
+                        txn,
+                    });
+                }
+            },
+            IndexedDBThreadMsg::CollectMemoryReport(sender) => {
+                let reports = self.collect_memory_reports();
+                sender.send(ProcessReports::new(reports));
+            },
+            IndexedDBThreadMsg::AsyncSchemaOperation {
+                origin,
+                database_name,
+                store_name,
+                operation,
+                transaction_serial_number,
+            } => {
+                if let Some(database) = self.get_database_mut(origin.clone(), database_name.clone())
+                {
+                    // Queues an operation for a transaction without starting it
+                    database.queue_operation(
+                        &store_name,
+                        transaction_serial_number,
+                        IndexedDBTxnMode::Versionchange,
+                        AsyncOperation::Schema(operation),
+                    );
+                    database.schedule_transactions(origin, &database_name);
+                } else {
+                    operation.notify_error(BackendError::DbNotFound);
+                }
+            },
+        }
+        true
     }
 
     fn dispatch_txn_maybe_commit(&self, origin: ImmutableOrigin, db_name: String, txn: u64) {

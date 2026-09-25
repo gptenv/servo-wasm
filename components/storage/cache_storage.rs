@@ -242,6 +242,19 @@ impl CacheStorageThreadFactory for CacheStorageThreadHandle {
     }
 }
 
+/// Construct an in-memory Cache Storage service driven by the Worker pump.
+#[cfg(target_arch = "wasm32")]
+pub fn new_worker_cache_storage() -> CacheStorageThreadHandle {
+    let (sender, receiver) =
+        generic_channel::channel().expect("create Worker Cache Storage channel");
+    let engine = MemCacheStorageEngine {
+        name_to_cache_map: Default::default(),
+    };
+    let mut service = CacheStorageThread::new(sender.clone(), receiver, engine);
+    servo_base::worker_services::register(Box::new(move || service.pump()));
+    CacheStorageThreadHandle::new(sender)
+}
+
 struct CacheStorageThread<E: CacheStorageEngine> {
     receiver: GenericReceiver<CacheStorageThreadMessage>,
     // Note: a sender to self might be required later for the storage engine.
@@ -267,80 +280,89 @@ where
 
     pub fn start(&mut self) {
         while let Ok(message) = self.receiver.recv() {
-            match message {
-                CacheStorageThreadMessage::HasCache {
-                    cache_name,
-                    callback,
-                    proxy: _,
-                    origin,
-                } => {
-                    let result = self.engine.has_cache(origin.clone(), &cache_name);
-                    if callback
-                        .send(CacheStorageThreadResponse::HasCacheResult(
-                            result.map_err(|e| format!("{:?}", e)),
-                        ))
-                        .is_err()
-                    {
-                        error!("Failed to send response to script for HasCache message.");
-                    }
-                },
-                CacheStorageThreadMessage::OpenCache {
-                    cache_name,
-                    callback,
-                    proxy,
-                    origin,
-                } => {
-                    let result = self
-                        .engine
-                        .open_cache(origin.clone(), cache_name.clone(), &proxy);
-                    if callback
-                        .send(CacheStorageThreadResponse::OpenCacheResult {
-                            result: result.map_err(|e| format!("{:?}", e)),
-                            cache_name,
-                        })
-                        .is_err()
-                    {
-                        error!("Failed to send response to script for OpenCache message.");
-                    }
-                },
-                CacheStorageThreadMessage::Keys {
-                    cache_name,
-                    callback,
-                    origin,
-                } => {
-                    let result = self.engine.keys(origin.clone(), &cache_name);
-                    if callback
-                        .send(CacheStorageThreadResponse::KeysResult(
-                            result.map_err(|e| format!("{:?}", e)),
-                        ))
-                        .is_err()
-                    {
-                        error!("Failed to send response to script for Keys message.");
-                    }
-                },
-                CacheStorageThreadMessage::DeleteCache {
-                    cache_name,
-                    callback,
-                    proxy,
-                    origin,
-                } => {
-                    let result = self
-                        .engine
-                        .delete_cache(origin.clone(), &cache_name, &proxy);
-                    if callback
-                        .send(CacheStorageThreadResponse::DeleteCacheResult(
-                            result.map_err(|e| format!("{:?}", e)),
-                        ))
-                        .is_err()
-                    {
-                        error!("Failed to send response to script for DeleteCache message.");
-                    }
-                },
-                CacheStorageThreadMessage::Exit(sender) => {
-                    let _ = sender.send(());
-                    break;
-                },
-            }
+            self.handle_message(message);
+        }
+    }
+
+    fn pump(&mut self) {
+        while let Ok(message) = self.receiver.try_recv() {
+            self.handle_message(message);
+        }
+    }
+
+    fn handle_message(&mut self, message: CacheStorageThreadMessage) {
+        match message {
+            CacheStorageThreadMessage::HasCache {
+                cache_name,
+                callback,
+                proxy: _,
+                origin,
+            } => {
+                let result = self.engine.has_cache(origin.clone(), &cache_name);
+                if callback
+                    .send(CacheStorageThreadResponse::HasCacheResult(
+                        result.map_err(|e| format!("{:?}", e)),
+                    ))
+                    .is_err()
+                {
+                    error!("Failed to send response to script for HasCache message.");
+                }
+            },
+            CacheStorageThreadMessage::OpenCache {
+                cache_name,
+                callback,
+                proxy,
+                origin,
+            } => {
+                let result = self
+                    .engine
+                    .open_cache(origin.clone(), cache_name.clone(), &proxy);
+                if callback
+                    .send(CacheStorageThreadResponse::OpenCacheResult {
+                        result: result.map_err(|e| format!("{:?}", e)),
+                        cache_name,
+                    })
+                    .is_err()
+                {
+                    error!("Failed to send response to script for OpenCache message.");
+                }
+            },
+            CacheStorageThreadMessage::Keys {
+                cache_name,
+                callback,
+                origin,
+            } => {
+                let result = self.engine.keys(origin.clone(), &cache_name);
+                if callback
+                    .send(CacheStorageThreadResponse::KeysResult(
+                        result.map_err(|e| format!("{:?}", e)),
+                    ))
+                    .is_err()
+                {
+                    error!("Failed to send response to script for Keys message.");
+                }
+            },
+            CacheStorageThreadMessage::DeleteCache {
+                cache_name,
+                callback,
+                proxy,
+                origin,
+            } => {
+                let result = self
+                    .engine
+                    .delete_cache(origin.clone(), &cache_name, &proxy);
+                if callback
+                    .send(CacheStorageThreadResponse::DeleteCacheResult(
+                        result.map_err(|e| format!("{:?}", e)),
+                    ))
+                    .is_err()
+                {
+                    error!("Failed to send response to script for DeleteCache message.");
+                }
+            },
+            CacheStorageThreadMessage::Exit(sender) => {
+                let _ = sender.send(());
+            },
         }
     }
 }

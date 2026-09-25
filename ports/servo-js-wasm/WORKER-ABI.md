@@ -62,6 +62,20 @@ unverified entry as unavailable until it has a passing runtime characterization.
 The report describes this adapter's support contract; it does not replace
 host-side URL/SSRF policy.
 
+`document.cookie` and Worker fetch requests use Servo's in-memory RFC 6265 cookie
+jar. Final response `Set-Cookie` values are stored when the host exposes
+`Headers.getSetCookie()`; redirect response cookies and complete SameSite
+context checks are not implemented. The jar is lost with the WASM instance, so
+the capability report marks cookies as partial.
+`localStorage` and `sessionStorage` are instance-local. IndexedDB, client
+storage, and Cache Storage now have cooperative in-process Worker services and
+memory-backed databases. Their data lasts only while the WASM instance stays
+alive. Cache Storage remains incomplete: request/response operations such as
+`Cache.match`, `Cache.put`, and `Cache.add` are not implemented by the current
+Servo Cache API surface. IndexedDB transaction scheduling and database lifetime
+still need validation against the production Worker artifact before claiming
+full compatibility.
+
 One browser/SpiderMonkey runtime may be bootstrapped per WASM instance. A second
 bootstrap returns false. Use a separate instance for unrelated incoming requests;
 do not share mutable runtime state across requests or users.
@@ -227,10 +241,12 @@ network fetch. These bounds do not prove Cloudflare CPU or total-memory complian
 
 Only simple non-credentialed direct cross-origin GET/HEAD requests have CORS
 support. Preflighted/credentialed requests and cross-origin script-fetch redirects
-fail closed. Cookies and general request-body streams are not implemented. Full
-Fetch redirect/manual-redirect behavior, response-reader and cloned-response
-cancellation semantics, WebSocket/service-worker/IndexedDB/Cache Storage support,
-and hard script deadlines remain unsupported or uncharacterized. Screenshots
+fail closed. Cookie support is partial as described above; general request-body
+streams are not implemented. Full Fetch redirect/manual-redirect behavior,
+response-reader and cloned-response cancellation semantics, service-worker
+support, IndexedDB transaction behavior, Cache request/response operations, and
+hard script deadlines remain unsupported or uncharacterized. WebGL and WebGPU
+are intentional exclusions. Screenshots
 are implemented with the CPU renderer described above; backdrop filters and
 non-rounded clip paths have rendering gaps, and only the tested mask cases are
 covered. The eventual host must add its own destination/SSRF policy before

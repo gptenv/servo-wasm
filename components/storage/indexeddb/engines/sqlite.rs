@@ -89,6 +89,9 @@ impl SqliteEngine {
         pool: Arc<ThreadPool>,
     ) -> Result<Self, Error> {
         let db_path = path.join("indexeddb.sqlite");
+        // The Worker target's sqlite-wasm-rs default VFS maps named SQLite
+        // paths to isolate-local memory. Keeping the stable logical path lets
+        // transaction jobs reopen the same database without native files.
         let connection = Self::init_db(&db_path, db_info)?;
 
         for stmt in DB_PRAGMAS {
@@ -111,12 +114,20 @@ impl SqliteEngine {
     }
 
     fn init_db(path: &Path, db_info: &IndexedDBDescription) -> Result<Connection, Error> {
+        info!("Initializing indexeddb database at {:?}", path);
         let connection = Connection::open(path)?;
+        Self::init_connection(&connection, db_info)?;
+        Ok(connection)
+    }
+
+    fn init_connection(
+        connection: &Connection,
+        db_info: &IndexedDBDescription,
+    ) -> Result<(), Error> {
         if connection.table_exists(None, "database")? {
             // Database already exists, no need to initialize
-            return Ok(connection);
+            return Ok(());
         }
-        info!("Initializing indexeddb database at {:?}", path);
         for stmt in DB_INIT_PRAGMAS {
             // FIXME(arihant2math): this fails occasionally
             let _ = connection.execute(stmt, ());
@@ -132,7 +143,7 @@ impl SqliteEngine {
                 i64::from_ne_bytes(0_u64.to_ne_bytes())
             ],
         )?;
-        Ok(connection)
+        Ok(())
     }
 
     fn get(

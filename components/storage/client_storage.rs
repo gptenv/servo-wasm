@@ -478,6 +478,7 @@ impl RegistryEngine for SqliteEngine {
 
         tx.commit().map_err(ClientStorageErrorr::Internal)?;
 
+        #[cfg(not(target_arch = "wasm32"))]
         std::fs::create_dir_all(&path).map_err(|_| ClientStorageErrorr::DirectoryCreationFailed)?;
 
         Ok((path, true))
@@ -491,12 +492,14 @@ impl RegistryEngine for SqliteEngine {
     ) -> Result<(), ClientStorageErrorr<Self::Error>> {
         let tx = self.connection.transaction()?;
 
+        #[cfg(not(target_arch = "wasm32"))]
         let database_id: i64 = tx.query_row(
             "SELECT id FROM databases WHERE bottle_id = ?1 AND name = ?2;",
             (bottle_id, name.clone()),
             |row| row.get(0),
         )?;
 
+        #[cfg(not(target_arch = "wasm32"))]
         let path: String = tx.query_row(
             "SELECT path FROM directories WHERE database_id = ?1;",
             [database_id],
@@ -518,6 +521,7 @@ impl RegistryEngine for SqliteEngine {
         // Delete the directory on disk.
         // Note: on Windows this needs to be done outside of the transaction,
         // because the transaction holds a file lock.
+        #[cfg(not(target_arch = "wasm32"))]
         std::fs::remove_dir_all(&path).map_err(|_| ClientStorageErrorr::DirectoryDeletionFailed)?;
 
         Ok(())
@@ -687,6 +691,7 @@ impl ClientStorageThreadFactory for ClientStorageThreadHandle {
         } else {
             base_dir.join("default_v1")
         };
+        #[cfg(not(target_arch = "wasm32"))]
         std::fs::create_dir_all(&storage_dir)
             .expect("Failed to create ClientStorage storage directory");
         let sender_clone = generic_sender.clone();
@@ -705,6 +710,19 @@ impl ClientStorageThreadFactory for ClientStorageThreadHandle {
 
         ClientStorageThreadHandle::new(generic_sender)
     }
+}
+
+/// Construct the Worker's in-memory client-storage service. The native
+/// implementation owns a blocking thread and filesystem-backed database;
+/// Worker builds instead pump the same message handler cooperatively.
+#[cfg(target_arch = "wasm32")]
+pub fn new_worker_client_storage() -> ClientStorageThreadHandle {
+    let (sender, receiver) =
+        generic_channel::channel().expect("create Worker client-storage channel");
+    let engine = SqliteEngine::memory().expect("initialize Worker client-storage database");
+    let mut service = ClientStorageThread::new(sender.clone(), receiver, engine);
+    servo_base::worker_services::register(Box::new(move || service.pump()));
+    ClientStorageThreadHandle::new(sender)
 }
 
 struct ClientStorageThread<E: RegistryEngine> {
@@ -731,57 +749,72 @@ where
 
     pub fn start(&mut self) {
         while let Ok(message) = self.receiver.recv() {
-            match message {
-                ClientStorageThreadMessage::ObtainBottleMap {
-                    storage_type,
-                    storage_identifier,
-                    webview,
-                    origin,
-                    sender,
-                } => {
-                    let result = self.engine.obtain_a_storage_bottle_map(
-                        storage_type,
-                        webview,
-                        storage_identifier,
-                        origin,
-                        &self.sender,
-                    );
-                    let _ = sender.send(result.map_err(|e| format!("{:?}", e)));
-                },
-                ClientStorageThreadMessage::CreateDatabase {
-                    bottle_id,
-                    name,
-                    sender,
-                } => {
-                    let result = self.engine.create_database(bottle_id, name);
-                    let _ = sender.send(result.map_err(|e| format!("{:?}", e)));
-                },
-                ClientStorageThreadMessage::DeleteDatabase {
-                    bottle_id,
-                    name,
-                    sender,
-                } => {
-                    let result = self.engine.delete_database(bottle_id, name);
-                    let _ = sender.send(result.map_err(|e| format!("{:?}", e)));
-                },
-                ClientStorageThreadMessage::Persisted { origin, sender } => {
-                    let _ = sender.send(self.engine.persisted(origin));
-                },
-                ClientStorageThreadMessage::Persist {
-                    origin,
-                    permission_granted,
-                    sender,
-                } => {
-                    let _ = sender.send(self.engine.persist(origin, permission_granted));
-                },
-                ClientStorageThreadMessage::Estimate { origin, sender } => {
-                    let _ = sender.send(self.engine.estimate(origin));
-                },
-                ClientStorageThreadMessage::Exit(sender) => {
-                    let _ = sender.send(());
-                    break;
-                },
+            if !self.handle_message(message) {
+                break;
             }
         }
+    }
+
+    fn pump(&mut self) {
+        while let Ok(message) = self.receiver.try_recv() {
+            if !self.handle_message(message) {
+                break;
+            }
+        }
+    }
+
+    fn handle_message(&mut self, message: ClientStorageThreadMessage) -> bool {
+        match message {
+            ClientStorageThreadMessage::ObtainBottleMap {
+                storage_type,
+                storage_identifier,
+                webview,
+                origin,
+                sender,
+            } => {
+                let result = self.engine.obtain_a_storage_bottle_map(
+                    storage_type,
+                    webview,
+                    storage_identifier,
+                    origin,
+                    &self.sender,
+                );
+                let _ = sender.send(result.map_err(|e| format!("{:?}", e)));
+            },
+            ClientStorageThreadMessage::CreateDatabase {
+                bottle_id,
+                name,
+                sender,
+            } => {
+                let result = self.engine.create_database(bottle_id, name);
+                let _ = sender.send(result.map_err(|e| format!("{:?}", e)));
+            },
+            ClientStorageThreadMessage::DeleteDatabase {
+                bottle_id,
+                name,
+                sender,
+            } => {
+                let result = self.engine.delete_database(bottle_id, name);
+                let _ = sender.send(result.map_err(|e| format!("{:?}", e)));
+            },
+            ClientStorageThreadMessage::Persisted { origin, sender } => {
+                let _ = sender.send(self.engine.persisted(origin));
+            },
+            ClientStorageThreadMessage::Persist {
+                origin,
+                permission_granted,
+                sender,
+            } => {
+                let _ = sender.send(self.engine.persist(origin, permission_granted));
+            },
+            ClientStorageThreadMessage::Estimate { origin, sender } => {
+                let _ = sender.send(self.engine.estimate(origin));
+            },
+            ClientStorageThreadMessage::Exit(sender) => {
+                let _ = sender.send(());
+                return false;
+            },
+        }
+        true
     }
 }

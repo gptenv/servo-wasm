@@ -62,7 +62,8 @@ pub mod resource_thread {
     use std::sync::Arc;
 
     use crossbeam_channel::Sender;
-    use net_traits::request::RequestBuilder;
+    use http::{HeaderValue, header};
+    use net_traits::request::{CredentialsMode, Origin, RequestBuilder};
     use net_traits::response::ResponseInit;
     use net_traits::{AsyncRuntime, CoreResourceMsg, FetchChannels, ResourceThreads};
     use profile_traits::mem::ProfilerChan;
@@ -87,9 +88,47 @@ pub mod resource_thread {
             RefCell::new(crate::cookie_storage::CookieStorage::new(150));
     }
 
-    fn set_cookie(url: &servo_url::ServoUrl, cookie: cookie::Cookie<'static>, source: net_traits::CookieSource) {
+    fn set_cookie(
+        url: &servo_url::ServoUrl,
+        cookie: cookie::Cookie<'static>,
+        source: net_traits::CookieSource,
+    ) {
         if let Some(cookie) = crate::cookie::ServoCookie::new_wrapped(cookie, url, source) {
             COOKIES.with(|jar| jar.borrow_mut().push(cookie, url, source));
+        }
+    }
+
+    /// Store a `Set-Cookie` value received by the Worker fetch adapter.
+    pub fn set_worker_cookie_from_header(url: &servo_url::ServoUrl, value: &str) {
+        if let Ok(cookie) = cookie::Cookie::parse(value.to_owned()) {
+            set_cookie(url, cookie.into_owned(), net_traits::CookieSource::HTTP);
+        }
+    }
+
+    fn attach_worker_cookies(request: &mut RequestBuilder) {
+        let same_origin = match &request.origin {
+            Origin::Client => true,
+            Origin::Origin(origin) => origin == &request.url.origin(),
+        };
+        let include_cookies = match request.credentials_mode {
+            CredentialsMode::Omit => false,
+            CredentialsMode::CredentialsSameOrigin => same_origin,
+            CredentialsMode::Include => true,
+        };
+        if !include_cookies {
+            return;
+        }
+
+        let url = request.url.url();
+        let cookie_header = COOKIES.with(|jar| {
+            let mut jar = jar.borrow_mut();
+            jar.remove_expired_cookies_for_url(&url);
+            jar.cookies_for_url(&url, net_traits::CookieSource::HTTP)
+        });
+        if let Some(cookie_header) = cookie_header
+            && let Ok(cookie_header) = HeaderValue::from_bytes(cookie_header.as_bytes())
+        {
+            request.headers.insert(header::COOKIE, cookie_header);
         }
     }
 
@@ -113,14 +152,16 @@ pub mod resource_thread {
             let Some(message) = message else { break };
 
             match message {
-                CoreResourceMsg::Fetch(request, channels) => {
+                CoreResourceMsg::Fetch(mut request, channels) => {
+                    attach_worker_cookies(&mut request);
                     FETCH_HANDLER.with(|handler| {
                         if let Some(handler) = handler.borrow_mut().as_mut() {
                             handler(request, None, channels);
                         }
                     });
                 },
-                CoreResourceMsg::FetchRedirect(request, response, callback) => {
+                CoreResourceMsg::FetchRedirect(mut request, response, callback) => {
+                    attach_worker_cookies(&mut request);
                     FETCH_HANDLER.with(|handler| {
                         if let Some(handler) = handler.borrow_mut().as_mut() {
                             handler(

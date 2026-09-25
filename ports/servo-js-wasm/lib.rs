@@ -1167,6 +1167,12 @@ pub unsafe extern "C" fn servo_worker_begin_http_response(
     };
     let mut headers = HeaderMap::new();
     for (name, value) in pairs {
+        if name.eq_ignore_ascii_case("set-cookie") {
+            // Set-Cookie is consumed by the browser's cookie store and must
+            // not become visible through the page's Response headers.
+            servo::set_worker_cookie_from_header(&url, &value);
+            continue;
+        }
         let (Ok(name), Ok(value)) = (
             HeaderName::from_bytes(name.as_bytes()),
             HeaderValue::from_bytes(value.as_bytes()),

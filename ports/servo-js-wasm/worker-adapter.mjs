@@ -28,6 +28,12 @@ const WORKER_CAPABILITIES = Object.freeze({
   partial: Object.freeze({
     fetch: 'Response bodies stream; request bodies are buffered up to 256 KiB. ' +
       'CORS is limited to simple non-credentialed cross-origin GET/HEAD.',
+    cookies: 'document.cookie and Worker fetches use Servo’s in-memory RFC 6265 ' +
+      'cookie jar. Final response cookies require Headers.getSetCookie(); ' +
+      'redirect cookies and complete SameSite context checks are missing, and ' +
+      'cookies are lost when the WASM instance is discarded.',
+    storage: 'localStorage and sessionStorage are in memory for one WASM instance; ' +
+      'they do not persist across instances or Worker requests.',
     screenshots: 'CPU display-list renderer; backdrop filters and non-rounded ' +
       'clip paths are incomplete, and mask coverage is limited to tested cases.',
     lifecycle: 'reset cancels work and navigates to about:blank; it does not ' +
@@ -36,7 +42,7 @@ const WORKER_CAPABILITIES = Object.freeze({
       'and synchronous scripts cannot be interrupted.',
   }),
   unsupported: Object.freeze([
-    'cookies', 'indexeddb', 'cache-storage', 'service-workers',
+    'indexeddb', 'cache-storage', 'service-workers',
     'dedicated-shared-workers', 'webgl', 'webgpu',
     'credentialed-preflight-cors', 'streaming-request-bodies',
   ]),
@@ -380,7 +386,14 @@ class ServoWorkerRuntime {
       }
       const idBytes = encoder.encode(requestId);
       const urlBytes = encoder.encode(fetched.url);
-      const headersBytes = encoder.encode(JSON.stringify([...response.headers.entries()]));
+      const headers = [...response.headers.entries()]
+        .filter(([name]) => name.toLowerCase() !== 'set-cookie');
+      // The Fetch Headers iterator hides Set-Cookie. Workers that expose the
+      // standard getSetCookie() extension can still hand those values to
+      // Servo's cookie jar without exposing them to page script.
+      const setCookies = response.headers.getSetCookie?.() ?? [];
+      for (const cookie of setCookies) headers.push(['set-cookie', cookie]);
+      const headersBytes = encoder.encode(JSON.stringify(headers));
       if (headersBytes.length > MAX_RESPONSE_HEADERS_BYTES) {
         throw new Error('Servo response headers exceed 64 KiB');
       }

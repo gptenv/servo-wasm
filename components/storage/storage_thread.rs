@@ -5,10 +5,10 @@
 use std::path::PathBuf;
 
 use profile_traits::mem::ProfilerChan as MemProfilerChan;
-use servo_base::generic_channel::{self, GenericSender};
+use servo_base::generic_channel::GenericSender;
 use storage_traits::StorageThreads;
-use storage_traits::cache_storage::{CacheStorageThreadHandle, CacheStorageThreadMessage};
-use storage_traits::client_storage::{ClientStorageThreadHandle, ClientStorageThreadMessage};
+use storage_traits::cache_storage::CacheStorageThreadHandle;
+use storage_traits::client_storage::ClientStorageThreadHandle;
 use storage_traits::indexeddb::IndexedDBThreadMsg;
 use storage_traits::webstorage_thread::WebStorageThreadMsg;
 
@@ -53,17 +53,11 @@ pub fn new_storage_threads(
     #[cfg(target_arch = "wasm32")]
     {
         let make_group = || {
-            let client = generic_channel::channel::<ClientStorageThreadMessage>()
-                .expect("create Worker client-storage channel")
-                .0;
-            let idb = generic_channel::channel::<IndexedDBThreadMsg>()
-                .expect("create Worker indexedDB channel")
-                .0;
+            let client = crate::client_storage::new_worker_client_storage().into();
+            let idb = crate::indexeddb::new_worker_indexeddb();
             let web = crate::webstorage::new_worker_webstorage();
-            let cache = generic_channel::channel::<CacheStorageThreadMessage>()
-                .expect("create Worker cache-storage channel")
-                .0;
-            StorageThreads::new(client, idb, web, cache)
+            let cache = crate::cache_storage::new_worker_cache_storage();
+            StorageThreads::new(client, idb, web, cache.into())
         };
         let _ = (mem_profiler_chan, config_dir, temporary_storage);
         return (make_group(), make_group());
