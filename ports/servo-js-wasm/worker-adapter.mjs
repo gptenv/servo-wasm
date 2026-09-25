@@ -24,6 +24,7 @@ const WORKER_CAPABILITIES = Object.freeze({
     'timers', 'microtasks', 'fetch', 'canvas-2d', 'image-decoding',
     'font-registration', 'cpu-screenshots', 'local-session-storage',
     'request-animation-frame', 'websocket-transport',
+    'indexeddb', 'cache-storage-lifecycle',
   ]),
   partial: Object.freeze({
     fetch: 'Response bodies stream; request bodies are buffered up to 256 KiB. ' +
@@ -32,8 +33,9 @@ const WORKER_CAPABILITIES = Object.freeze({
       'cookie jar. Final response cookies require Headers.getSetCookie(); ' +
       'redirect cookies and complete SameSite context checks are missing, and ' +
       'cookies are lost when the WASM instance is discarded.',
-    storage: 'localStorage and sessionStorage are in memory for one WASM instance; ' +
-      'they do not persist across instances or Worker requests.',
+    storage: 'localStorage, sessionStorage, IndexedDB and Cache Storage are ' +
+      'instance-local and do not persist across WASM instances. Cache request/' +
+      'response operations are not implemented.',
     screenshots: 'CPU display-list renderer; backdrop filters and non-rounded ' +
       'clip paths are incomplete, and mask coverage is limited to tested cases.',
     lifecycle: 'reset cancels work and navigates to about:blank; it does not ' +
@@ -42,7 +44,7 @@ const WORKER_CAPABILITIES = Object.freeze({
       'and synchronous scripts cannot be interrupted.',
   }),
   unsupported: Object.freeze([
-    'indexeddb', 'cache-storage', 'service-workers',
+    'service-workers',
     'dedicated-shared-workers', 'webgl', 'webgpu',
     'credentialed-preflight-cors', 'streaming-request-bodies',
   ]),

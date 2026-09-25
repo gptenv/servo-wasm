@@ -259,6 +259,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     fetchImpl: async (url, init) => {
       requests.push({ url, method: init.method, body: init.body,
         authorization: init.headers.get('authorization'),
+        cookie: init.headers.get('cookie'),
         origin: init.headers.get('origin') });
       if (url.endsWith('/abort-before')) {
         return new Promise((_, reject) => {
@@ -352,6 +353,12 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
             'set-cookie': 'session=private' },
         });
       }
+      if (url.endsWith('/cookie-check')) {
+        return new Response(init.headers.get('cookie') ?? '', {
+          status: 200,
+          headers: { 'content-type': 'text/plain' },
+        });
+      }
       if (url.endsWith('/big')) {
         return new Response('x'.repeat(1_050_000), {
           status: 200,
@@ -415,7 +422,10 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
           'fetch("/headers").then(r => {' +
           'document.body.dataset.header = r.headers.get("x-fixture");' +
           'document.body.dataset.cookieHidden = String(r.headers.get("set-cookie") === null);' +
-          'document.body.dataset.headerStatus = String(r.status) });' +
+          'document.body.dataset.headerStatus = String(r.status);' +
+          'document.body.dataset.scriptCookie = document.cookie;' +
+          'return fetch("/cookie-check", {credentials: "include"}) }).then(r => r.text()).then(cookie => ' +
+          'document.body.dataset.requestCookie = cookie);' +
           (url === 'https://example.test/'
             ? 'fetch("/big").then(r => r.arrayBuffer()).then(b => ' +
               'document.body.dataset.bigLength = String(b.byteLength)).catch(e => ' +
@@ -456,7 +466,12 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   });
   assert.equal(runtime.capabilities().abiVersion, 4);
   assert.ok(runtime.capabilities().supported.includes('cpu-screenshots'));
-  assert.ok(runtime.capabilities().unsupported.includes('cookies'));
+  assert.ok(runtime.capabilities().partial.cookies);
+  assert.ok(runtime.capabilities().supported.includes('indexeddb'));
+  assert.ok(runtime.capabilities().partial.storage);
+  assert.ok(!runtime.capabilities().unsupported.includes('cookies'));
+  assert.ok(!runtime.capabilities().unsupported.includes('indexeddb'));
+  assert.ok(!runtime.capabilities().unsupported.includes('cache-storage'));
   assert.ok(runtime.capabilities().supported.includes('request-animation-frame'));
   assert.ok(runtime.capabilities().supported.includes('websocket-transport'));
 
@@ -474,6 +489,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     'https://example.test/',
     'https://example.test/data.json',
     'https://example.test/headers',
+    'https://example.test/cookie-check',
     'https://example.test/big',
     'https://example.test/missing',
     'https://example.test/site.css',
@@ -507,6 +523,9 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       'missingStatus: document.body.dataset.missingStatus,' +
       'header: document.body.dataset.header,' +
       'headerStatus: document.body.dataset.headerStatus,' +
+      'scriptCookie: document.body.dataset.scriptCookie,' +
+      'requestCookie: document.body.dataset.requestCookie,' +
+      'cookie: document.cookie,' +
       'bigLength: document.body.dataset.bigLength,' +
       'bigError: document.body.dataset.bigError,' +
       'cssRules: document.querySelector("style").sheet.cssRules.length,' +
@@ -952,6 +971,57 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   for (const { name, source } of webPlatformCases) {
     await t.test(name, async () => checkPage(source));
   }
+
+  await t.test('IndexedDB opens a database and round-trips a record in the Worker service', async () => {
+    runtime.pageResult();
+    assert.equal(runtime.evaluatePage(`(() => {
+      const request = indexedDB.open('servo-worker-storage-test', 1);
+      request.onupgradeneeded = () => request.result.createObjectStore('records');
+      request.onerror = () => document.body.dataset.idbStatus = 'open-error';
+      request.onsuccess = () => {
+        const db = request.result;
+        const write = db.transaction('records', 'readwrite');
+        write.objectStore('records').put('stored-value', 'record-key');
+        write.onerror = () => document.body.dataset.idbStatus = 'write-error';
+        write.oncomplete = () => {
+          const read = db.transaction('records', 'readonly');
+          const get = read.objectStore('records').get('record-key');
+          get.onerror = () => document.body.dataset.idbStatus = 'read-error';
+          get.onsuccess = () => {
+            document.body.dataset.idbStatus = String(get.result);
+            db.close();
+          };
+        };
+      };
+      return 1;
+    })()`), true);
+    for (let i = 0; i < 120; i++) await turn();
+    await checkPage('document.body.dataset.idbStatus === "stored-value"');
+  });
+
+  await t.test('Cache Storage worker service supports cache lifecycle operations', async () => {
+    runtime.pageResult();
+    assert.equal(runtime.evaluatePage(`(() => {
+      const name = 'servo-worker-cache-test';
+      caches.open(name).then(() => caches.has(name)).then((has) => {
+        if (!has) throw new Error('cache missing after open');
+        return caches.keys();
+      }).then((names) => {
+        if (!names.includes(name)) throw new Error('cache absent from keys');
+        return caches.delete(name);
+      }).then((deleted) => {
+        document.body.dataset.cacheStatus = String(deleted);
+      }).catch(() => document.body.dataset.cacheStatus = 'error');
+      return 1;
+    })()`), true);
+    for (let i = 0; i < 80; i++) await turn();
+    await checkPage('document.body.dataset.cacheStatus === "true"');
+  });
+
+  await t.test('final response cookies are sent with subsequent same-origin fetches', () => {
+    assert.equal(requests.find(({ url }) => url.endsWith('/cookie-check'))?.cookie,
+      'session=private', 'final response cookies should be attached to same-origin requests');
+  });
 
   await t.test('a frame request makes layout build a display list for the Worker renderer', async () => {
     const exports = runtime.instance.exports;

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "servo-mcp": {
+      "type": "streamable-http",
+      "url": "https://servo-mcp.defcronyke.workers.dev/mcp"
+    }
+  }
+}

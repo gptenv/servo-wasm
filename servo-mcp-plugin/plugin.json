@@ -1,0 +1,25 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "servo-mcp",
+  "version": "0.1.0",
+  "description": "Connect to Servo MCP tools for working with Servo and its related WebAssembly projects.",
+  "author": {
+    "name": "Servo MCP"
+  },
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Servo MCP",
+        "shortDescription": "Connect to Servo MCP tools",
+        "longDescription": "Provides access to the Servo MCP server and its available tools for working with Servo and related WebAssembly projects.",
+        "developerName": "Servo MCP",
+        "category": "Developer tools",
+        "capabilities": ["Connectors"],
+        "defaultPrompt": [
+          "Show me the tools available through Servo MCP.",
+          "Help me use Servo MCP for a task in my Servo projects."
+        ]
+      }
+    }
+  }
+}
