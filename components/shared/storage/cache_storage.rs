@@ -69,6 +69,11 @@ pub enum CacheStorageThreadMessage {
         proxy: StorageProxyMap,
         origin: ImmutableOrigin,
     },
+    /// <https://w3c.github.io/ServiceWorker/#dom-cachestorage-keys>
+    CacheNames {
+        callback: GenericCallback<CacheStorageThreadResponse>,
+        origin: ImmutableOrigin,
+    },
     /// <https://w3c.github.io/ServiceWorker/#cache-keys>
     Keys {
         cache_name: String,
@@ -91,6 +96,7 @@ pub enum CacheStorageThreadResponse {
         result: Result<(), String>,
         cache_name: String,
     },
+    CacheNamesResult(Result<Vec<String>, String>),
     KeysResult(Result<Vec<String>, String>),
     DeleteCacheResult(Result<bool, String>),
 }

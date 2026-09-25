@@ -161,6 +161,30 @@ impl CacheStorage {
                 let cache = Cache::new(cx, &self.global(), DOMString::from(cache_name));
                 promise.resolve_native(cx, &cache);
             },
+            CacheStorageThreadResponse::CacheNamesResult(result) => {
+                let Some(promise) = self
+                    .pending_promises
+                    .borrow_mut()
+                    .pop_front()
+                    .map(|promise| promise.root(cx))
+                else {
+                    debug_assert!(false, "No pending promise for CacheNamesResult response.");
+                    return;
+                };
+                let Ok(names) = result else {
+                    promise.reject_error(
+                        cx,
+                        Error::Operation(Some(
+                            result
+                                .err()
+                                .unwrap_or_else(|| "CacheNamesResult error".to_string()),
+                        )),
+                    );
+                    return;
+                };
+                let names: Vec<DOMString> = names.into_iter().map(DOMString::from).collect();
+                promise.resolve_native(cx, &names);
+            },
             // <https://w3c.github.io/ServiceWorker/#dom-cachestorage-delete>
             CacheStorageThreadResponse::DeleteCacheResult(result) => {
                 let Some(promise) = self
@@ -225,6 +249,31 @@ fn relevant_name_to_cache_map(
 }
 
 impl CacheStorageMethods<crate::DomTypeHolder> for CacheStorage {
+    /// <https://w3c.github.io/ServiceWorker/#dom-cachestorage-keys>
+    fn Keys(&self, cx: &mut JSContext) -> RootedPromise {
+        let global = self.global();
+        let promise = Promise::new(cx, &global);
+        let callback = self.get_or_setup_callback();
+        if global
+            .storage_threads()
+            .send(CacheStorageThreadMessage::CacheNames {
+                callback,
+                origin: global.origin().immutable().clone(),
+            })
+            .is_err()
+        {
+            promise.reject_error(
+                cx,
+                Error::Operation(Some("Could not list caches.".to_string())),
+            );
+            return promise;
+        }
+        self.pending_promises
+            .borrow_mut()
+            .push_back(promise.to_traced());
+        promise
+    }
+
     /// <https://w3c.github.io/ServiceWorker/#cache-storage-has>
     fn Has(&self, cx: &mut JSContext, cache_name: DOMString) -> RootedPromise {
         let global = self.global();

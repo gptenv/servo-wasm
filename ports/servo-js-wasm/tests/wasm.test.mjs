@@ -1020,7 +1020,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
         if (!has) throw new Error('cache missing after open');
         return caches.keys();
       }).then((names) => {
-        if (!names.includes(name)) throw new Error('cache absent from keys');
+        if (!names.includes(name)) throw new Error('cache absent from CacheStorage.keys');
         return caches.delete(name);
       }).then((deleted) => {
         document.body.dataset.cacheStatus = String(deleted);

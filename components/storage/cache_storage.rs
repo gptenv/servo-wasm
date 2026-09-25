@@ -36,6 +36,12 @@ trait CacheStorageEngine {
         proxy_map: &StorageProxyMap,
     ) -> Result<(), CacheStorageError<Self::Error>>;
 
+    /// <https://w3c.github.io/ServiceWorker/#dom-cachestorage-keys>
+    fn cache_names(
+        &mut self,
+        origin: ImmutableOrigin,
+    ) -> Result<Vec<String>, CacheStorageError<Self::Error>>;
+
     /// <https://w3c.github.io/ServiceWorker/#cache-keys>
     fn keys(
         &mut self,
@@ -124,6 +130,17 @@ impl CacheStorageEngine for MemCacheStorageEngine {
         // Step 2.4: Resolve promise with a new Cache object that represents cache.
         // Note: promise resolved in script.
         Ok(())
+    }
+
+    fn cache_names(
+        &mut self,
+        origin: ImmutableOrigin,
+    ) -> Result<Vec<String>, CacheStorageError<Self::Error>> {
+        Ok(self
+            .name_to_cache_map
+            .keys()
+            .filter_map(|(cache_origin, name)| (cache_origin == &origin).then_some(name.clone()))
+            .collect())
     }
 
     /// <https://w3c.github.io/ServiceWorker/#cache-keys>
@@ -325,6 +342,17 @@ where
                     .is_err()
                 {
                     error!("Failed to send response to script for OpenCache message.");
+                }
+            },
+            CacheStorageThreadMessage::CacheNames { callback, origin } => {
+                let result = self.engine.cache_names(origin);
+                if callback
+                    .send(CacheStorageThreadResponse::CacheNamesResult(
+                        result.map_err(|e| format!("{:?}", e)),
+                    ))
+                    .is_err()
+                {
+                    error!("Failed to send Cache Storage names to script.");
                 }
             },
             CacheStorageThreadMessage::Keys {

@@ -158,6 +158,10 @@ impl Cache {
                 false,
                 "Unexpected OpenCacheResult response in Cache handle_response."
             ),
+            CacheStorageThreadResponse::CacheNamesResult(_) => debug_assert!(
+                false,
+                "Unexpected CacheNamesResult response in Cache handle_response."
+            ),
         }
     }
 }
