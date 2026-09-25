@@ -1,0 +1,102 @@
+name: Worker WASM
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/worker-wasm.yml'
+      - 'components/**'
+      - 'ports/servo-js-wasm/**'
+      - 'ports/servo-font-wasm-check/**'
+      - 'ports/servo/**'
+      - 'support/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'mach'
+      - 'rust-toolchain.toml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/worker-wasm.yml'
+      - 'components/**'
+      - 'ports/servo-js-wasm/**'
+      - 'ports/servo-font-wasm-check/**'
+      - 'ports/servo/**'
+      - 'support/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'mach'
+      - 'rust-toolchain.toml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker-wasm-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-artifact:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Servo build dependencies
+        run: ./mach bootstrap --yes --skip-lints --skip-nextest
+
+      - name: Add the raw WASM target
+        run: rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: worker-wasm-production
+
+      - name: Build the production Worker artifact incrementally
+        run: >-
+          ./mach build --target wasm32-unknown-unknown --no-default-features --jobs 2
+          --profile production-stripped --manifest-path ports/servo-js-wasm/Cargo.toml
+
+      - name: Check the production artifact and run Node integration coverage
+        working-directory: ports/servo-js-wasm
+        run: npm test
+
+      - name: Start local workerd and exercise the Worker smoke routes
+        working-directory: ports/servo-js-wasm/workerd-smoke
+        shell: bash
+        run: |
+          npx --yes wrangler@4.136.3 dev --local --ip 127.0.0.1 --port 8799 > "$RUNNER_TEMP/workerd.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 90); do
+            if curl --silent --fail http://127.0.0.1:8799/ > "$RUNNER_TEMP/root.json"; then
+              break
+            fi
+            sleep 1
+          done
+          node --input-type=module -e '
+            import assert from "node:assert/strict";
+            import { readFileSync } from "node:fs";
+            const root = JSON.parse(readFileSync(process.env.RUNNER_TEMP + "/root.json", "utf8"));
+            assert.equal(root.passed, true, JSON.stringify(root));
+            const cases = await fetch("http://127.0.0.1:8799/cases?rounds=1");
+            assert.equal(cases.status, 200);
+            const caseResult = await cases.json();
+            assert.equal(caseResult.passed, 15, JSON.stringify(caseResult));
+            assert.deepEqual(caseResult.failures, []);
+            const screenshot = await fetch("http://127.0.0.1:8799/screenshot");
+            assert.equal(screenshot.status, 200);
+            assert.match(screenshot.headers.get("content-type"), /image\/png/);
+            assert.deepEqual([...new Uint8Array(await screenshot.arrayBuffer()).slice(0, 8)],
+              [137, 80, 78, 71, 13, 10, 26, 10]);
+          '

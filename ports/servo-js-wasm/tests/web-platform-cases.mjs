@@ -73,6 +73,41 @@ export const webPlatformCases = [
     })()`,
   },
   {
+    name: 'custom elements upgrade existing nodes and run connected callbacks',
+    source: `(() => {
+      const name = 'worker-probe-' + Math.random().toString(36).slice(2);
+      const existing = document.createElement(name);
+      document.body.append(existing);
+      let connected = 0;
+      class ProbeElement extends HTMLElement {
+        connectedCallback() { connected++; this.dataset.upgraded = 'yes'; }
+      }
+      customElements.define(name, ProbeElement);
+      try {
+        return existing instanceof ProbeElement && connected === 1 &&
+          existing.dataset.upgraded === 'yes' && customElements.get(name) === ProbeElement;
+      } finally { existing.remove(); }
+    })()`,
+  },
+  {
+    name: 'MutationObserver batches attribute and child-list records',
+    source: `(() => {
+      const node = document.createElement('div');
+      const seen = [];
+      const observer = new MutationObserver(records => {
+        for (const record of records) seen.push(record.type + ':' + record.attributeName);
+      });
+      observer.observe(node, {attributes:true, childList:true});
+      node.setAttribute('data-probe', 'yes');
+      node.append(document.createElement('span'));
+      const records = observer.takeRecords();
+      observer.disconnect();
+      return records.length === 2 && records[0].type === 'attributes' &&
+        records[0].attributeName === 'data-probe' && records[1].type === 'childList' &&
+        seen.length === 0;
+    })()`,
+  },
+  {
     name: 'canvas 2D fills, transforms, and exact getImageData readback',
     source: `(() => {
       const c = document.createElement('canvas'); c.width = 8; c.height = 8;

@@ -2,7 +2,7 @@
 
 Status: active port; review reconciled against the current source on 2026-09-25. DOM/JS/CSS, streaming fetch responses, timers, inline HTML, page reset, repeated loads, canvas 2D, image loading, bundled/registerable fonts, input, navigation and CPU-rendered viewport/full-page screenshots are implemented and have existing Node/workerd coverage. This document is the release gap list, not a claim of complete browser conformance.
 
-Target: a raw `wasm32-unknown-unknown` Servo module instantiated directly by a Cloudflare Worker. The MCP server and OAuth layer remain a separate repository and are intentionally out of scope for this port.
+Target: a raw `wasm32-unknown-unknown` Servo module instantiated directly by a Cloudflare Worker. The separate MIT-licensed `servo-mcp` repository now hosts a stateless MCP App over this runtime; its production deployment and any OAuth/access-control policy are tracked in that repository, not in Servo core.
 
 ## 1. Current state
 
@@ -14,7 +14,7 @@ The production-stripped artifact is **62,373,083 bytes** (about 59.46 MiB); the 
 - `worker_monotonic_now_ns`
 - `worker_unix_time_now_ns`
 
-The Worker adapter instantiates the module, creates a Servo instance, installs the fetch and WebSocket bridges, and advances the cooperative event loop. `npm test` passes **52 tests** against the current artifact. Local workerd smoke checks pass, including the root integration response, **39/39** shared fixture cases, and a screenshot response. The host timer deadline export and `pumpUntilSettled()` use Worker `scheduler.wait()` where available with a cancellable timer fallback.
+The Worker adapter instantiates the module, creates a Servo instance, installs the fetch and WebSocket bridges, and advances the cooperative event loop. `npm test` passes **55 tests** against the current artifact, including custom-element upgrade, MutationObserver records, repeated canceled-navigation stress, and nested timer/interval coverage. Local workerd smoke checks pass, including the root integration response, **45/45** shared fixture runs over three rounds (15 distinct fixtures), and a screenshot response. The host timer deadline export and `pumpUntilSettled()` use Worker `scheduler.wait()` where available with a cancellable timer fallback.
 
 The source implements checked **version-4 host ABI**, adding Worker-host WebSocket event/action envelopes and Worker-pumped `requestAnimationFrame` callbacks. It also has `loadHtml(html, {url})`, deterministic initial `about:blank` bootstrapping, navigation coalescing and cancellation of active/queued host fetches. Response delivery enforces header/chunk/terminal ordering. Mid-body failures reject body consumers instead of succeeding with truncated content. The original web-platform-style corpus covers templates, selectors, DOM fragments/clones, event propagation, CSS rule mutation/computed-style invalidation, shadow DOM, and microtask/timer ordering. It is not the upstream WPT runner or a claim of complete web conformance. The exact contract is in [WORKER-ABI.md](../ports/servo-js-wasm/WORKER-ABI.md).
 
@@ -24,7 +24,7 @@ The runtime remains cooperative and reset is not destruction: it cancels fetches
 
 **Hosting decision (2026-09-23): target Workers Paid first.** Paid allows up to 5 minutes of CPU per request (30 s default, configurable), so the numbers below no longer block the first release. Bundle size (64 MiB) and memory (128 MB per isolate) are the same on both plans and remain hard constraints. A Free-tier variant is a later goal; for it, the following measurements still apply. [Cloudflare's current limits](https://developers.cloudflare.com/workers/platform/limits/) list 64 MiB for the Worker bundle, 128 MB memory per isolate, and only 10 ms CPU time per HTTP request on Workers Free. After fixing the async factory to finish its initial document before returning, the reproducible `node ports/servo-js-wasm/tests/cpu-benchmark.mjs` diagnostic measured about **402 ms CPU** for ready-to-use bootstrap and **252 ms CPU** for a tiny HTML page load and DOM evaluation; four individual page pumps exceeded 10 ms and the slowest used about 37 ms. The earlier 61 ms bootstrap figure measured construction only, not a ready initial document, and is not comparable. This is a Node process measurement, not a Cloudflare production CPU measurement, but it is far beyond the free-tier budget. Local workerd does not enforce the account's CPU quota. Remote validation requires explicit authorization. Yielding between pumps inside one request does not reset its accumulated CPU budget; resumable execution is useful for responsiveness but is not by itself a Free-tier solution. Per the user's decision, continue the engine port while investigating this limit.
 
-The current checkout is on `sync-with-upstream` at `1a47b5aa`; the review changes are committed and pushed to `origin/sync-with-upstream`. All dependency fork checkouts are clean, and their current local HEADs are already present on their configured fork remotes. Stylo and html5ever are pinned by commit. The other six dependency forks are selected by branch name. Keep their resolved revisions in build provenance because those branch names can move.
+The current Servo checkout is on `main` at `2065a23b90d`, synchronized with `origin/main` at the start of this completion pass. Dependency fork branches and remotes are audited separately; do not infer that an untracked branch is pushed just because its commit is in Cargo.lock. Stylo and html5ever are pinned by commit. The other dependency forks are selected by branch name, so keep their resolved revisions in build provenance because those names can move.
 
 ## 2. Definition of “finished”
 
@@ -124,7 +124,7 @@ Add tests for script elements, DOM mutation, promise/microtask ordering, `setTim
 
 ## 6. Workstream D — implement the Worker fetch adapter fully
 
-The version-3 ABI wraps `RequestBuilder` JSON in tagged fetch/cancel envelopes and accepts bounded, chunked response delivery. The adapter rejects mismatched versions before bootstrap. Continue hardening the protocol without reintroducing whole-response shortcuts.
+The version-4 ABI wraps `RequestBuilder` JSON in tagged fetch/cancel and WebSocket envelopes and accepts bounded, chunked response delivery. The adapter rejects mismatched versions before bootstrap. Continue hardening the protocol without reintroducing whole-response shortcuts.
 
 ### D1. Request protocol
 
@@ -238,26 +238,26 @@ Every layer should run against the production profile in CI. Preserve build arti
 4. Broaden the independent fixture corpus: modules/external scripts, custom elements, mutation observers, nested/interval timers, CSS cascade and layout-facing APIs. Keep rendering-dependent expectations separate.
 5. Audit and implement or explicitly exclude storage, service workers, workers, media, WebGL and WebGPU. WebSockets now use the Worker host WebSocket API; report supported capabilities in the host API.
 6. Execute the optional rendering/font/screenshot workstream if required for the release; current DOM/CSS success does not imply visible pixels.
-7. Add CI for the exact Worker profile and run import, size, Node integration and local workerd checks against the production artifact using incremental builds. Preserve existing build artifacts; do not require a clean build. Existing native-target gating warnings remain, and the forked native-target changes need validation where relevant.
+7. A GitHub Actions workflow now builds the exact Worker profile incrementally and runs import/size checks through the Node suite plus local workerd smoke routes. Its first remote run is pending; preserve existing build artifacts and do not require a clean build. Existing native-target gating warnings remain, and the forked native-target changes need validation where relevant.
 8. Investigate production CPU and total-isolate memory honestly alongside porting. No unapproved deployment or alternate paid hosting is part of this plan.
-9. Only then create the separate MCP server repository with OAuth, MCP JSON-RPC, tool schemas, session policy and authorized Cloudflare deployment configuration.
+9. The separate `servo-mcp` Worker App is scaffolded and locally verified. Choose/implement access control for its intended audience, measure it under the intended Workers plan, and deploy only after bundle/CPU/memory limits are confirmed.
 
 ## 13. Exit checklist
 
 - [x] Worker ABI, exact five-import allowlist, deterministic navigation, DOM/CSSOM, inline scripts, fetch, timers, canvas, fonts, native input and CPU screenshots are implemented; existing Node/workerd coverage exists.
 - [x] Storage is in-memory per WASM instance; reset is documented as navigation/cancellation, not runtime destruction.
 - [x] CPU renderer limitations and unsupported service classes are documented in `WORKER-ABI.md`.
-- [x] Incremental production build passes; the module reports ABI 3, imports exactly the five allowed `env` functions, has no WASI/wasm-bindgen imports, and stays below the size limit.
-- [x] Current artifact passes the 52-test Node suite, the local workerd root smoke, 39 shared workerd fixture cases, and screenshot response.
+- [x] Incremental production build passes; the module reports ABI 4, imports exactly the five allowed `env` functions, has no WASI/wasm-bindgen imports, and stays below the size limit.
+- [x] Current artifact passes the 55-test Node suite, local workerd root smoke, 45 shared fixture runs over three rounds (15 distinct fixtures), and screenshot response.
 - [x] Resolved fork revisions are recorded in Cargo.lock and each remote named branch matched local HEAD at the audit.
 - [x] Ordinary accepted top-level navigation aborts superseded host fetches and retires their Rust callbacks; the adapter suite covers a slow request.
-- [ ] Audit incomplete-navigation teardown, canceled-load retention, response-reader/clone cancellation, and memory bounds across stress loads.
+- [ ] Audit incomplete-navigation teardown and response-reader/clone cancellation. Ordinary navigation cancellation is covered, and this pass adds repeated canceled-navigation stress with callback and memory bounds. A cloned-reader cancellation probe did not settle and is documented as unsupported until the engine path is fixed.
 - [ ] Upgrade evaluation beyond its serialized single-result slot: promise awaiting, result/error contract, timeout semantics and correlation.
 - [ ] Complete request streaming and Fetch semantics where required; until then fail closed for credentialed/preflight CORS and other unsupported paths.
 - [x] Verify ABI 4 Worker-driven one-shot and recurring `requestAnimationFrame` callbacks and WebSocket handshakes/messages/close against the production artifact. History traversal and other native blocking/API assumptions still need probes.
-- [ ] Add a curated fixture matrix and CI checks for the Worker profile, exact imports, ABI, size, Node tests and local workerd. CI must not require deleting local build artifacts.
+- [x] Add a CI workflow for the Worker profile, exact imports, ABI, size, Node tests and local workerd, using incremental builds only. First remote Actions run remains pending. The fixture matrix now covers custom elements, MutationObserver records, nested timers, and repeated canceled navigation.
 - [ ] Measure production CPU and total isolate memory on the intended Workers plan. The repeatable Node diagnostic now reports 331.447 ms CPU bootstrap, 250.463 ms page work, 36.313 ms maximum pump CPU, and four pumps over 10 ms; these are not production quota measurements. Workers Paid remains the recorded initial target.
-- [ ] Keep the MCP/OAuth host separate; deployment is outside this port's completion criteria.
+- [x] Keep the MCP host separate. The new MIT-licensed `servo-mcp` project passes TypeScript checks, 16 network-policy tests, Wrangler deploy dry-run and local MCP initialize/tool-call/screenshot smoke. Its deployment and access-control policy remain pending in that repository.
 
 ## 14. Characterization pass findings (2026-09-23)
 

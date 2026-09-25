@@ -239,6 +239,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   const fetchErrors = [];
   let slowFetchAborted = false;
   let ordinaryNavigationFetchAborted = false;
+  let ordinaryNavigationAbortCount = 0;
   let activeQueuedFetches = 0;
   let peakQueuedFetches = 0;
   let beforeHeadersAborted = false;
@@ -329,10 +330,11 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
           }, { once: true });
         });
       }
-      if (url.endsWith('/ordinary-slow')) {
+      if (url.includes('/ordinary-slow')) {
         return new Promise((_, reject) => {
           init.signal.addEventListener('abort', () => {
             ordinaryNavigationFetchAborted = true;
+            ordinaryNavigationAbortCount++;
             reject(new DOMException('aborted by navigation', 'AbortError'));
           }, { once: true });
         });
@@ -700,6 +702,25 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     'ordinary navigation must abort the abandoned page\'s host request');
   assert.equal(runtime.pendingFetchCount(), 0,
     'ordinary navigation must retire the abandoned page\'s Rust callback');
+  const memoryBeforeCanceledNavigationStress = runtime.instance.exports.memory.buffer.byteLength;
+  const canceledNavigationCountBefore = ordinaryNavigationAbortCount;
+  for (let page = 0; page < 12; page++) {
+    assert.equal(runtime.loadPage(`https://example.test/ordinary-slow?round=${page}`), true);
+    for (let i = 0; i < 15; i++) await turn();
+    assert.ok(runtime.pendingFetchCount() > 0, 'slow navigation should be pending before replacement');
+    assert.equal(runtime.loadPage('https://example.test/'), true);
+    for (let i = 0; i < 35; i++) await turn();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(runtime.pendingFetchCount(), 0,
+      `replacement navigation ${page} must retire its Rust fetch callback`);
+  }
+  assert.equal(ordinaryNavigationAbortCount - canceledNavigationCountBefore, 12,
+    'all superseded host requests must observe abort');
+  const memoryAfterCanceledNavigationStress = runtime.instance.exports.memory.buffer.byteLength;
+  assert.ok(memoryAfterCanceledNavigationStress <= 128 * 1024 * 1024,
+    `canceled navigation stress exceeded the Worker memory ceiling: ${memoryAfterCanceledNavigationStress}`);
+  assert.ok(memoryAfterCanceledNavigationStress <= memoryBeforeCanceledNavigationStress * 4,
+    `canceled navigation stress grew memory unexpectedly: ${memoryBeforeCanceledNavigationStress} -> ${memoryAfterCanceledNavigationStress}`);
   assert.equal(runtime.reset(), true);
   for (let i = 0; i < 10; i++) await turn();
 
@@ -972,6 +993,29 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       'Promise.resolve().then(() => taskOrder.push("timer-microtask")); }, 5); 1');
     await settle();
     await checkPage('taskOrder.join(",") === "sync,microtask,timer,timer-microtask"');
+  });
+
+  await t.test('nested timeouts and interval cancellation preserve callback order', async () => {
+    runtime.evaluatePage('globalThis.nestedOrder = [];' +
+      'document.body.dataset.nestedOrder = "[]";' +
+      'const record = value => { nestedOrder.push(value); ' +
+      'document.body.dataset.nestedOrder = JSON.stringify(nestedOrder); };' +
+      'const interval = setInterval(() => record("interval"), 2);' +
+      'setTimeout(() => { record("outer");' +
+      'setTimeout(() => { record("inner"); clearInterval(interval);' +
+      'setTimeout(() => document.body.dataset.nestedStable = document.body.dataset.nestedOrder, 20);' +
+      '}, 4); }, 3); 1');
+    await settle();
+    runtime.pageResult();
+    assert.equal(runtime.evaluatePage('JSON.stringify({' +
+      'order: document.body.dataset.nestedOrder, stable: document.body.dataset.nestedStable})'), true);
+    await settle();
+    const { order: orderJson, stable } = JSON.parse(runtime.pageResult().Ok.String);
+    const order = JSON.parse(orderJson);
+    assert.ok(order.includes('outer') && order.includes('inner'), JSON.stringify(order));
+    assert.ok(order.indexOf('outer') < order.indexOf('inner'), JSON.stringify(order));
+    assert.ok(order.includes('interval'), JSON.stringify(order));
+    assert.equal(stable, orderJson, JSON.stringify({ order, stable }));
   });
 });
 
