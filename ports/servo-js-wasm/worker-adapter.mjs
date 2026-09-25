@@ -13,7 +13,7 @@ const MAX_REDIRECTS = 10;
 const MAX_OUTGOING_CONNECTIONS = 6;
 const MAX_PENDING_FETCHES = 50;
 const FREE_TIER_SUBREQUESTS = 50;
-const WORKER_ABI_VERSION = 3;
+const WORKER_ABI_VERSION = 4;
 const encoder = new TextEncoder();
 
 const WORKER_CAPABILITIES = Object.freeze({
@@ -23,6 +23,7 @@ const WORKER_CAPABILITIES = Object.freeze({
     'javascript', 'cssom', 'computed-style', 'layout-measurements',
     'timers', 'microtasks', 'fetch', 'canvas-2d', 'image-decoding',
     'font-registration', 'cpu-screenshots', 'local-session-storage',
+    'request-animation-frame', 'websocket-transport',
   ]),
   partial: Object.freeze({
     fetch: 'Response bodies stream; request bodies are buffered up to 256 KiB. ' +
@@ -38,7 +39,6 @@ const WORKER_CAPABILITIES = Object.freeze({
     'cookies', 'indexeddb', 'cache-storage', 'service-workers',
     'dedicated-shared-workers', 'webgl', 'webgpu',
     'credentialed-preflight-cors', 'streaming-request-bodies',
-    'request-animation-frame', 'websocket-transport',
   ]),
   unverified: Object.freeze(['history-traversal']),
 });
@@ -97,6 +97,7 @@ function requestMethod(request) {
  */
 export async function createServoWorkerRuntime(wasmModule, {
   fetchImpl = globalThis.fetch,
+  webSocketFactory = (url, protocols) => new WebSocket(url, protocols),
   width = 1280,
   height = 720,
   url = "about:blank",
@@ -141,6 +142,8 @@ export async function createServoWorkerRuntime(wasmModule, {
         }
         if (message.kind === 'fetch') runtime.dispatchFetch(message.request);
         else if (message.kind === 'cancel') runtime.cancelFetches(message.request_ids);
+        else if (message.kind === 'web_socket_connect') runtime.connectWebSocket(message);
+        else if (message.kind === 'web_socket_action') runtime.webSocketAction(message);
         else throw new Error('Unknown Servo Worker host command');
       },
     },
@@ -153,7 +156,9 @@ export async function createServoWorkerRuntime(wasmModule, {
   if (instance.exports.servo_worker_abi_version?.() !== WORKER_ABI_VERSION) {
     throw new Error('Servo Worker ABI mismatch; rebuild the WASM artifact with this adapter');
   }
-  runtime = new ServoWorkerRuntime(instance, fetchImpl, log, maxResponseBytes, maxSubrequests);
+  runtime = new ServoWorkerRuntime(
+    instance, fetchImpl, webSocketFactory, log, maxResponseBytes, maxSubrequests,
+  );
   runtime.instance.exports.__wasm_call_ctors?.();
   runtime.instance.exports.servo_worker_install_fetch_adapter();
   // Establish the initial browsing context before callers can queue loads.
@@ -172,6 +177,7 @@ export async function createServoWorkerRuntime(wasmModule, {
 
 class ServoWorkerRuntime {
   #fetchImpl;
+  #webSocketFactory;
   #log;
   #maxResponseBytes;
   #maxSubrequests;
@@ -180,6 +186,7 @@ class ServoWorkerRuntime {
   #fetchControllers = new Map();
   #responseStartedFetches = new Set();
   #fetchQueue = [];
+  #webSockets = new Map();
   #generation = 0;
   #inlinePage = null;
   #activityVersion = 0;
@@ -191,7 +198,7 @@ class ServoWorkerRuntime {
   #screenshotStreamActive = false;
   #pressedModifiers = new Set();
 
-  constructor(instance, fetchImpl, log, maxResponseBytes, maxSubrequests) {
+  constructor(instance, fetchImpl, webSocketFactory, log, maxResponseBytes, maxSubrequests) {
     // A WASM trap does not unwind Rust state (held RefCell borrows, partial
     // updates), so after the first trap every later export call would fail
     // with a misleading secondary panic. Refuse them explicitly instead.
@@ -212,6 +219,7 @@ class ServoWorkerRuntime {
     }
     this.instance = { exports };
     this.#fetchImpl = fetchImpl;
+    this.#webSocketFactory = webSocketFactory;
     this.#log = log;
     this.#maxResponseBytes = maxResponseBytes;
     this.#maxSubrequests = maxSubrequests;
@@ -455,6 +463,98 @@ class ServoWorkerRuntime {
     for (const id of canceled) this.#fetchControllers.get(id)?.abort();
   }
 
+  connectWebSocket({ request_id: id, url, protocols = [] }) {
+    if (this.#webSockets.size >= MAX_PENDING_FETCHES ||
+        ++this.#subrequestCount > this.#maxSubrequests) {
+      this.#deliverWebSocketClose(id, 0xffffffff, '', true);
+      return;
+    }
+    try {
+      const socket = this.#webSocketFactory(url, protocols);
+      socket.binaryType = 'arraybuffer';
+      this.#webSockets.set(id, socket);
+      socket.addEventListener('open', () => {
+        this.#callWebSocketExport('servo_worker_websocket_open', id,
+          encoder.encode(socket.protocol || ''));
+      }, { once: true });
+      socket.addEventListener('message', (event) => {
+        const isText = typeof event.data === 'string';
+        const bytes = isText ? encoder.encode(event.data) :
+          event.data instanceof ArrayBuffer ? new Uint8Array(event.data) :
+          ArrayBuffer.isView(event.data) ? new Uint8Array(
+            event.data.buffer, event.data.byteOffset, event.data.byteLength,
+          ) : null;
+        if (bytes === null) {
+          this.#log('Ignoring unsupported Worker WebSocket message payload');
+          return;
+        }
+        this.#callWebSocketExport('servo_worker_websocket_message', id, bytes,
+          Number(isText));
+      });
+      socket.addEventListener('error', () => {
+        this.#deliverWebSocketClose(id, 0xffffffff, '', true);
+        this.#webSockets.delete(id);
+      }, { once: true });
+      socket.addEventListener('close', (event) => {
+        this.#deliverWebSocketClose(id, event.code === 1005 ? 0xffffffff : event.code,
+          event.reason || '', false);
+        this.#webSockets.delete(id);
+      }, { once: true });
+      this.#notifyActivity();
+    } catch (error) {
+      this.#log(`Servo Worker WebSocket connection failed: ${error}`);
+      this.#deliverWebSocketClose(id, 0xffffffff, '', true);
+    }
+  }
+
+  webSocketAction({ request_id: id, action }) {
+    const socket = this.#webSockets.get(id);
+    if (!socket) return;
+    try {
+      if (action.SendMessage) {
+        const [kind, data] = Object.entries(action.SendMessage)[0] ?? [];
+        if (kind === 'Text') socket.send(data);
+        else if (kind === 'Binary') socket.send(Uint8Array.from(data));
+        else throw new TypeError('Unknown Servo WebSocket message type');
+      } else if (action.Close) {
+        const [code, reason] = action.Close;
+        socket.close(code ?? undefined, reason ?? undefined);
+      }
+    } catch (error) {
+      this.#log(`Servo Worker WebSocket action failed: ${error}`);
+      this.#deliverWebSocketClose(id, 0xffffffff, '', true);
+      this.#webSockets.delete(id);
+    }
+  }
+
+  #callWebSocketExport(name, id, bytes, flag) {
+    const idBytes = encoder.encode(id);
+    this.#withBytes([idBytes, bytes], ([idBuffer, dataBuffer]) =>
+      this.instance.exports[name](idBuffer.ptr, idBuffer.len,
+        dataBuffer.ptr, dataBuffer.len, ...(flag === undefined ? [] : [flag])));
+    this.#notifyActivity();
+  }
+
+  #deliverWebSocketClose(id, code, reason, failed) {
+    const idBytes = encoder.encode(id);
+    const reasonBytes = encoder.encode(reason);
+    this.#withBytes([idBytes, reasonBytes], ([idBuffer, reasonBuffer]) =>
+      this.instance.exports.servo_worker_websocket_close(
+        idBuffer.ptr, idBuffer.len, code, reasonBuffer.ptr, reasonBuffer.len,
+        Number(failed),
+      ));
+    this.#notifyActivity();
+  }
+
+  #closeWebSockets() {
+    for (const socket of this.#webSockets.values()) {
+      try { socket.close(); } catch (error) {
+        this.#log(`Servo Worker WebSocket close failed: ${error}`);
+      }
+    }
+    this.#webSockets.clear();
+  }
+
   #drainFetchQueue() {
     while (this.#inFlightFetches.size < MAX_OUTGOING_CONNECTIONS && this.#fetchQueue.length) {
       this.#startFetch(this.#fetchQueue.shift());
@@ -493,6 +593,7 @@ class ServoWorkerRuntime {
       if (accepted) {
         this.#inlinePage = null;
         this.#cancelFetchesForNavigation();
+        this.#closeWebSockets();
       }
       return accepted;
     } finally {
@@ -816,6 +917,7 @@ class ServoWorkerRuntime {
     this.#fetchControllers.clear();
     this.#inFlightFetches.clear();
     this.#fetchQueue.length = 0;
+    this.#closeWebSockets();
     this.#inlinePage = null;
     this.#notifyActivity();
     return this.instance.exports.servo_worker_reset() === 1;

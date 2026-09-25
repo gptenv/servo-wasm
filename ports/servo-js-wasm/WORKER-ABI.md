@@ -1,7 +1,7 @@
-# Raw Worker ABI, version 3
+# Raw Worker ABI, version 4
 
 The JavaScript adapter and WASM artifact are a matched pair. The adapter checks
-`servo_worker_abi_version() === 3` before running constructors or bootstrap. Rebuild
+`servo_worker_abi_version() === 4` before running constructors or bootstrap. Rebuild
 the artifact whenever the interface or serialized request representation changes.
 This is a project-internal protocol, not an MCP protocol or a stable upstream Servo API.
 
@@ -17,8 +17,14 @@ Exactly five function imports exist, all in `env`:
 | `worker_monotonic_now_ns()` | Return monotonic nanoseconds as a JavaScript `bigint`. |
 | `worker_unix_time_now_ns()` | Return Unix-epoch nanoseconds as a JavaScript `bigint`. |
 
-The fetch import carries either `{version:3, kind:"fetch", request:...}` or
-`{version:3, kind:"cancel", request_ids:[...]}`. IDs serialize as UUID strings.
+The fetch import carries `{version:4, kind:"fetch", request:...}`,
+`{version:4, kind:"cancel", request_ids:[...]}`,
+`{version:4, kind:"web_socket_connect", request_id, url, protocols}`, or
+`{version:4, kind:"web_socket_action", request_id, action}`. IDs serialize as
+UUID strings. The WebSocket commands use the Worker's `WebSocket` host API; the
+adapter reports open, message, close and error events through the
+`servo_worker_websocket_*` exports and forwards page send/close actions to the
+host socket. Binary frames are exposed as `ArrayBuffer` in the page.
 The request uses Servo's `RequestBuilder` serialization (including URL, method,
 byte-string headers, destination, mode, credentials and redirect policy). A body
 is currently supported only via `body.worker_bytes`, limited to 256 KiB.
@@ -81,6 +87,11 @@ slot: the adapter rejects a second evaluation until the first result is read.
 Reading it consumes the adapter's result slot. The raw WASM ABI does not enforce
 this sequencing. Evaluation does not await returned JavaScript promises or
 implement a script timeout.
+
+`requestAnimationFrame()` is driven by the Worker script timer after a frame is
+requested. The adapter's `pumpUntilSettled()` includes its next deadline so
+one-shot and recurring frame callbacks continue while a Worker invocation is
+active.
 
 `pumpStatus()` returns `{fetches, progressed}` from a bit-packed export (bit zero
 is progress, remaining bits count host fetch dispatches). One pump advances the

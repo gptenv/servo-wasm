@@ -16,9 +16,9 @@ use crossbeam_channel::Sender;
 use embedder_traits::{EventLoopWaker, RefreshDriver};
 use log::warn;
 use servo_constellation_traits::EmbedderToConstellationMessage;
-use timers::{BoxedTimerCallback, TimerEventRequest};
 #[cfg(not(target_arch = "wasm32"))]
-use timers::{TimerEventRequest, TimerScheduler};
+use timers::TimerScheduler;
+use timers::{BoxedTimerCallback, TimerEventRequest};
 
 use crate::painter::Painter;
 use crate::webview_renderer::WebViewRenderer;

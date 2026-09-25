@@ -22,6 +22,7 @@ use net_traits::{
     ResourceTimingType,
 };
 use net_traits::{set_worker_fetch_cancel_handler, set_worker_fetch_request_handler};
+use profile_traits::generic_callback::GenericCallback as ProfileGenericCallback;
 use servo::{
     Code, DevicePoint, InputEvent, Key, KeyState, KeyboardEvent, Location, Modifiers, MouseButton,
     MouseButtonAction, MouseButtonEvent, MouseMoveEvent, RenderingContext, Servo, ServoBuilder,
@@ -48,6 +49,9 @@ use servo_base::generic_channel::GenericCallback;
 thread_local! {
     static FETCH_CALLBACKS: RefCell<HashMap<RequestId, WorkerFetchEntry>> =
         RefCell::new(HashMap::new());
+    static WEBSOCKET_CALLBACKS: RefCell<HashMap<RequestId,
+        ProfileGenericCallback<net_traits::WebSocketNetworkEvent>>> =
+        RefCell::new(HashMap::new());
     static BROWSER: RefCell<Option<WorkerBrowser>> = const { RefCell::new(None) };
     static LAST_PAGE_RESULT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
@@ -58,7 +62,7 @@ struct WorkerFetchEntry {
     response_started: bool,
 }
 
-const WORKER_ABI_VERSION: u32 = 3;
+const WORKER_ABI_VERSION: u32 = 4;
 
 #[derive(serde::Serialize)]
 struct WorkerHostMessage<'a> {
@@ -70,8 +74,23 @@ struct WorkerHostMessage<'a> {
 #[derive(serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum WorkerHostCommand<'a> {
-    Fetch { request: &'a RequestBuilder },
-    Cancel { request_ids: &'a [RequestId] },
+    Fetch {
+        request: &'a RequestBuilder,
+    },
+    Cancel {
+        request_ids: &'a [RequestId],
+    },
+    #[serde(rename = "web_socket_connect")]
+    WebSocketConnect {
+        request_id: String,
+        url: String,
+        protocols: Vec<String>,
+    },
+    #[serde(rename = "web_socket_action")]
+    WebSocketAction {
+        request_id: String,
+        action: net_traits::WebSocketDomAction,
+    },
 }
 
 fn encode_host_command(command: WorkerHostCommand<'_>) -> serde_json::Result<Vec<u8>> {
@@ -284,10 +303,9 @@ pub extern "C" fn servo_worker_frame_describe() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn servo_worker_frame_item_count() -> u32 {
     BROWSER.with(|browser| {
-        browser
-            .borrow()
-            .as_ref()
-            .map_or(0, |browser| browser.servo.worker_captured_item_count() as u32)
+        browser.borrow().as_ref().map_or(0, |browser| {
+            browser.servo.worker_captured_item_count() as u32
+        })
     })
 }
 
@@ -458,7 +476,10 @@ pub unsafe extern "C" fn servo_worker_key(
     modifiers: u32,
 ) -> i32 {
     const ALLOWED_MODIFIERS: u32 = 0x249;
-    if key_ptr.is_null() || key_len == 0 || key_len > 64 || state > 1
+    if key_ptr.is_null()
+        || key_len == 0
+        || key_len > 64
+        || state > 1
         || modifiers & !ALLOWED_MODIFIERS != 0
     {
         return 0;
@@ -472,7 +493,11 @@ pub unsafe extern "C" fn servo_worker_key(
     };
     with_worker_webview(|webview| {
         webview.focus();
-        let state = if state == 0 { KeyState::Down } else { KeyState::Up };
+        let state = if state == 0 {
+            KeyState::Down
+        } else {
+            KeyState::Up
+        };
         webview.notify_input_event(InputEvent::Keyboard(KeyboardEvent::new_without_event(
             state,
             key,
@@ -587,6 +612,138 @@ pub extern "C" fn servo_worker_page_result_len() -> usize {
     LAST_PAGE_RESULT.with(|result| result.borrow().len())
 }
 
+unsafe fn parse_worker_request_id(ptr: *const u8, len: usize) -> Option<RequestId> {
+    if ptr.is_null() || len != 36 {
+        return None;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let value = std::str::from_utf8(bytes).ok()?;
+    uuid::Uuid::parse_str(value).ok().map(RequestId)
+}
+
+fn send_worker_websocket_event(
+    request_id: RequestId,
+    event: net_traits::WebSocketNetworkEvent,
+    terminal: bool,
+) -> i32 {
+    let callback = WEBSOCKET_CALLBACKS.with(|callbacks| {
+        let mut callbacks = callbacks.borrow_mut();
+        let callback = callbacks.get(&request_id).cloned();
+        if terminal {
+            callbacks.remove(&request_id);
+        }
+        callback
+    });
+    callback.map_or(0, |callback| i32::from(callback.send(event).is_ok()))
+}
+
+/// Complete the Worker's host-side WebSocket handshake.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_websocket_open(
+    id_ptr: *const u8,
+    id_len: usize,
+    protocol_ptr: *const u8,
+    protocol_len: usize,
+) -> i32 {
+    let Some(request_id) = (unsafe { parse_worker_request_id(id_ptr, id_len) }) else {
+        return 0;
+    };
+    if protocol_ptr.is_null() && protocol_len != 0 {
+        return 0;
+    }
+    let protocol = if protocol_len == 0 {
+        None
+    } else {
+        let bytes = unsafe { std::slice::from_raw_parts(protocol_ptr, protocol_len) };
+        match std::str::from_utf8(bytes) {
+            Ok(protocol) if !protocol.is_empty() => Some(protocol.to_owned()),
+            _ => return 0,
+        }
+    };
+    i32::from(
+        send_worker_websocket_event(
+            request_id,
+            net_traits::WebSocketNetworkEvent::ConnectionEstablished {
+                protocol_in_use: protocol,
+            },
+            false,
+        ) != 0,
+    )
+}
+
+/// Deliver a text or binary message from the Worker WebSocket host.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_websocket_message(
+    id_ptr: *const u8,
+    id_len: usize,
+    data_ptr: *const u8,
+    data_len: usize,
+    is_text: u32,
+) -> i32 {
+    let Some(request_id) = (unsafe { parse_worker_request_id(id_ptr, id_len) }) else {
+        return 0;
+    };
+    if is_text > 1 || (data_ptr.is_null() && data_len != 0) {
+        return 0;
+    }
+    let bytes = if data_len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(data_ptr, data_len) }
+    };
+    let data = if is_text == 1 {
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            return 0;
+        };
+        net_traits::MessageData::Text(text.to_owned())
+    } else {
+        net_traits::MessageData::Binary(bytes.to_vec())
+    };
+    i32::from(
+        send_worker_websocket_event(
+            request_id,
+            net_traits::WebSocketNetworkEvent::MessageReceived(data),
+            false,
+        ) != 0,
+    )
+}
+
+/// Deliver a close or handshake error from the Worker WebSocket host.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_websocket_close(
+    id_ptr: *const u8,
+    id_len: usize,
+    code: u32,
+    reason_ptr: *const u8,
+    reason_len: usize,
+    failed: u32,
+) -> i32 {
+    let Some(request_id) = (unsafe { parse_worker_request_id(id_ptr, id_len) }) else {
+        return 0;
+    };
+    if (reason_ptr.is_null() && reason_len != 0)
+        || failed > 1
+        || (code > u16::MAX as u32 && code != u32::MAX)
+    {
+        return 0;
+    }
+    let reason = if reason_len == 0 {
+        String::new()
+    } else {
+        let bytes = unsafe { std::slice::from_raw_parts(reason_ptr, reason_len) };
+        let Ok(reason) = std::str::from_utf8(bytes) else {
+            return 0;
+        };
+        reason.to_owned()
+    };
+    let event = if failed == 1 {
+        net_traits::WebSocketNetworkEvent::Fail
+    } else {
+        net_traits::WebSocketNetworkEvent::Close((code != u32::MAX).then_some(code as u16), reason)
+    };
+    i32::from(send_worker_websocket_event(request_id, event, true) != 0)
+}
+
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
     /// Host entry point receiving a versioned fetch or cancellation command.
@@ -627,37 +784,88 @@ fn install_fetch_adapter() {
 
     let handler: WorkerFetchHandler = Box::new(|mut request, redirect, channels| {
         apply_worker_redirect(&mut request, redirect);
-        let net_traits::FetchChannels::ResponseMsg(callback) = channels else {
-            return;
-        };
-        let request_id = request.id;
-        let visibility = match worker_response_visibility(&mut request) {
-            Ok(visibility) => visibility,
-            Err(error) => {
-                let _ = callback.send(FetchResponseMsg::ProcessResponse(
-                    request_id,
-                    Err(error.clone()),
-                ));
-                let _ = callback.send(FetchResponseMsg::ProcessResponseEOF(
-                    request_id,
-                    Err(error),
-                    ResourceFetchTiming::new(ResourceTimingType::Resource),
-                ));
-                return;
+        match channels {
+            net_traits::FetchChannels::ResponseMsg(callback) => {
+                let request_id = request.id;
+                let visibility = match worker_response_visibility(&mut request) {
+                    Ok(visibility) => visibility,
+                    Err(error) => {
+                        let _ = callback.send(FetchResponseMsg::ProcessResponse(
+                            request_id,
+                            Err(error.clone()),
+                        ));
+                        let _ = callback.send(FetchResponseMsg::ProcessResponseEOF(
+                            request_id,
+                            Err(error),
+                            ResourceFetchTiming::new(ResourceTimingType::Resource),
+                        ));
+                        return;
+                    },
+                };
+                let payload = encode_host_command(WorkerHostCommand::Fetch { request: &request });
+                FETCH_CALLBACKS.with(|callbacks| {
+                    callbacks.borrow_mut().insert(
+                        request_id,
+                        WorkerFetchEntry {
+                            callback,
+                            visibility,
+                            response_started: false,
+                        },
+                    );
+                });
+                dispatch_worker_fetch(request_id, payload);
             },
-        };
-        let payload = encode_host_command(WorkerHostCommand::Fetch { request: &request });
-        FETCH_CALLBACKS.with(|callbacks| {
-            callbacks.borrow_mut().insert(
-                request_id,
-                WorkerFetchEntry {
-                    callback,
-                    visibility,
-                    response_started: false,
-                },
-            );
-        });
-        dispatch_worker_fetch(request_id, payload);
+            net_traits::FetchChannels::WebSocket {
+                event_sender,
+                action_receiver,
+            } => {
+                let request_id = request.id;
+                let (url, protocols) = match &request.mode {
+                    RequestMode::WebSocket {
+                        protocols,
+                        original_url,
+                    } => (original_url.as_str().to_owned(), protocols.clone()),
+                    _ => {
+                        let _ = event_sender.send(net_traits::WebSocketNetworkEvent::Fail);
+                        return;
+                    },
+                };
+                WEBSOCKET_CALLBACKS.with(|callbacks| {
+                    callbacks.borrow_mut().insert(request_id, event_sender);
+                });
+                action_receiver.set_callback(move |action| {
+                    if let Ok(action) = action {
+                        let payload = encode_host_command(WorkerHostCommand::WebSocketAction {
+                            request_id: request_id.0.to_string(),
+                            action,
+                        });
+                        match payload {
+                            Ok(payload) => unsafe {
+                                host_fetch_request(payload.as_ptr(), payload.len());
+                            },
+                            Err(error) => worker_log(&format!(
+                                "Worker WebSocket action serialization failed: {error}"
+                            )),
+                        }
+                    }
+                });
+                let payload = encode_host_command(WorkerHostCommand::WebSocketConnect {
+                    request_id: request_id.0.to_string(),
+                    url,
+                    protocols,
+                });
+                if let Ok(payload) = payload {
+                    unsafe { host_fetch_request(payload.as_ptr(), payload.len()) };
+                } else {
+                    send_worker_websocket_event(
+                        request_id,
+                        net_traits::WebSocketNetworkEvent::Fail,
+                        true,
+                    );
+                }
+            },
+            net_traits::FetchChannels::Prefetch => {},
+        }
     });
     set_worker_fetch_handler(handler);
 }
@@ -793,7 +1001,10 @@ fn fetch_worker_data_url(request: RequestBuilder, mut callback: net_traits::Boxe
         });
     let Some((mime_type, body)) = decoded else {
         let error = NetworkError::ResourceLoadError("Invalid data: URL".into());
-        callback(FetchResponseMsg::ProcessResponse(request_id, Err(error.clone())));
+        callback(FetchResponseMsg::ProcessResponse(
+            request_id,
+            Err(error.clone()),
+        ));
         callback(FetchResponseMsg::ProcessResponseEOF(
             request_id,
             Err(error),
@@ -817,7 +1028,10 @@ fn fetch_worker_data_url(request: RequestBuilder, mut callback: net_traits::Boxe
     let metadata = match filter_worker_metadata(metadata, &visibility) {
         Ok(metadata) => metadata,
         Err(error) => {
-            callback(FetchResponseMsg::ProcessResponse(request_id, Err(error.clone())));
+            callback(FetchResponseMsg::ProcessResponse(
+                request_id,
+                Err(error.clone()),
+            ));
             callback(FetchResponseMsg::ProcessResponseEOF(
                 request_id,
                 Err(error),
@@ -886,6 +1100,7 @@ pub extern "C" fn servo_worker_reset() -> i32 {
     for request_id in canceled {
         complete_worker_fetch_error(request_id, NetworkError::LoadCancelled);
     }
+    WEBSOCKET_CALLBACKS.with(|callbacks| callbacks.borrow_mut().clear());
     LAST_PAGE_RESULT.with(|result| result.borrow_mut().clear());
     i32::from(existed)
 }

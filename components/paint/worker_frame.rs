@@ -8,8 +8,8 @@
 
 use std::cell::RefCell;
 
-use paint_api::display_list::PaintDisplayListInfo;
 use paint_api::SerializableDisplayListPayload;
+use paint_api::display_list::PaintDisplayListInfo;
 use rustc_hash::FxHashMap;
 use servo_base::generic_channel::GenericReceiver;
 use servo_base::id::PipelineId;
@@ -100,7 +100,11 @@ pub(crate) fn describe() -> String {
             captured.display_list.iter_spatial_tree(|item| {
                 let _ = writeln!(out, "  {item:?}");
             });
-            let _ = writeln!(out, "  offsets {:?}", captured.info.scroll_tree.scroll_offsets());
+            let _ = writeln!(
+                out,
+                "  offsets {:?}",
+                captured.info.scroll_tree.scroll_offsets()
+            );
         }
     });
     out
@@ -185,8 +189,8 @@ pub(crate) fn update_images(updates: impl IntoIterator<Item = paint_api::ImageUp
         let images = &mut resources.borrow_mut().images;
         for update in updates {
             match update {
-                ImageUpdate::AddImage(key, descriptor, data, _) |
-                ImageUpdate::UpdateImage(key, descriptor, data, _) => match data {
+                ImageUpdate::AddImage(key, descriptor, data, _)
+                | ImageUpdate::UpdateImage(key, descriptor, data, _) => match data {
                     SerializableImageData::Raw(bytes) => {
                         images.insert(
                             key,
@@ -225,7 +229,10 @@ pub(crate) fn add_font(key: webrender_api::FontKey, data: &[u8], index: u32) {
 
 /// Local fonts on the Worker live in the font registry; their handle path is
 /// the registry identifier (`worker-font:<n>`).
-pub(crate) fn add_system_font(key: webrender_api::FontKey, handle: webrender_api::NativeFontHandle) {
+pub(crate) fn add_system_font(
+    key: webrender_api::FontKey,
+    handle: webrender_api::NativeFontHandle,
+) {
     let Some(data) = handle
         .path
         .to_str()

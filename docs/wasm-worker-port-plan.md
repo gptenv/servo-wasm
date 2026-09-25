@@ -6,7 +6,7 @@ Target: a raw `wasm32-unknown-unknown` Servo module instantiated directly by a C
 
 ## 1. Current state
 
-The production-stripped artifact is **62,360,507 bytes** (about 59.45 MiB); the local Wrangler dry run bundles **60,945.86 KiB** uncompressed, under the 64 MiB limit. The rebuilt module reports ABI 3 and imports exactly five `env` functions, with no WASI or wasm-bindgen imports:
+The production-stripped artifact is **62,373,083 bytes** (about 59.46 MiB); the previous local Wrangler dry run bundled **60,945.86 KiB** uncompressed. The source and newly built production artifact report ABI 4 and import exactly five `env` functions, with no WASI or wasm-bindgen imports:
 
 - `worker_fetch_request`
 - `worker_getrandom`
@@ -14,9 +14,9 @@ The production-stripped artifact is **62,360,507 bytes** (about 59.45 MiB); the 
 - `worker_monotonic_now_ns`
 - `worker_unix_time_now_ns`
 
-The Worker adapter instantiates the module, creates a Servo instance, installs the fetch bridge, and advances the cooperative event loop. `npm test` passes **50 tests** against the current artifact. Local workerd smoke checks pass, including the root integration response, **39/39** shared fixture cases, and a screenshot response. The host timer deadline export and `pumpUntilSettled()` use Worker `scheduler.wait()` where available with a cancellable timer fallback.
+The Worker adapter instantiates the module, creates a Servo instance, installs the fetch and WebSocket bridges, and advances the cooperative event loop. `npm test` passes **52 tests** against the current artifact. Local workerd smoke checks pass, including the root integration response, **39/39** shared fixture cases, and a screenshot response. The host timer deadline export and `pumpUntilSettled()` use Worker `scheduler.wait()` where available with a cancellable timer fallback.
 
-The source implements checked **version-3 host ABI**, `loadHtml(html, {url})`, deterministic initial `about:blank` bootstrapping, navigation coalescing and cancellation of active/queued host fetches. Response delivery enforces header/chunk/terminal ordering. Mid-body failures reject body consumers instead of succeeding with truncated content. The original web-platform-style corpus covers templates, selectors, DOM fragments/clones, event propagation, CSS rule mutation/computed-style invalidation, shadow DOM, and microtask/timer ordering. It is not the upstream WPT runner or a claim of complete web conformance. The exact contract is in [WORKER-ABI.md](../ports/servo-js-wasm/WORKER-ABI.md).
+The source implements checked **version-4 host ABI**, adding Worker-host WebSocket event/action envelopes and Worker-pumped `requestAnimationFrame` callbacks. It also has `loadHtml(html, {url})`, deterministic initial `about:blank` bootstrapping, navigation coalescing and cancellation of active/queued host fetches. Response delivery enforces header/chunk/terminal ordering. Mid-body failures reject body consumers instead of succeeding with truncated content. The original web-platform-style corpus covers templates, selectors, DOM fragments/clones, event propagation, CSS rule mutation/computed-style invalidation, shadow DOM, and microtask/timer ordering. It is not the upstream WPT runner or a claim of complete web conformance. The exact contract is in [WORKER-ABI.md](../ports/servo-js-wasm/WORKER-ABI.md).
 
 The host adapter queues requests above six concurrent outbound connections and caps actual host `fetch()` calls (including redirect hops) at 50 per runtime by default, matching Workers Free's current per-invocation limits. The many-page stress test raises the latter cap explicitly. One runtime must represent one incoming Worker invocation for this accounting to be meaningful.
 
@@ -155,7 +155,7 @@ Then add a small real-Worker/workerd integration test, without deploying to Clou
 
 ## 7. Workstream E — timers, promises, and scheduling
 
-The host-pull scheduler, timer IDs/cancellation, deadline export and basic promise/microtask ordering are implemented. A runtime probe shows `requestAnimationFrame` accepts callbacks but does not run them, so it is reported unsupported. Remaining work: nested/interval timer stress and improve execution interruption. A host deadline cannot interrupt a synchronous infinite page script.
+The host-pull scheduler, timer IDs/cancellation, deadline export and basic promise/microtask ordering are implemented. The ABI 4 change adds a Worker-pumped refresh timer so `requestAnimationFrame` can run without a timer thread. Remaining work: nested/interval timer stress and improve execution interruption. A host deadline cannot interrupt a synchronous infinite page script.
 
 ## 8. Workstream F — storage and other browser services
 
@@ -236,7 +236,7 @@ Every layer should run against the production profile in CI. Preserve build arti
 2. Finish the page-evaluation API: correlated results, serialization, exceptions, awaited promises and explicit unsupported/timeout semantics. Keep the existing single-result probe documented until replaced.
 3. Expand Fetch policy as one reviewed batch: manual redirects, request streaming, CORS preflight/credentials, cookie scope, and security-sensitive subresource behavior. Do not remove current fail-closed checks piecemeal.
 4. Broaden the independent fixture corpus: modules/external scripts, custom elements, mutation observers, nested/interval timers, CSS cascade and layout-facing APIs. Keep rendering-dependent expectations separate.
-5. Audit and implement or explicitly exclude storage, service workers, workers, media, WebSockets, WebGL and WebGPU. Report supported capabilities in the host API.
+5. Audit and implement or explicitly exclude storage, service workers, workers, media, WebGL and WebGPU. WebSockets now use the Worker host WebSocket API; report supported capabilities in the host API.
 6. Execute the optional rendering/font/screenshot workstream if required for the release; current DOM/CSS success does not imply visible pixels.
 7. Add CI for the exact Worker profile and run import, size, Node integration and local workerd checks against the production artifact using incremental builds. Preserve existing build artifacts; do not require a clean build. Existing native-target gating warnings remain, and the forked native-target changes need validation where relevant.
 8. Investigate production CPU and total-isolate memory honestly alongside porting. No unapproved deployment or alternate paid hosting is part of this plan.
@@ -248,13 +248,13 @@ Every layer should run against the production profile in CI. Preserve build arti
 - [x] Storage is in-memory per WASM instance; reset is documented as navigation/cancellation, not runtime destruction.
 - [x] CPU renderer limitations and unsupported service classes are documented in `WORKER-ABI.md`.
 - [x] Incremental production build passes; the module reports ABI 3, imports exactly the five allowed `env` functions, has no WASI/wasm-bindgen imports, and stays below the size limit.
-- [x] Current artifact passes the 50-test Node suite, the local workerd root smoke, 39 shared workerd fixture cases, and screenshot response.
+- [x] Current artifact passes the 52-test Node suite, the local workerd root smoke, 39 shared workerd fixture cases, and screenshot response.
 - [x] Resolved fork revisions are recorded in Cargo.lock and each remote named branch matched local HEAD at the audit.
 - [x] Ordinary accepted top-level navigation aborts superseded host fetches and retires their Rust callbacks; the adapter suite covers a slow request.
 - [ ] Audit incomplete-navigation teardown, canceled-load retention, response-reader/clone cancellation, and memory bounds across stress loads.
 - [ ] Upgrade evaluation beyond its serialized single-result slot: promise awaiting, result/error contract, timeout semantics and correlation.
 - [ ] Complete request streaming and Fetch semantics where required; until then fail closed for credentialed/preflight CORS and other unsupported paths.
-- [x] Probe `requestAnimationFrame` and WebSocket progression; both are reported unsupported because callbacks do not fire and WebSocket remains CONNECTING. History traversal and other native blocking/API assumptions still need probes.
+- [x] Verify ABI 4 Worker-driven one-shot and recurring `requestAnimationFrame` callbacks and WebSocket handshakes/messages/close against the production artifact. History traversal and other native blocking/API assumptions still need probes.
 - [ ] Add a curated fixture matrix and CI checks for the Worker profile, exact imports, ABI, size, Node tests and local workerd. CI must not require deleting local build artifacts.
 - [ ] Measure production CPU and total isolate memory on the intended Workers plan. The repeatable Node diagnostic now reports 331.447 ms CPU bootstrap, 250.463 ms page work, 36.313 ms maximum pump CPU, and four pumps over 10 ms; these are not production quota measurements. Workers Paid remains the recorded initial target.
 - [ ] Keep the MCP/OAuth host separate; deployment is outside this port's completion criteria.

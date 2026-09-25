@@ -20,13 +20,15 @@ use std::sync::Arc;
 use flate2::{Compress, Compression, FlushCompress};
 
 use paint_api::display_list::{ScrollTree, SpatialTreeNodeInfo};
+use pixels::{Multiply, transform_inplace};
+use rustc_hash::FxHashMap;
 use vello_common::filter_effects::{EdgeMode, Filter, FilterFunction, FilterPrimitive};
-use vello_cpu::kurbo::{self, Affine, BezPath, Cap, Rect, RoundedRect, RoundedRectRadii, Shape, Stroke};
+use vello_cpu::kurbo::{
+    self, Affine, BezPath, Cap, Rect, RoundedRect, RoundedRectRadii, Shape, Stroke,
+};
 use vello_cpu::peniko::{
     self, BlendMode, Color, ColorStop, Compose, Extend, Gradient, ImageQuality, ImageSampler, Mix,
 };
-use pixels::{Multiply, transform_inplace};
-use rustc_hash::FxHashMap;
 use vello_cpu::{Glyph, Mask, Pixmap, RenderContext, RenderSettings, Resources};
 use webrender_api::units::{LayoutRect, LayoutSize, LayoutTransform};
 use webrender_api::{
@@ -133,8 +135,7 @@ pub(crate) fn stream_png_next() -> Result<Option<Vec<u8>>, String> {
         let (width, root, scale, full_page) =
             (state.width, state.root, state.scale, state.full_page);
         let raw = worker_frame::with_display_lists(|lists| {
-            let base = Affine::translate((0.0, -(strip_y as f64)))
-                * Affine::scale(scale as f64);
+            let base = Affine::translate((0.0, -(strip_y as f64))) * Affine::scale(scale as f64);
             worker_frame::with_resources(|resources| {
                 let mut renderer =
                     Renderer::new(width as u16, strip_height as u16, lists, resources);
@@ -417,10 +418,8 @@ impl<'a> Renderer<'a> {
                         ReferenceFrameKind::Perspective { .. } => Affine::IDENTITY,
                         _ => reference_transform(&descriptor.reference_frame.transform),
                     };
-                    let origin = Affine::translate((
-                        descriptor.origin.x as f64,
-                        descriptor.origin.y as f64,
-                    ));
+                    let origin =
+                        Affine::translate((descriptor.origin.x as f64, descriptor.origin.y as f64));
                     self.spatial_nodes.insert(
                         (pipeline, descriptor.reference_frame.id.0),
                         parent * origin * transform,
@@ -429,11 +428,13 @@ impl<'a> Renderer<'a> {
                 SpatialTreeItem::ScrollFrame(descriptor) => {
                     let parent = self.node(pipeline, descriptor.parent_space.0);
                     let index = descriptor.scroll_frame_id.0;
-                    self.spatial_nodes.insert((pipeline, index), scrolled(index, parent));
+                    self.spatial_nodes
+                        .insert((pipeline, index), scrolled(index, parent));
                 },
                 SpatialTreeItem::StickyFrame(descriptor) => {
                     let parent = self.node(pipeline, descriptor.parent_spatial_id.0);
-                    self.spatial_nodes.insert((pipeline, descriptor.id.0), parent);
+                    self.spatial_nodes
+                        .insert((pipeline, descriptor.id.0), parent);
                 },
                 SpatialTreeItem::Invalid => {},
             }
@@ -475,8 +476,8 @@ impl<'a> Renderer<'a> {
                 DisplayItem::ImageMaskClip(clip) => {
                     let rect = clip.image_mask.rect;
                     // Zero (WebRender's `Default`) means "one tile spanning `rect`".
-                    let tile_size = if clip.image_mask.tile_size.width > 0.0 &&
-                        clip.image_mask.tile_size.height > 0.0
+                    let tile_size = if clip.image_mask.tile_size.width > 0.0
+                        && clip.image_mask.tile_size.height > 0.0
                     {
                         clip.image_mask.tile_size
                     } else {
@@ -665,10 +666,8 @@ impl<'a> Renderer<'a> {
                         iframe.space_and_clip.spatial_id.0,
                         iframe.bounds,
                     );
-                    let origin = Affine::translate((
-                        iframe.bounds.min.x as f64,
-                        iframe.bounds.min.y as f64,
-                    ));
+                    let origin =
+                        Affine::translate((iframe.bounds.min.x as f64, iframe.bounds.min.y as f64));
                     self.draw_pipeline(iframe.pipeline_id, parent * origin, depth + 1);
                     for _ in 0..clips {
                         self.context.pop_layer();
@@ -755,8 +754,8 @@ impl<'a> Renderer<'a> {
             let path = match clip.shape {
                 ClipShape::Rect(rect) => {
                     let device = transform.transform_rect_bbox(rect_of(rect));
-                    let axis_aligned = transform.as_coeffs()[1] == 0.0 &&
-                        transform.as_coeffs()[2] == 0.0;
+                    let axis_aligned =
+                        transform.as_coeffs()[1] == 0.0 && transform.as_coeffs()[2] == 0.0;
                     if axis_aligned && contains(device, item_device_bounds) {
                         continue;
                     }
@@ -838,11 +837,17 @@ impl<'a> Renderer<'a> {
             else {
                 continue;
             };
-            let transform = self.spatial_nodes.get(&spatial).copied().unwrap_or(Affine::IDENTITY);
+            let transform = self
+                .spatial_nodes
+                .get(&spatial)
+                .copied()
+                .unwrap_or(Affine::IDENTITY);
 
             // Bound the offscreen render to this layer's own device-space
             // extent, clipped to the canvas, instead of the full canvas.
-            let device_bounds = transform.transform_rect_bbox(rect_of(rect)).intersect(self.device_rect);
+            let device_bounds = transform
+                .transform_rect_bbox(rect_of(rect))
+                .intersect(self.device_rect);
             let bbox = (!device_bounds.is_zero_area()).then(|| {
                 let x0 = device_bounds.x0.floor().max(0.0) as u16;
                 let y0 = device_bounds.y0.floor().max(0.0) as u16;
@@ -856,52 +861,63 @@ impl<'a> Renderer<'a> {
             // transparent layer (see the doc comment on layout's
             // `add_mask_image_clip`) masks this layer out entirely: `None`
             // here, handled as "source = 0 everywhere" below.
-            let rendered = bbox.filter(|(_, _, w, h)| *w > 0 && *h > 0).and_then(|(bx, by, bw, bh)| {
-                let mut pixmap = Pixmap::new(bw, bh);
-                let offset = Affine::translate((-(bx as f64), -(by as f64))) * transform;
-                let ok = match gradient {
-                    MaskGradient::None => self.image(key, AlphaType::PremultipliedAlpha).is_some_and(|image| {
-                        let settings = RenderSettings {
-                            level: vello_cpu::Level::try_detect().unwrap_or(vello_cpu::Level::baseline()),
-                            num_threads: 0,
+            let rendered =
+                bbox.filter(|(_, _, w, h)| *w > 0 && *h > 0)
+                    .and_then(|(bx, by, bw, bh)| {
+                        let mut pixmap = Pixmap::new(bw, bh);
+                        let offset = Affine::translate((-(bx as f64), -(by as f64))) * transform;
+                        let ok = match gradient {
+                            MaskGradient::None => self
+                                .image(key, AlphaType::PremultipliedAlpha)
+                                .is_some_and(|image| {
+                                    let settings = RenderSettings {
+                                        level: vello_cpu::Level::try_detect()
+                                            .unwrap_or(vello_cpu::Level::baseline()),
+                                        num_threads: 0,
+                                    };
+                                    let context = RenderContext::new_with(bw, bh, settings);
+                                    let parent = std::mem::replace(&mut self.context, context);
+                                    self.context.set_transform(offset);
+                                    let extend = if tile_size.width < rect.width()
+                                        || tile_size.height < rect.height()
+                                    {
+                                        Extend::Repeat
+                                    } else {
+                                        Extend::Pad
+                                    };
+                                    self.fill_image(image, rect, tile_size, extend);
+                                    let mut context = std::mem::replace(&mut self.context, parent);
+                                    context.flush();
+                                    context.render(&mut pixmap, &mut self.resources);
+                                    true
+                                }),
+                            _ => {
+                                let stops = stops_of(stops.iter().copied());
+                                gradient_paint(&gradient, rect, stops).is_some_and(
+                                    |(paint, paint_transform)| {
+                                        let settings = RenderSettings {
+                                            level: vello_cpu::Level::try_detect()
+                                                .unwrap_or(vello_cpu::Level::baseline()),
+                                            num_threads: 0,
+                                        };
+                                        let context = RenderContext::new_with(bw, bh, settings);
+                                        let parent = std::mem::replace(&mut self.context, context);
+                                        self.context.set_transform(offset);
+                                        self.context.set_paint(paint);
+                                        self.context.set_paint_transform(paint_transform);
+                                        self.context.fill_rect(&rect_of(rect));
+                                        self.context.reset_paint_transform();
+                                        let mut context =
+                                            std::mem::replace(&mut self.context, parent);
+                                        context.flush();
+                                        context.render(&mut pixmap, &mut self.resources);
+                                        true
+                                    },
+                                )
+                            },
                         };
-                        let context = RenderContext::new_with(bw, bh, settings);
-                        let parent = std::mem::replace(&mut self.context, context);
-                        self.context.set_transform(offset);
-                        let extend = if tile_size.width < rect.width() || tile_size.height < rect.height() {
-                            Extend::Repeat
-                        } else {
-                            Extend::Pad
-                        };
-                        self.fill_image(image, rect, tile_size, extend);
-                        let mut context = std::mem::replace(&mut self.context, parent);
-                        context.flush();
-                        context.render(&mut pixmap, &mut self.resources);
-                        true
-                    }),
-                    _ => {
-                        let stops = stops_of(stops.iter().copied());
-                        gradient_paint(&gradient, rect, stops).is_some_and(|(paint, paint_transform)| {
-                            let settings = RenderSettings {
-                                level: vello_cpu::Level::try_detect().unwrap_or(vello_cpu::Level::baseline()),
-                                num_threads: 0,
-                            };
-                            let context = RenderContext::new_with(bw, bh, settings);
-                            let parent = std::mem::replace(&mut self.context, context);
-                            self.context.set_transform(offset);
-                            self.context.set_paint(paint);
-                            self.context.set_paint_transform(paint_transform);
-                            self.context.fill_rect(&rect_of(rect));
-                            self.context.reset_paint_transform();
-                            let mut context = std::mem::replace(&mut self.context, parent);
-                            context.flush();
-                            context.render(&mut pixmap, &mut self.resources);
-                            true
-                        })
-                    },
-                };
-                ok.then_some((pixmap, bx, by, bw, bh))
-            });
+                        ok.then_some((pixmap, bx, by, bw, bh))
+                    });
 
             // Whether a pixel this layer's own rendered bbox does not reach
             // keeps `combined`'s existing value (true for `add`/`exclude`,
@@ -919,7 +935,11 @@ impl<'a> Renderer<'a> {
                 None => {
                     if !preserves_outside {
                         for acc in combined.iter_mut() {
-                            *acc = if is_bottom { 0 } else { composite_mask(composite, 0, *acc) };
+                            *acc = if is_bottom {
+                                0
+                            } else {
+                                composite_mask(composite, 0, *acc)
+                            };
                         }
                     }
                 },
@@ -930,8 +950,11 @@ impl<'a> Renderer<'a> {
                             let idx = cy as usize * width as usize + cx as usize;
                             if !(in_y && cx >= bx && cx < bx + bw) {
                                 if !preserves_outside {
-                                    combined[idx] =
-                                        if is_bottom { 0 } else { composite_mask(composite, 0, combined[idx]) };
+                                    combined[idx] = if is_bottom {
+                                        0
+                                    } else {
+                                        composite_mask(composite, 0, combined[idx])
+                                    };
                                 }
                                 continue;
                             }
@@ -942,7 +965,8 @@ impl<'a> Renderer<'a> {
                             // constructors (`new_alpha`/`new_luminance`)
                             // only produce a standalone `Mask` each, with no
                             // way to combine several first.
-                            let pixel = pixmap.data()[(cy - by) as usize * bw as usize + (cx - bx) as usize];
+                            let pixel = pixmap.data()
+                                [(cy - by) as usize * bw as usize + (cx - bx) as usize];
                             let source = if !luminance {
                                 pixel.a
                             } else {
@@ -958,8 +982,11 @@ impl<'a> Renderer<'a> {
                             // combine with, so per spec its own
                             // `mask-composite` is ignored: it just seeds the
                             // accumulator with its own mask value.
-                            combined[idx] =
-                                if is_bottom { source } else { composite_mask(composite, source, combined[idx]) };
+                            combined[idx] = if is_bottom {
+                                source
+                            } else {
+                                composite_mask(composite, source, combined[idx])
+                            };
                         }
                     }
                 },
@@ -984,13 +1011,19 @@ impl<'a> Renderer<'a> {
     }
 
     /// Fill `bounds` with an image, one copy per `tile` size (stretched to it).
-    fn fill_image(&mut self, pixmap: Arc<Pixmap>, bounds: LayoutRect, tile: LayoutSize, extend: Extend) {
+    fn fill_image(
+        &mut self,
+        pixmap: Arc<Pixmap>,
+        bounds: LayoutRect,
+        tile: LayoutSize,
+        extend: Extend,
+    ) {
         let (image_width, image_height) = (pixmap.width() as f64, pixmap.height() as f64);
         if tile.width <= 0.0 || tile.height <= 0.0 || image_width == 0.0 || image_height == 0.0 {
             return;
         }
-        let paint_transform = Affine::translate((bounds.min.x as f64, bounds.min.y as f64)) *
-            Affine::scale_non_uniform(
+        let paint_transform = Affine::translate((bounds.min.x as f64, bounds.min.y as f64))
+            * Affine::scale_non_uniform(
                 tile.width as f64 / image_width,
                 tile.height as f64 / image_height,
             );
@@ -1026,9 +1059,9 @@ impl<'a> Renderer<'a> {
             outer.y1 - widths.bottom as f64,
         );
 
-        let uniform_solid = sides.iter().all(|side| {
-            side.color == details.top.color && side.style == BorderStyle::Solid
-        });
+        let uniform_solid = sides
+            .iter()
+            .all(|side| side.color == details.top.color && side.style == BorderStyle::Solid);
         if uniform_solid {
             if !visible(&details.top) {
                 return;
@@ -1097,14 +1130,22 @@ impl<'a> Renderer<'a> {
                 BorderStyle::Groove | BorderStyle::Ridge => {
                     let middle = lerp_rect(outer, inner, 0.5);
                     let (dark, light) = (shade(side.color, 0.5), color);
-                    let outer_color = if (side.style == BorderStyle::Groove) == top_left { dark } else { light };
+                    let outer_color = if (side.style == BorderStyle::Groove) == top_left {
+                        dark
+                    } else {
+                        light
+                    };
                     let inner_color = if outer_color == dark { light } else { dark };
                     self.fill_side(outer, middle, index, outer_color);
                     self.fill_side(middle, inner, index, inner_color);
                 },
                 BorderStyle::Inset | BorderStyle::Outset => {
                     let darken = (side.style == BorderStyle::Inset) == top_left;
-                    let color = if darken { shade(side.color, 0.5) } else { color };
+                    let color = if darken {
+                        shade(side.color, 0.5)
+                    } else {
+                        color
+                    };
                     self.fill_side(outer, inner, index, color);
                 },
                 _ => self.fill_side(outer, inner, index, color),
@@ -1116,10 +1157,30 @@ impl<'a> Renderer<'a> {
     /// meeting its neighbours at the corners.
     fn fill_side(&mut self, outer: Rect, inner: Rect, index: usize, color: Color) {
         let points = match index {
-            0 => [(outer.x0, outer.y0), (outer.x1, outer.y0), (inner.x1, inner.y0), (inner.x0, inner.y0)],
-            1 => [(outer.x1, outer.y0), (outer.x1, outer.y1), (inner.x1, inner.y1), (inner.x1, inner.y0)],
-            2 => [(outer.x1, outer.y1), (outer.x0, outer.y1), (inner.x0, inner.y1), (inner.x1, inner.y1)],
-            _ => [(outer.x0, outer.y1), (outer.x0, outer.y0), (inner.x0, inner.y0), (inner.x0, inner.y1)],
+            0 => [
+                (outer.x0, outer.y0),
+                (outer.x1, outer.y0),
+                (inner.x1, inner.y0),
+                (inner.x0, inner.y0),
+            ],
+            1 => [
+                (outer.x1, outer.y0),
+                (outer.x1, outer.y1),
+                (inner.x1, inner.y1),
+                (inner.x1, inner.y0),
+            ],
+            2 => [
+                (outer.x1, outer.y1),
+                (outer.x0, outer.y1),
+                (inner.x0, inner.y1),
+                (inner.x1, inner.y1),
+            ],
+            _ => [
+                (outer.x0, outer.y1),
+                (outer.x0, outer.y0),
+                (inner.x0, inner.y0),
+                (inner.x0, inner.y1),
+            ],
         };
         let mut path = BezPath::new();
         path.move_to(points[0]);
@@ -1153,9 +1214,12 @@ impl<'a> Renderer<'a> {
                 self.context.set_transform(transform);
                 self.context.set_paint(color);
                 if std_dev > 0.25 {
-                    self.context.fill_blurred_rounded_rect(&shadow_rect, radius, std_dev, false);
+                    self.context
+                        .fill_blurred_rounded_rect(&shadow_rect, radius, std_dev, false);
                 } else {
-                    self.context.fill_path(&RoundedRect::from_rect(shadow_rect, radius as f64).to_path(0.1));
+                    self.context.fill_path(
+                        &RoundedRect::from_rect(shadow_rect, radius as f64).to_path(0.1),
+                    );
                 }
                 self.context.pop_layer();
             },
@@ -1166,7 +1230,8 @@ impl<'a> Renderer<'a> {
                 self.context.set_transform(transform);
                 self.context.set_paint(color);
                 if std_dev > 0.25 {
-                    self.context.fill_blurred_rounded_rect(&shadow_rect, radius, std_dev, true);
+                    self.context
+                        .fill_blurred_rounded_rect(&shadow_rect, radius, std_dev, true);
                 } else {
                     let mut ring = box_rect.inflate(1.0, 1.0).to_path(0.1);
                     ring.extend(RoundedRect::from_rect(shadow_rect, radius as f64).to_path(0.1));
@@ -1195,10 +1260,12 @@ impl<'a> Renderer<'a> {
             let blurred = shadow.blur_radius > 0.0;
             if blurred {
                 self.context.set_transform(Affine::IDENTITY);
-                self.context.push_filter_layer(Filter::from_primitive(FilterPrimitive::GaussianBlur {
-                    std_deviation: shadow.blur_radius / 2.0,
-                    edge_mode: EdgeMode::None,
-                }));
+                self.context.push_filter_layer(Filter::from_primitive(
+                    FilterPrimitive::GaussianBlur {
+                        std_deviation: shadow.blur_radius / 2.0,
+                        edge_mode: EdgeMode::None,
+                    },
+                ));
             }
             self.context.set_transform(
                 transform * Affine::translate((shadow.offset.x as f64, shadow.offset.y as f64)),
@@ -1467,9 +1534,9 @@ fn gradient_paint(
             );
             paint.stops = stops;
             paint.extend = extend_of(g.extend_mode);
-            let squash = Affine::translate(center.to_vec2()) *
-                Affine::scale_non_uniform(1.0, (g.radius.height / radius) as f64) *
-                Affine::translate(-center.to_vec2());
+            let squash = Affine::translate(center.to_vec2())
+                * Affine::scale_non_uniform(1.0, (g.radius.height / radius) as f64)
+                * Affine::translate(-center.to_vec2());
             Some((paint, squash))
         },
         MaskGradient::Conic(g) => {
@@ -1480,8 +1547,11 @@ fn gradient_paint(
             // Y-down space, hence the -90-degree offset.
             const FULL_TURN: f32 = std::f32::consts::TAU;
             let base = g.angle - std::f32::consts::FRAC_PI_2;
-            let mut paint =
-                Gradient::new_sweep(center, base + FULL_TURN * g.start_offset, base + FULL_TURN * g.end_offset);
+            let mut paint = Gradient::new_sweep(
+                center,
+                base + FULL_TURN * g.start_offset,
+                base + FULL_TURN * g.end_offset,
+            );
             paint.stops = stops;
             paint.extend = extend_of(g.extend_mode);
             Some((paint, Affine::IDENTITY))
@@ -1505,7 +1575,9 @@ fn pixmap_of(image: &worker_frame::WorkerImage, alpha_type: AlphaType) -> Option
     let offset = descriptor.offset.max(0) as usize;
     let mut pixels = Vec::with_capacity((width * height) as usize);
     for y in 0..height as usize {
-        let row = image.data.get(offset + y * stride..offset + y * stride + width as usize * 4)?;
+        let row = image
+            .data
+            .get(offset + y * stride..offset + y * stride + width as usize * 4)?;
         for pixel in row.chunks_exact(4) {
             let alpha = pixel[3];
             let premultiply = |value: u8| match alpha_type {
@@ -1524,7 +1596,9 @@ fn pixmap_of(image: &worker_frame::WorkerImage, alpha_type: AlphaType) -> Option
 }
 
 /// Scroll offset and content size of each scrolling spatial node, by index.
-fn scroll_nodes(scroll_tree: &ScrollTree) -> FxHashMap<usize, (webrender_api::units::LayoutVector2D, LayoutSize)> {
+fn scroll_nodes(
+    scroll_tree: &ScrollTree,
+) -> FxHashMap<usize, (webrender_api::units::LayoutVector2D, LayoutSize)> {
     scroll_tree
         .nodes
         .iter()
@@ -1543,8 +1617,9 @@ fn corner_radius(size: LayoutSize) -> f64 {
 
 /// The area a box shadow can paint.
 fn shadow_extent(shadow: &webrender_api::BoxShadowDisplayItem) -> LayoutRect {
-    let reach = shadow.spread_radius.abs() + shadow.blur_radius * 1.5 +
-        shadow.offset.x.abs().max(shadow.offset.y.abs());
+    let reach = shadow.spread_radius.abs()
+        + shadow.blur_radius * 1.5
+        + shadow.offset.x.abs().max(shadow.offset.y.abs());
     shadow.box_bounds.inflate(reach, reach)
 }
 
@@ -1578,7 +1653,12 @@ fn lerp_rect(outer: Rect, inner: Rect, fraction: f64) -> Rect {
 }
 
 fn shade(color: ColorF, factor: f32) -> Color {
-    Color::new([color.r * factor, color.g * factor, color.b * factor, color.a])
+    Color::new([
+        color.r * factor,
+        color.g * factor,
+        color.b * factor,
+        color.a,
+    ])
 }
 
 fn mix_of(blend: MixBlendMode) -> Option<BlendMode> {
@@ -1608,36 +1688,74 @@ fn mix_of(blend: MixBlendMode) -> Option<BlendMode> {
 
 fn brightness_matrix(amount: f32) -> ColorMatrix {
     let a = amount.max(0.0);
-    [a, 0., 0., 0., 0., 0., a, 0., 0., 0., 0., 0., a, 0., 0., 0., 0., 0., 1., 0.]
+    [
+        a, 0., 0., 0., 0., 0., a, 0., 0., 0., 0., 0., a, 0., 0., 0., 0., 0., 1., 0.,
+    ]
 }
 
 fn contrast_matrix(amount: f32) -> ColorMatrix {
     let (a, o) = (amount.max(0.0), 0.5 - 0.5 * amount.max(0.0));
-    [a, 0., 0., 0., o, 0., a, 0., 0., o, 0., 0., a, 0., o, 0., 0., 0., 1., 0.]
+    [
+        a, 0., 0., 0., o, 0., a, 0., 0., o, 0., 0., a, 0., o, 0., 0., 0., 1., 0.,
+    ]
 }
 
 fn invert_matrix(a: f32) -> ColorMatrix {
     let d = 1.0 - 2.0 * a;
-    [d, 0., 0., 0., a, 0., d, 0., 0., a, 0., 0., d, 0., a, 0., 0., 0., 1., 0.]
+    [
+        d, 0., 0., 0., a, 0., d, 0., 0., a, 0., 0., d, 0., a, 0., 0., 0., 1., 0.,
+    ]
 }
 
 fn saturate_matrix(s: f32) -> ColorMatrix {
     let s = s.max(0.0);
     [
-        0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s, 0., 0.,
-        0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s, 0., 0.,
-        0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s, 0., 0.,
-        0., 0., 0., 1., 0.,
+        0.213 + 0.787 * s,
+        0.715 - 0.715 * s,
+        0.072 - 0.072 * s,
+        0.,
+        0.,
+        0.213 - 0.213 * s,
+        0.715 + 0.285 * s,
+        0.072 - 0.072 * s,
+        0.,
+        0.,
+        0.213 - 0.213 * s,
+        0.715 - 0.715 * s,
+        0.072 + 0.928 * s,
+        0.,
+        0.,
+        0.,
+        0.,
+        0.,
+        1.,
+        0.,
     ]
 }
 
 fn sepia_matrix(a: f32) -> ColorMatrix {
     let i = 1.0 - a;
     [
-        0.393 + 0.607 * i, 0.769 - 0.769 * i, 0.189 - 0.189 * i, 0., 0.,
-        0.349 - 0.349 * i, 0.686 + 0.314 * i, 0.168 - 0.168 * i, 0., 0.,
-        0.272 - 0.272 * i, 0.534 - 0.534 * i, 0.131 + 0.869 * i, 0., 0.,
-        0., 0., 0., 1., 0.,
+        0.393 + 0.607 * i,
+        0.769 - 0.769 * i,
+        0.189 - 0.189 * i,
+        0.,
+        0.,
+        0.349 - 0.349 * i,
+        0.686 + 0.314 * i,
+        0.168 - 0.168 * i,
+        0.,
+        0.,
+        0.272 - 0.272 * i,
+        0.534 - 0.534 * i,
+        0.131 + 0.869 * i,
+        0.,
+        0.,
+        0.,
+        0.,
+        0.,
+        1.,
+        0.,
     ]
 }
 
@@ -1647,16 +1765,23 @@ fn hue_rotate_matrix(degrees: f32) -> ColorMatrix {
         0.213 + cos * 0.787 - sin * 0.213,
         0.715 - cos * 0.715 - sin * 0.715,
         0.072 - cos * 0.072 + sin * 0.928,
-        0., 0.,
+        0.,
+        0.,
         0.213 - cos * 0.213 + sin * 0.143,
         0.715 + cos * 0.285 + sin * 0.140,
         0.072 - cos * 0.072 - sin * 0.283,
-        0., 0.,
+        0.,
+        0.,
         0.213 - cos * 0.213 - sin * 0.787,
         0.715 - cos * 0.715 + sin * 0.715,
         0.072 + cos * 0.928 + sin * 0.072,
-        0., 0.,
-        0., 0., 0., 1., 0.,
+        0.,
+        0.,
+        0.,
+        0.,
+        0.,
+        1.,
+        0.,
     ]
 }
 
@@ -1683,7 +1808,12 @@ fn apply_color_matrix(pixmap: &mut Pixmap, matrix: &ColorMatrix) {
             continue;
         }
         let channel = |value: u8| (value as f32 / 255.0) / alpha;
-        let input = [channel(pixel[0]), channel(pixel[1]), channel(pixel[2]), alpha];
+        let input = [
+            channel(pixel[0]),
+            channel(pixel[1]),
+            channel(pixel[2]),
+            alpha,
+        ];
         let mut output = [0.0f32; 4];
         for (row, out) in output.iter_mut().enumerate() {
             let m = &matrix[row * 5..row * 5 + 5];

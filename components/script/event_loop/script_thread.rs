@@ -1349,12 +1349,14 @@ impl ScriptThread {
     /// scheduled already. Another example is if rAFs are running but no display
     /// lists are being produced. In that case the [`ScriptThread`] is
     /// responsible for scheduling animation ticks.
-    #[cfg(not(target_arch = "wasm32"))]
     fn maybe_schedule_rendering_opportunity_after_ipc_message(
         &self,
         no_gc: &NoGC,
         built_any_display_lists: bool,
     ) {
+        #[cfg(target_arch = "wasm32")]
+        let _ = built_any_display_lists;
+
         let needs_rendering_update = self
             .documents
             .borrow()
@@ -1377,6 +1379,7 @@ impl ScriptThread {
         // If animations are running and a reflow in this event loop iteration
         // produced a display list, rely on the renderer to inform us of the
         // next animation tick / rendering opportunity.
+        #[cfg(not(target_arch = "wasm32"))]
         if running_animations && built_any_display_lists {
             return;
         }
@@ -1469,8 +1472,14 @@ impl ScriptThread {
             // The Worker updates the rendering only when its host asks for a
             // frame (see `request_worker_rendering`): layout work is costly and
             // there is no display to refresh otherwise.
-            if WORKER_RENDERING_REQUESTED.with(|requested| requested.replace(false)) {
-                self.update_the_rendering(cx);
+            let requested = WORKER_RENDERING_REQUESTED.with(|requested| requested.replace(false));
+            let timer_requested = self.needs_rendering_update.swap(false, Ordering::Relaxed);
+            if requested || timer_requested {
+                let built_any_display_lists = self.update_the_rendering(cx);
+                self.maybe_schedule_rendering_opportunity_after_ipc_message(
+                    cx.no_gc(),
+                    built_any_display_lists,
+                );
                 return true;
             }
         }

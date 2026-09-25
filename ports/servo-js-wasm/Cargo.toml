@@ -19,6 +19,7 @@ hyper_serde = { workspace = true }
 js = { workspace = true, default-features = false, features = ["libz-rs"] }
 mime = { workspace = true }
 net_traits = { workspace = true }
+profile_traits = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 servo-base = { workspace = true }

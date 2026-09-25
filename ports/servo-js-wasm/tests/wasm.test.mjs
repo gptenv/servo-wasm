@@ -156,10 +156,13 @@ test('SpiderMonkey smoke export runs in wasm', () => {
 });
 
 test('Worker lifecycle exports are present and initially idle', () => {
-  assert.equal(instance.exports.servo_worker_abi_version(), 3);
+  assert.equal(instance.exports.servo_worker_abi_version(), 4);
   assert.equal(typeof instance.exports.servo_worker_reset, 'function');
   assert.equal(typeof instance.exports.servo_worker_pump_status, 'function');
   assert.equal(typeof instance.exports.servo_worker_pending_fetch_count, 'function');
+  assert.equal(typeof instance.exports.servo_worker_websocket_open, 'function');
+  assert.equal(typeof instance.exports.servo_worker_websocket_message, 'function');
+  assert.equal(typeof instance.exports.servo_worker_websocket_close, 'function');
   assert.equal(Number(instance.exports.servo_worker_pending_fetch_count()), 0);
   assert.equal(Number(instance.exports.servo_worker_reset()), 0);
 });
@@ -232,6 +235,7 @@ test('non-int32 result reports failure', () => {
 
 test('Worker adapter fetches a page and evaluates its DOM and inline script', async (t) => {
   const requests = [];
+  const webSocketConnections = [];
   const fetchErrors = [];
   let slowFetchAborted = false;
   let ordinaryNavigationFetchAborted = false;
@@ -419,12 +423,40 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
         { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } },
       );
     },
+    webSocketFactory: (url, protocols) => {
+      const listeners = new Map();
+      const socket = {
+        url,
+        protocols,
+        protocol: protocols[0] ?? '',
+        binaryType: 'blob',
+        addEventListener(type, listener, options = {}) {
+          const entries = listeners.get(type) ?? [];
+          entries.push({ listener, once: options.once === true });
+          listeners.set(type, entries);
+        },
+        emit(type, event = {}) {
+          const entries = listeners.get(type) ?? [];
+          listeners.set(type, entries.filter(({ once }) => !once));
+          for (const { listener } of entries) listener(event);
+        },
+        send(data) {
+          queueMicrotask(() => this.emit('message', { data }));
+        },
+        close(code = 1000, reason = '') {
+          queueMicrotask(() => this.emit('close', { code, reason }));
+        },
+      };
+      webSocketConnections.push(socket);
+      queueMicrotask(() => socket.emit('open'));
+      return socket;
+    },
   });
-  assert.equal(runtime.capabilities().abiVersion, 3);
+  assert.equal(runtime.capabilities().abiVersion, 4);
   assert.ok(runtime.capabilities().supported.includes('cpu-screenshots'));
   assert.ok(runtime.capabilities().unsupported.includes('cookies'));
-  assert.ok(runtime.capabilities().unsupported.includes('request-animation-frame'));
-  assert.ok(runtime.capabilities().unsupported.includes('websocket-transport'));
+  assert.ok(runtime.capabilities().supported.includes('request-animation-frame'));
+  assert.ok(runtime.capabilities().supported.includes('websocket-transport'));
 
   const turn = async () => {
     runtime.pump();
@@ -732,39 +764,60 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       trapped: String(runtime.trapped ?? ''), log: fetchErrors.slice(logStart) }));
   };
 
-  await t.test('characterize animation frames and WebSocket behavior', async () => {
+  await t.test('requestAnimationFrame callbacks run on Worker refresh ticks', async () => {
     assert.equal(runtime.evaluatePage(
       'requestAnimationFrame(() => document.body.dataset.rafProbe = "fired"); 1',
     ), true);
-    for (let i = 0; i < 30; i++) await turn();
+    const status = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+    assert.equal(status.settled, true);
     assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
     assert.equal(runtime.evaluatePage(
       'document.body.dataset.rafProbe === "fired" ? 42 : 0',
     ), true);
     for (let i = 0; i < 10; i++) await turn();
-    const animationFrameResult = runtime.pageResult();
-    assert.deepEqual(animationFrameResult, { Ok: { Number: 0 } },
-      'requestAnimationFrame accepts callbacks but does not run them');
+    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  });
 
+  await t.test('requestAnimationFrame supports recurring callbacks', async () => {
     assert.equal(runtime.evaluatePage(
-      'try { const ws = new WebSocket("ws://example.test/socket");' +
-      'ws.addEventListener("open", () => document.body.dataset.wsProbe = "open");' +
-      'ws.addEventListener("error", () => document.body.dataset.wsProbe = "error");' +
-      'document.body.dataset.wsConstructed = String(ws.readyState); } catch (e) {' +
-      'document.body.dataset.wsConstructed = e.name; } 1',
+      'document.body.dataset.rafCount = "0";' +
+      'const tick = () => {' +
+      '  const count = Number(document.body.dataset.rafCount) + 1;' +
+      '  document.body.dataset.rafCount = String(count);' +
+      '  if (count < 2) requestAnimationFrame(tick);' +
+      '}; requestAnimationFrame(tick); 1',
     ), true);
-    for (let i = 0; i < 30; i++) await turn();
+    const status = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+    assert.equal(status.settled, true);
     assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
     assert.equal(runtime.evaluatePage(
-      'JSON.stringify({frame: document.body.dataset.rafProbe || "not-fired", ' +
-      'socket: document.body.dataset.wsProbe || "no-event", ' +
-      'socketState: document.body.dataset.wsConstructed || "no-constructor"})',
+      'document.body.dataset.rafCount === "2" ? 42 : 0',
     ), true);
     for (let i = 0; i < 10; i++) await turn();
-    const behaviorResult = runtime.pageResult();
-    assert.deepEqual(behaviorResult, { Ok: { String:
-      '{"frame":"not-fired","socket":"no-event","socketState":"0"}' } },
-    'WebSocket remains CONNECTING without open or error events');
+    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  });
+
+  await t.test('WebSocket connects, exchanges messages, and closes through the Worker host', async () => {
+    assert.equal(runtime.evaluatePage(
+      'const ws = new WebSocket("wss://socket.example/echo", "chat");' +
+      'ws.addEventListener("open", () => {' +
+      'document.body.dataset.wsOpen = ws.protocol; ws.send("worker-echo") });' +
+      'ws.addEventListener("message", e => {' +
+      'document.body.dataset.wsMessage = e.data; ws.close(1000, "done") });' +
+      'ws.addEventListener("close", e => {' +
+      'document.body.dataset.wsClose = `${e.code}:${e.reason}` }); 1',
+    ), true);
+    for (let i = 0; i < 60; i++) await turn();
+    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
+    assert.equal(runtime.evaluatePage(
+      'document.body.dataset.wsOpen === "chat" && ' +
+      'document.body.dataset.wsMessage === "worker-echo" && ' +
+      'document.body.dataset.wsClose === "1000:done" ? 42 : 0',
+    ), true);
+    for (let i = 0; i < 10; i++) await turn();
+    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+    assert.equal(webSocketConnections.length, 1);
+    assert.equal(webSocketConnections[0].binaryType, 'arraybuffer');
   });
 
   await t.test('settling budgets and concurrent calls fail explicitly', async () => {

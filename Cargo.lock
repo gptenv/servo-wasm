@@ -8677,6 +8677,7 @@ dependencies = [
  "servo-fonts-traits",
  "servo-hyper-serde",
  "servo-net-traits",
+ "servo-profile-traits",
  "servo-url",
  "url",
  "uuid",

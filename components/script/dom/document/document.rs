@@ -1985,6 +1985,13 @@ impl Document {
             );
         }
 
+        // The cooperative Worker has no display server to request an initial
+        // rendering opportunity. Drive the same update-the-rendering path used
+        // by its screenshot/frame export so Window requestAnimationFrame
+        // callbacks can run on the next Worker pump.
+        #[cfg(target_arch = "wasm32")]
+        crate::request_worker_rendering();
+
         ident
     }
 
