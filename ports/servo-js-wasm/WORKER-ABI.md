@@ -32,6 +32,13 @@ Cancellation retires the Rust callback first, then cancels queued/active host I/
 
 ## Response lifecycle
 
+For a followed same-origin redirect, the adapter first calls
+`servo_worker_process_redirect_cookies(payload, output)` with the response
+URL, next URL, request ID and `getSetCookie()` values. The export checks the
+pending request and its credentials mode, stores permitted cookies, and writes
+the next hop's `Cookie` header into the bounded output buffer. The adapter
+then sends the next request with that header.
+
 For each request ID, the host delivers:
 
 1. `servo_worker_begin_http_response(id, url, status, headers, redirected)` once.
@@ -63,18 +70,26 @@ The report describes this adapter's support contract; it does not replace
 host-side URL/SSRF policy.
 
 `document.cookie` and Worker fetch requests use Servo's in-memory RFC 6265 cookie
-jar. Final response `Set-Cookie` values are stored when the host exposes
-`Headers.getSetCookie()`; redirect response cookies and complete SameSite
-context checks are not implemented. The jar is lost with the WASM instance, so
-the capability report marks cookies as partial.
+jar. Final responses and followed same-origin redirects store `Set-Cookie`
+values when the host exposes `Headers.getSetCookie()` and the request's
+credentials mode permits them. `HttpOnly` cookies remain hidden from page
+script. Cross-site SameSite context checks are incomplete. The jar is lost
+with the WASM instance, so the capability report marks cookies as partial.
 `localStorage` and `sessionStorage` are instance-local. IndexedDB, client
 storage, and Cache Storage now have cooperative in-process Worker services and
 memory-backed databases. Their data lasts only while the WASM instance stays
-alive. Cache Storage remains incomplete: request/response operations such as
+alive. `CacheStorage.keys()` preserves cache creation order, including after
+deletion and recreation. `navigator.storage.estimate()` is available in the
+Worker; its 32 MiB quota is an estimate rather than an enforced limit, and
+its current usage value is a lower bound based on registry metadata because
+the endpoints do not yet report their in-memory byte counts.
+`navigator.storage.persist()` and `persisted()` report false because the
+current instance-local backend is not durable. Cache Storage
+remains incomplete: request/response operations such as
 `Cache.match`, `Cache.put`, and `Cache.add` are not implemented by the current
-Servo Cache API surface. IndexedDB transaction scheduling and database lifetime
-still need validation against the production Worker artifact before claiming
-full compatibility.
+Servo Cache API surface. The production artifact covers an IndexedDB
+open/write/read transaction sequence; broader ordering, origin isolation and
+database lifetime still need validation before claiming full compatibility.
 
 One browser/SpiderMonkey runtime may be bootstrapped per WASM instance. A second
 bootstrap returns false. Use a separate instance for unrelated incoming requests;

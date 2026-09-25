@@ -105,6 +105,14 @@ pub mod resource_thread {
         }
     }
 
+    pub fn worker_cookie_header_for_url(url: &servo_url::ServoUrl) -> Option<String> {
+        COOKIES.with(|jar| {
+            let mut jar = jar.borrow_mut();
+            jar.remove_expired_cookies_for_url(url);
+            jar.cookies_for_url(url, net_traits::CookieSource::HTTP)
+        })
+    }
+
     pub fn attach_worker_cookies(request: &mut RequestBuilder) {
         let same_origin = match &request.origin {
             Origin::Client => true,
@@ -120,11 +128,7 @@ pub mod resource_thread {
         }
 
         let url = request.url.url();
-        let cookie_header = COOKIES.with(|jar| {
-            let mut jar = jar.borrow_mut();
-            jar.remove_expired_cookies_for_url(&url);
-            jar.cookies_for_url(&url, net_traits::CookieSource::HTTP)
-        });
+        let cookie_header = worker_cookie_header_for_url(&url);
         if let Some(cookie_header) = cookie_header
             && let Ok(cookie_header) = HeaderValue::from_bytes(cookie_header.as_bytes())
         {

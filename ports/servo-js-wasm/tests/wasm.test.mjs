@@ -359,6 +359,18 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
           headers: { 'content-type': 'text/plain' },
         });
       }
+      if (url.endsWith('/omit-cookie')) {
+        return new Response('ignored', {
+          status: 200,
+          headers: { 'set-cookie': 'omitted=never' },
+        });
+      }
+      if (url.endsWith('/http-only-cookie')) {
+        return new Response('stored', {
+          status: 200,
+          headers: { 'set-cookie': 'serverOnly=secret; HttpOnly' },
+        });
+      }
       if (url.endsWith('/big')) {
         return new Response('x'.repeat(1_050_000), {
           status: 200,
@@ -376,6 +388,12 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
         return new Response(new TextDecoder().decode(init.body), {
           status: 200,
           headers: { 'content-type': 'text/plain' },
+        });
+      }
+      if (url.endsWith('/cookie-redirect')) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: '/cookie-check', 'set-cookie': 'redirected=yes; HttpOnly' },
         });
       }
       if (url.endsWith('/redirect')) {
@@ -1015,25 +1033,90 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   await t.test('Cache Storage worker service supports cache lifecycle operations', async () => {
     runtime.pageResult();
     assert.equal(runtime.evaluatePage(`(() => {
-      const name = 'servo-worker-cache-test';
-      caches.open(name).then(() => caches.has(name)).then((has) => {
+      const first = 'servo-worker-cache-first';
+      const second = 'servo-worker-cache-second';
+      caches.open(first).then(() => caches.open(second))
+      .then(() => caches.open(first)).then(() => caches.has(first)).then((has) => {
         if (!has) throw new Error('cache missing after open');
         return caches.keys();
       }).then((names) => {
-        if (!names.includes(name)) throw new Error('cache absent from CacheStorage.keys');
-        return caches.delete(name);
+        if (JSON.stringify(names) !== JSON.stringify([first, second]))
+          throw new Error('cache names changed creation order');
+        return caches.delete(first);
       }).then((deleted) => {
-        document.body.dataset.cacheStatus = String(deleted);
+        if (!deleted) throw new Error('first cache was not deleted');
+        return caches.open(first);
+      }).then(() => caches.keys()).then((names) => {
+        if (JSON.stringify(names) !== JSON.stringify([second, first]))
+          throw new Error('recreated cache did not move to the end');
+        return Promise.all([caches.delete(first), caches.delete(second)]);
+      }).then((deleted) => {
+        document.body.dataset.cacheStatus = String(deleted.every(Boolean));
       }).catch(() => document.body.dataset.cacheStatus = 'error');
       return 1;
     })()`), true);
-    for (let i = 0; i < 80; i++) await turn();
+    for (let i = 0; i < 160; i++) await turn();
     await checkPage('document.body.dataset.cacheStatus === "true"');
+  });
+
+  await t.test('Worker storage estimate resolves and persistence stays unavailable', async () => {
+    runtime.pageResult();
+    assert.equal(runtime.evaluatePage(`(() => {
+      Promise.all([
+        navigator.storage.estimate(),
+        navigator.storage.persisted(),
+        navigator.storage.persist()
+      ]).then(([{usage, quota}, before, requested]) =>
+        navigator.storage.persisted().then((after) => {
+        document.body.dataset.storageEstimate =
+          String(Number.isFinite(usage) && usage >= 0 &&
+            Number.isFinite(quota) && quota >= usage && quota <= 128 * 1024 * 1024 &&
+            before === false && requested === false && after === false);
+      })).catch(() => document.body.dataset.storageEstimate = 'error');
+      return 1;
+    })()`), true);
+    for (let i = 0; i < 80; i++) await turn();
+    await checkPage('document.body.dataset.storageEstimate === "true"');
   });
 
   await t.test('final response cookies are sent with subsequent same-origin fetches', () => {
     assert.equal(requests.find(({ url }) => url.endsWith('/cookie-check'))?.cookie,
       'session=private', 'final response cookies should be attached to same-origin requests');
+  });
+
+  await t.test('credentials omit rejects response cookies and HttpOnly stays hidden from script', async () => {
+    runtime.pageResult();
+    assert.equal(runtime.evaluatePage(`(() => {
+      fetch('/omit-cookie', {credentials: 'omit'})
+        .then(() => fetch('/http-only-cookie'))
+        .then(() => fetch('/cookie-check'))
+        .then((response) => response.text())
+        .then((cookie) => {
+          document.body.dataset.cookiePolicy =
+            String(!cookie.includes('omitted=') &&
+              cookie.includes('serverOnly=secret') &&
+              !document.cookie.includes('serverOnly='));
+        })
+        .catch(() => document.body.dataset.cookiePolicy = 'error');
+      return 1;
+    })()`), true);
+    for (let i = 0; i < 80; i++) await turn();
+    await checkPage('document.body.dataset.cookiePolicy === "true"');
+  });
+
+  await t.test('redirect cookies are sent on the next same-origin request', async () => {
+    runtime.pageResult();
+    assert.equal(runtime.evaluatePage(`(() => {
+      fetch('/cookie-redirect').then((response) => response.text())
+        .then((cookies) => {
+          document.body.dataset.redirectCookie =
+            String(cookies.includes('redirected=yes') &&
+              !document.cookie.includes('redirected='));
+        }).catch(() => document.body.dataset.redirectCookie = 'error');
+      return 1;
+    })()`), true);
+    for (let i = 0; i < 80; i++) await turn();
+    await checkPage('document.body.dataset.redirectCookie === "true"');
   });
 
   await t.test('a frame request makes layout build a display list for the Worker renderer', async () => {
@@ -1459,4 +1542,53 @@ test('screenshots apply a same-document SVG <mask> reference (mask-image: url(#i
   // test, re-fetch the page itself).
   assert.ok(!fetched.includes('https://shot.example/'),
     `a same-document mask reference must not fetch the page itself (fetched: ${JSON.stringify(fetched)})`);
+});
+
+test('storage stays origin-isolated across navigation in one Worker instance', async () => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    fetchImpl: async () => new Response('unexpected network request', { status: 500 }),
+  });
+  const settle = async () => {
+    const status = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+    assert.equal(status.settled, true);
+  };
+  const load = async (origin) => {
+    assert.equal(runtime.loadHtml('<!doctype html><body></body>', { url: `https://${origin}/` }), true);
+    await settle();
+  };
+  const run = async (source, expected) => {
+    runtime.pageResult();
+    assert.equal(runtime.evaluatePage(source), true);
+    await settle();
+    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
+    for (let i = 0; i < 40; i++) {
+      runtime.pump();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.equal(runtime.evaluatePage(`(${expected}) ? 42 : 0`), true);
+    await settle();
+    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  };
+
+  await load('alpha.example');
+  await run(
+    'localStorage.setItem("partition", "alpha");' +
+    'sessionStorage.setItem("partition", "alpha");' +
+    'caches.open("alpha-cache").then(() => document.body.dataset.cache = "ready"); 1',
+    'document.body.dataset.cache === "ready"',
+  );
+  await load('beta.example');
+  await run(
+    'caches.has("alpha-cache").then((has) => document.body.dataset.cacheAbsent = String(!has)); 1',
+    'localStorage.getItem("partition") === null && ' +
+    'sessionStorage.getItem("partition") === null && ' +
+    'document.body.dataset.cacheAbsent === "true"',
+  );
+  await load('alpha.example');
+  await run(
+    'caches.has("alpha-cache").then((has) => document.body.dataset.cacheRestored = String(has)); 1',
+    'localStorage.getItem("partition") === "alpha" && ' +
+    'sessionStorage.getItem("partition") === "alpha" && ' +
+    'document.body.dataset.cacheRestored === "true"',
+  );
 });

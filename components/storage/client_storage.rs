@@ -19,9 +19,15 @@ use uuid::Uuid;
 
 /// <https://storage.spec.whatwg.org/#storage-quota>
 /// The storage quota of a storage shelf is an implementation-defined conservative estimate of the
-/// total amount of byttes it can hold. We use 10 GiB per shelf, matching Firefox's documented
+/// total amount of bytes it can hold. Native builds use 10 GiB per shelf, matching Firefox's documented
 /// limit (<https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria>).
+#[cfg(not(target_arch = "wasm32"))]
 const STORAGE_SHELF_QUOTA_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+/// The Worker keeps storage in its limited isolate memory. This is an
+/// estimate, not an allocation guarantee; endpoint writes need separate
+/// quota enforcement.
+#[cfg(target_arch = "wasm32")]
+const STORAGE_SHELF_QUOTA_BYTES: u64 = 32 * 1024 * 1024;
 
 trait RegistryEngine {
     type Error: Debug;
@@ -362,25 +368,45 @@ fn set_bucket_mode(bucket_id: i64, mode: Mode, tx: &Transaction) -> rusqlite::Re
 /// This cannot be an exact amount as user agents might, and are encouraged to, use deduplication,
 /// compression, and other techniques that obscure exactly how much bytes a storage shelf uses.
 fn storage_usage_for_bucket(bucket_id: i64, tx: &Transaction) -> Result<u64, String> {
-    let mut stmt = tx
-        .prepare(
-            "SELECT directories.path
+    #[cfg(target_arch = "wasm32")]
+    {
+        // The Worker endpoints use in-memory databases and have no filesystem
+        // directories to measure. Count registry metadata as a lower bound
+        // until the endpoints report their own byte usage.
+        let usage: i64 = tx
+            .query_row(
+                "SELECT COALESCE(SUM(LENGTH(databases.name)), 0)
+                 FROM databases JOIN bottles ON databases.bottle_id = bottles.id
+                 WHERE bottles.bucket_id = ?1;",
+                [bucket_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        return Ok(usage.max(0) as u64);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut stmt = tx
+            .prepare(
+                "SELECT directories.path
              FROM directories
              JOIN databases ON directories.database_id = databases.id
              JOIN bottles ON databases.bottle_id = bottles.id
              WHERE bottles.bucket_id = ?1;",
-        )
-        .map_err(|error| error.to_string())?;
+            )
+            .map_err(|error| error.to_string())?;
 
-    let rows = stmt
-        .query_map([bucket_id], |row| row.get::<_, String>(0))
-        .map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map([bucket_id], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?;
 
-    let mut usage = 0_u64;
-    for path in rows {
-        usage += directory_size(&PathBuf::from(path.map_err(|error| error.to_string())?))?;
+        let mut usage = 0_u64;
+        for path in rows {
+            usage += directory_size(&PathBuf::from(path.map_err(|error| error.to_string())?))?;
+        }
+        Ok(usage)
     }
-    Ok(usage)
 }
 
 /// <https://storage.spec.whatwg.org/#storage-quota>
@@ -402,6 +428,7 @@ fn storage_quota_for_bucket(_bucket_id: i64, _tx: &Transaction) -> Result<u64, S
 ///
 /// The storage usage of a storage shelf is an implementation-defined rough estimate of the amount
 /// of bytes used by it.
+#[cfg(not(target_arch = "wasm32"))]
 fn directory_size(path: &PathBuf) -> Result<u64, String> {
     let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
     if metadata.is_file() {
@@ -616,6 +643,13 @@ impl RegistryEngine for SqliteEngine {
         origin: ImmutableOrigin,
         permission_granted: bool,
     ) -> Result<bool, String> {
+        // A Worker instance has only in-memory storage. Do not promise durable
+        // persistence even if the page permission path reports "granted".
+        #[cfg(target_arch = "wasm32")]
+        let permission_granted = {
+            let _ = permission_granted;
+            false
+        };
         let tx = self
             .connection
             .transaction()

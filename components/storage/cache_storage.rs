@@ -67,6 +67,9 @@ pub struct RequestResponseList {
 pub struct MemCacheStorageEngine {
     /// <https://w3c.github.io/ServiceWorker/#dfn-name-to-cache-map>
     name_to_cache_map: HashMap<(ImmutableOrigin, String), RequestResponseList>,
+    /// CacheStorage.keys() returns names in creation order, including after
+    /// deleting and recreating a cache.
+    cache_order: HashMap<ImmutableOrigin, Vec<String>>,
 }
 
 impl CacheStorageEngine for MemCacheStorageEngine {
@@ -125,6 +128,10 @@ impl CacheStorageEngine for MemCacheStorageEngine {
         if response.is_err() {
             return Err(CacheStorageError::Internal(()));
         }
+        self.cache_order
+            .entry(origin.clone())
+            .or_default()
+            .push(cache_name.clone());
         self.name_to_cache_map.insert((origin, cache_name), cache);
 
         // Step 2.4: Resolve promise with a new Cache object that represents cache.
@@ -136,11 +143,7 @@ impl CacheStorageEngine for MemCacheStorageEngine {
         &mut self,
         origin: ImmutableOrigin,
     ) -> Result<Vec<String>, CacheStorageError<Self::Error>> {
-        Ok(self
-            .name_to_cache_map
-            .keys()
-            .filter_map(|(cache_origin, name)| (cache_origin == &origin).then_some(name.clone()))
-            .collect())
+        Ok(self.cache_order.get(&origin).cloned().unwrap_or_default())
     }
 
     /// <https://w3c.github.io/ServiceWorker/#cache-keys>
@@ -194,8 +197,7 @@ impl CacheStorageEngine for MemCacheStorageEngine {
         // Step 2.3.1: Remove the relevant name to cache map[cacheName].
         let has = self
             .name_to_cache_map
-            .remove(&(origin, cache_name.to_string()))
-            .is_some();
+            .contains_key(&(origin.clone(), cache_name.to_string()));
 
         if has {
             let Ok(response) = proxy
@@ -207,6 +209,11 @@ impl CacheStorageEngine for MemCacheStorageEngine {
             };
             if response.is_err() {
                 return Err(CacheStorageError::Internal(()));
+            }
+            self.name_to_cache_map
+                .remove(&(origin.clone(), cache_name.to_string()));
+            if let Some(names) = self.cache_order.get_mut(&origin) {
+                names.retain(|name| name != cache_name);
             }
         }
 
@@ -248,6 +255,7 @@ impl CacheStorageThreadFactory for CacheStorageThreadHandle {
                 let _ = temp_dir;
                 let engine = MemCacheStorageEngine {
                     name_to_cache_map: Default::default(),
+                    cache_order: Default::default(),
                 };
                 let mut cache_storage_thread =
                     CacheStorageThread::new(sender_clone, generic_receiver, engine);
@@ -266,6 +274,7 @@ pub fn new_worker_cache_storage() -> CacheStorageThreadHandle {
         generic_channel::channel().expect("create Worker Cache Storage channel");
     let engine = MemCacheStorageEngine {
         name_to_cache_map: Default::default(),
+        cache_order: Default::default(),
     };
     let mut service = CacheStorageThread::new(sender.clone(), receiver, engine);
     servo_base::worker_services::register(Box::new(move || service.pump()));

@@ -30,12 +30,16 @@ const WORKER_CAPABILITIES = Object.freeze({
     fetch: 'Response bodies stream; request bodies are buffered up to 256 KiB. ' +
       'CORS is limited to simple non-credentialed cross-origin GET/HEAD.',
     cookies: 'document.cookie and Worker fetches use Servo’s in-memory RFC 6265 ' +
-      'cookie jar. Final response cookies require Headers.getSetCookie(); ' +
-      'redirect cookies and complete SameSite context checks are missing, and ' +
+      'cookie jar. Final and followed same-origin redirect cookies require ' +
+      'Headers.getSetCookie() and the request credentials mode; complete ' +
+      'SameSite context checks are missing, and ' +
       'cookies are lost when the WASM instance is discarded.',
     storage: 'localStorage, sessionStorage, IndexedDB and Cache Storage are ' +
-      'instance-local and do not persist across WASM instances. Cache request/' +
-      'response operations are not implemented.',
+      'instance-local and do not persist across WASM instances. ' +
+      'navigator.storage.estimate() has a metadata-only usage lower bound and ' +
+      'an unenforced 32 MiB quota estimate; persist() reports false. ' +
+      'Cache request/response operations ' +
+      'are not implemented.',
     screenshots: 'CPU display-list renderer; backdrop filters and non-rounded ' +
       'clip paths are incomplete, and mask coverage is limited to tested cases.',
     lifecycle: 'reset cancels work and navigates to about:blank; it does not ' +
@@ -292,6 +296,30 @@ class ServoWorkerRuntime {
     });
   }
 
+  #redirectCookieHeader(requestId, responseUrl, nextUrl, setCookies) {
+    const payload = encoder.encode(JSON.stringify({
+      request_id: requestId, response_url: responseUrl,
+      next_url: nextUrl, set_cookies: setCookies,
+    }));
+    return this.#withBytes([payload], ([input]) => {
+      const capacity = 16 * 1024;
+      const output = this.instance.exports.servo_js_alloc(capacity);
+      if (!output) throw new Error('Servo wasm allocation failed');
+      try {
+        const length = this.instance.exports.servo_worker_process_redirect_cookies(
+          input.ptr, input.len, output, capacity,
+        );
+        if (length < 0 || length > capacity) {
+          throw new Error('Servo rejected redirect cookies');
+        }
+        if (length === 0) return null;
+        return bytesToString(new Uint8Array(this.instance.exports.memory.buffer, output, length));
+      } finally {
+        this.#free(output, capacity);
+      }
+    });
+  }
+
   async #fetchRequest(request, body, signal) {
     let url = requestUrl(request);
     let method = requestMethod(request);
@@ -346,6 +374,12 @@ class ServoWorkerRuntime {
           }
           headers = allowed;
         }
+        const cookieHeader = this.#redirectCookieHeader(
+          request.id, response.url || url, next.href,
+          response.headers.getSetCookie?.() ?? [],
+        );
+        headers.delete('cookie');
+        if (cookieHeader !== null) headers.set('cookie', cookieHeader);
         if ((response.status === 303 && method !== 'HEAD' && method !== 'GET') ||
             ((response.status === 301 || response.status === 302) && method === 'POST')) {
           method = 'GET';

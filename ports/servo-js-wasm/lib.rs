@@ -30,7 +30,7 @@ use servo::{
     WheelMode, attach_worker_cookies, pump_worker_services,
 };
 use servo::{WorkerFetchHandler, pump_worker_fetches, set_worker_fetch_handler};
-use servo_url::ServoUrl;
+use servo_url::{ImmutableOrigin, ServoUrl};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::mem;
@@ -59,7 +59,17 @@ thread_local! {
 struct WorkerFetchEntry {
     callback: GenericCallback<FetchResponseMsg>,
     visibility: WorkerResponseVisibility,
+    accepts_cookies: bool,
+    cookie_origin: ImmutableOrigin,
     response_started: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct WorkerRedirectCookies {
+    request_id: Uuid,
+    response_url: String,
+    next_url: String,
+    set_cookies: Vec<String>,
 }
 
 const WORKER_ABI_VERSION: u32 = 4;
@@ -149,6 +159,7 @@ pub unsafe extern "C" fn servo_worker_bootstrap(
     let mut preferences = servo::Preferences::default();
     preferences.dom_indexeddb_enabled = true;
     preferences.dom_cache_storage_enabled = true;
+    preferences.dom_storage_manager_api_enabled = true;
     let servo = ServoBuilder::default().preferences(preferences).build();
     let builder = WebViewBuilder::new(&servo, rendering_context.clone());
     let builder = builder.url(url);
@@ -809,12 +820,15 @@ fn install_fetch_adapter() {
                     },
                 };
                 let payload = encode_host_command(WorkerHostCommand::Fetch { request: &request });
+                let accepts_cookies = worker_accepts_response_cookies(&request);
                 FETCH_CALLBACKS.with(|callbacks| {
                     callbacks.borrow_mut().insert(
                         request_id,
                         WorkerFetchEntry {
                             callback,
                             visibility,
+                            accepts_cookies,
+                            cookie_origin: request.url.origin(),
                             response_started: false,
                         },
                     );
@@ -879,6 +893,26 @@ fn install_fetch_adapter() {
 fn apply_worker_redirect(request: &mut RequestBuilder, redirect: Option<ResponseInit>) {
     if let Some(Some(Ok(url))) = redirect.map(|response| response.location_url) {
         request.url = UrlWithBlobClaim::from_url_without_having_claimed_blob(url);
+    }
+}
+
+fn worker_accepts_response_cookies(request: &RequestBuilder) -> bool {
+    let origin = match &request.origin {
+        Origin::Origin(origin) => Some(origin),
+        Origin::Client => request
+            .client
+            .as_ref()
+            .and_then(|client| match &client.origin {
+                Origin::Origin(origin) => Some(origin),
+                Origin::Client => None,
+            }),
+    };
+    match request.credentials_mode {
+        CredentialsMode::Omit => false,
+        CredentialsMode::CredentialsSameOrigin => {
+            origin.is_some_and(|origin| *origin == request.url.origin())
+        },
+        CredentialsMode::Include => true,
     }
 }
 
@@ -970,6 +1004,7 @@ fn queue_worker_fetch(mut request: RequestBuilder, mut callback: net_traits::Box
         },
     };
     let payload = encode_host_command(WorkerHostCommand::Fetch { request: &request });
+    let accepts_cookies = worker_accepts_response_cookies(&request);
     let callback = GenericCallback::new(move |message| {
         if let Ok(message) = message {
             callback(message);
@@ -982,6 +1017,8 @@ fn queue_worker_fetch(mut request: RequestBuilder, mut callback: net_traits::Box
             WorkerFetchEntry {
                 callback,
                 visibility,
+                accepts_cookies,
+                cookie_origin: request.url.origin(),
                 response_started: false,
             },
         );
@@ -1117,6 +1154,64 @@ pub extern "C" fn servo_worker_pending_fetch_count() -> usize {
     FETCH_CALLBACKS.with(|callbacks| callbacks.borrow().len())
 }
 
+/// Incorporate redirect cookies before the Worker issues the next hop and
+/// return the Cookie header for that hop. The host must pass one bounded JSON
+/// object and a writable output buffer; response headers are not page-visible.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_process_redirect_cookies(
+    payload_ptr: *const u8,
+    payload_len: usize,
+    output_ptr: *mut u8,
+    output_cap: usize,
+) -> i32 {
+    if payload_ptr.is_null()
+        || payload_len == 0
+        || payload_len > 64 * 1024
+        || output_ptr.is_null()
+        || output_cap == 0
+        || output_cap > 64 * 1024
+    {
+        return -1;
+    }
+    let payload = unsafe { std::slice::from_raw_parts(payload_ptr, payload_len) };
+    let Ok(command): Result<WorkerRedirectCookies, _> = serde_json::from_slice(payload) else {
+        return -1;
+    };
+    let (Ok(response_url), Ok(next_url)) = (
+        ServoUrl::parse(&command.response_url),
+        ServoUrl::parse(&command.next_url),
+    ) else {
+        return -1;
+    };
+    FETCH_CALLBACKS.with(|callbacks| {
+        let callbacks = callbacks.borrow();
+        let Some(entry) = callbacks.get(&RequestId(command.request_id)) else {
+            return -1;
+        };
+        if entry.response_started {
+            return -1;
+        }
+        if !entry.accepts_cookies
+            || response_url.origin() != entry.cookie_origin
+            || next_url.origin() != entry.cookie_origin
+        {
+            return 0;
+        }
+        for cookie in &command.set_cookies {
+            servo::set_worker_cookie_from_header(&response_url, cookie);
+        }
+        let Some(header) = servo::worker_cookie_header_for_url(&next_url) else {
+            return 0;
+        };
+        let bytes = header.as_bytes();
+        if bytes.len() > output_cap {
+            return -1;
+        }
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), output_ptr, bytes.len()) };
+        bytes.len() as i32
+    })
+}
+
 /// Start a bounded, chunked Worker response. Headers are a JSON array of
 /// `[name, value]` pairs so duplicate fields survive the JS/WASM boundary.
 #[unsafe(no_mangle)]
@@ -1172,11 +1267,12 @@ pub unsafe extern "C" fn servo_worker_begin_http_response(
         pairs
     };
     let mut headers = HeaderMap::new();
+    let mut set_cookies = Vec::new();
     for (name, value) in pairs {
         if name.eq_ignore_ascii_case("set-cookie") {
             // Set-Cookie is consumed by the browser's cookie store and must
             // not become visible through the page's Response headers.
-            servo::set_worker_cookie_from_header(&url, &value);
+            set_cookies.push(value);
             continue;
         }
         let (Ok(name), Ok(value)) = (
@@ -1200,7 +1296,7 @@ pub unsafe extern "C" fn servo_worker_begin_http_response(
                 .map(|value| url.join(value).map_err(|error| error.to_string()))
         })
         .flatten();
-    let mut metadata = Metadata::default(url);
+    let mut metadata = Metadata::default(url.clone());
     metadata.status = HttpStatus::new_raw(status, Vec::new());
     metadata.headers = Some(Serde(headers));
     metadata.set_content_type(content_type.as_ref());
@@ -1218,6 +1314,11 @@ pub unsafe extern "C" fn servo_worker_begin_http_response(
         }
         match filter_worker_metadata(metadata, &entry.visibility) {
             Ok(metadata) => {
+                if entry.accepts_cookies {
+                    for cookie in &set_cookies {
+                        servo::set_worker_cookie_from_header(&url, cookie);
+                    }
+                }
                 entry.response_started = true;
                 i32::from(
                     entry
