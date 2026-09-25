@@ -152,6 +152,7 @@ pub struct Preferences {
     pub dom_composition_event_enabled: bool,
     // feature: CookieStore | #37674 | Web/API/CookieStore
     pub dom_cookiestore_enabled: bool,
+    pub dom_cache_storage_enabled: bool,
     // feature: Credential Management API | #38788 | Web/API/Credential_Management_API
     pub dom_credential_management_enabled: bool,
     // feature: WebCrypto API | #40687 | Web/API/Web_Crypto_API
@@ -439,6 +440,7 @@ impl Preferences {
             dom_canvas_msg_buffer_size: 16,
             dom_composition_event_enabled: false,
             dom_cookiestore_enabled: false,
+            dom_cache_storage_enabled: false,
             dom_credential_management_enabled: false,
             dom_crypto_subtle_enabled: true,
             dom_document_dblclick_dist: 1,

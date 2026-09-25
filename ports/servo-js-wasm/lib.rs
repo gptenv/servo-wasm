@@ -146,7 +146,10 @@ pub unsafe extern "C" fn servo_worker_bootstrap(
         Err(_) => return 0,
     };
     register_bundled_fonts();
-    let servo = ServoBuilder::default().build();
+    let mut preferences = servo::Preferences::default();
+    preferences.dom_indexeddb_enabled = true;
+    preferences.dom_cache_storage_enabled = true;
+    let servo = ServoBuilder::default().preferences(preferences).build();
     let builder = WebViewBuilder::new(&servo, rendering_context.clone());
     let builder = builder.url(url);
     let webview = builder.build();

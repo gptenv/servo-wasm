@@ -809,7 +809,9 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     assert.fail(JSON.stringify({ settledResult, lateResult: runtime.pageResult(), lateTurns,
       trapped: String(runtime.trapped ?? ''), log: fetchErrors.slice(logStart),
       diagnostic: (() => {
-        runtime.evaluatePage('JSON.stringify({url: location.href, body: document.body?.innerHTML})');
+        runtime.evaluatePage('JSON.stringify({url: location.href, body: document.body?.innerHTML,' +
+          'dataset: {...document.body?.dataset}, indexedDB: typeof indexedDB,' +
+          'caches: typeof caches})');
         for (let i = 0; i < 5; i++) runtime.pump();
         return runtime.pageResult();
       })() }));

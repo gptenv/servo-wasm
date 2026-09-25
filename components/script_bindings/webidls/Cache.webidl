@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 // https://w3c.github.io/ServiceWorker/#cache
-[Pref="dom_serviceworker_enabled", SecureContext, Exposed=(Window,Worker)]
+[Pref="dom_cache_storage_enabled", SecureContext, Exposed=(Window,Worker)]
 interface Cache {
   // [NewObject] Promise<FrozenArray<Request>> keys(optional RequestInfo request, optional CacheQueryOptions options = {});
   // Workaround until FrozenArray get implemented.
