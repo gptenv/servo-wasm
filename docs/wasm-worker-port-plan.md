@@ -427,6 +427,13 @@ that.
 
 Other surfaces checked (fresh `about:blank` runtime, no page load unless noted):
 
+Historical snapshot (2026-09-23): the canvas, WebSocket and animation-frame
+entries below describe the state at that time. Subsequent ABI 4 work added
+Worker-host WebSockets and Worker-driven animation frames, and canvas 2D was
+implemented. See the current-state summary and exit checklist above for today's
+status; the historical observations remain useful only for their failure
+analysis.
+
 | Surface | Behavior today |
 | --- | --- |
 | `localStorage.setItem/getItem` | Throws `SecurityError: Cannot access localStorage from opaque origin` — explicit, matches spec intent for an opaque/blank origin. |
@@ -445,6 +452,6 @@ Not yet characterized this pass: streaming/large request bodies past the
 256 KiB in-memory limit, preflighted (non-simple) CORS requests, nested
 `Worker`/`ServiceWorker` construction (the one attempt here hit
 an unrelated URL-parsing `SyntaxError` before reaching the real question),
-and whether history traversal completes safely. The runtime probes now classify
-`requestAnimationFrame` and WebSocket transport as unsupported rather than
-leaving them unverified.
+and whether history traversal completes safely. At the time of this snapshot,
+the runtime probes classified `requestAnimationFrame` and WebSocket transport
+as unsupported; both are supported and covered by later ABI 4 tests.
