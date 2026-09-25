@@ -27,7 +27,7 @@ use servo::{
     Code, DevicePoint, InputEvent, Key, KeyState, KeyboardEvent, Location, Modifiers, MouseButton,
     MouseButtonAction, MouseButtonEvent, MouseMoveEvent, RenderingContext, Servo, ServoBuilder,
     SoftwareRenderingContext, WebView, WebViewBuilder, WebViewPoint, WheelDelta, WheelEvent,
-    WheelMode,
+    WheelMode, attach_worker_cookies,
 };
 use servo::{WorkerFetchHandler, pump_worker_fetches, set_worker_fetch_handler};
 use servo_url::ServoUrl;
@@ -779,6 +779,7 @@ fn install_fetch_adapter() {
     }));
     set_worker_fetch_request_handler(Box::new(|mut request, redirect, callback| {
         apply_worker_redirect(&mut request, redirect);
+        attach_worker_cookies(&mut request);
         queue_worker_fetch(request, callback);
     }));
 

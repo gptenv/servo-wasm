@@ -124,7 +124,9 @@ pub use crate::webview_delegate::{
     SimpleDialog, WebResourceLoad, WebViewDelegate,
 };
 #[cfg(target_arch = "wasm32")]
-pub use net::resource_thread::{WorkerFetchHandler, pump_worker_fetches, set_worker_fetch_handler};
+pub use net::resource_thread::{
+    WorkerFetchHandler, attach_worker_cookies, pump_worker_fetches, set_worker_fetch_handler,
+};
 
 #[cfg(feature = "webxr")]
 pub mod webxr {

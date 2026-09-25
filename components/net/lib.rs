@@ -105,7 +105,7 @@ pub mod resource_thread {
         }
     }
 
-    fn attach_worker_cookies(request: &mut RequestBuilder) {
+    pub fn attach_worker_cookies(request: &mut RequestBuilder) {
         let same_origin = match &request.origin {
             Origin::Client => true,
             Origin::Origin(origin) => origin == &request.url.origin(),
