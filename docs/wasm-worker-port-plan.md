@@ -1,6 +1,6 @@
 # Servo WASM Worker Port: Completion Plan
 
-Status: active port; review reconciled against the current source on 2026-09-24. DOM/JS/CSS, streaming fetch responses, timers, inline HTML, page reset, repeated loads, canvas 2D, image loading, bundled/registerable fonts, input, navigation and CPU-rendered viewport/full-page screenshots are implemented and have existing Node/workerd coverage. This document is the release gap list, not a claim of complete browser conformance.
+Status: active port; review reconciled against the current source on 2026-09-25. DOM/JS/CSS, streaming fetch responses, timers, inline HTML, page reset, repeated loads, canvas 2D, image loading, bundled/registerable fonts, input, navigation and CPU-rendered viewport/full-page screenshots are implemented and have existing Node/workerd coverage. This document is the release gap list, not a claim of complete browser conformance.
 
 Target: a raw `wasm32-unknown-unknown` Servo module instantiated directly by a Cloudflare Worker. The MCP server and OAuth layer remain a separate repository and are intentionally out of scope for this port.
 
@@ -14,7 +14,7 @@ The production-stripped artifact is **62,360,507 bytes** (about 59.45 MiB); the 
 - `worker_monotonic_now_ns`
 - `worker_unix_time_now_ns`
 
-The Worker adapter instantiates the module, creates a Servo instance, installs the fetch bridge, and advances the cooperative event loop. `npm test` passes **49 tests** against the current artifact. Local workerd smoke checks pass, including the root integration response, **39/39** shared fixture cases, and a screenshot response. The host timer deadline export and `pumpUntilSettled()` use Worker `scheduler.wait()` where available with a cancellable timer fallback.
+The Worker adapter instantiates the module, creates a Servo instance, installs the fetch bridge, and advances the cooperative event loop. `npm test` passes **50 tests** against the current artifact. Local workerd smoke checks pass, including the root integration response, **39/39** shared fixture cases, and a screenshot response. The host timer deadline export and `pumpUntilSettled()` use Worker `scheduler.wait()` where available with a cancellable timer fallback.
 
 The source implements checked **version-3 host ABI**, `loadHtml(html, {url})`, deterministic initial `about:blank` bootstrapping, navigation coalescing and cancellation of active/queued host fetches. Response delivery enforces header/chunk/terminal ordering. Mid-body failures reject body consumers instead of succeeding with truncated content. The original web-platform-style corpus covers templates, selectors, DOM fragments/clones, event propagation, CSS rule mutation/computed-style invalidation, shadow DOM, and microtask/timer ordering. It is not the upstream WPT runner or a claim of complete web conformance. The exact contract is in [WORKER-ABI.md](../ports/servo-js-wasm/WORKER-ABI.md).
 
@@ -24,7 +24,7 @@ The runtime remains cooperative and reset is not destruction: it cancels fetches
 
 **Hosting decision (2026-09-23): target Workers Paid first.** Paid allows up to 5 minutes of CPU per request (30 s default, configurable), so the numbers below no longer block the first release. Bundle size (64 MiB) and memory (128 MB per isolate) are the same on both plans and remain hard constraints. A Free-tier variant is a later goal; for it, the following measurements still apply. [Cloudflare's current limits](https://developers.cloudflare.com/workers/platform/limits/) list 64 MiB for the Worker bundle, 128 MB memory per isolate, and only 10 ms CPU time per HTTP request on Workers Free. After fixing the async factory to finish its initial document before returning, the reproducible `node ports/servo-js-wasm/tests/cpu-benchmark.mjs` diagnostic measured about **402 ms CPU** for ready-to-use bootstrap and **252 ms CPU** for a tiny HTML page load and DOM evaluation; four individual page pumps exceeded 10 ms and the slowest used about 37 ms. The earlier 61 ms bootstrap figure measured construction only, not a ready initial document, and is not comparable. This is a Node process measurement, not a Cloudflare production CPU measurement, but it is far beyond the free-tier budget. Local workerd does not enforce the account's CPU quota. Remote validation requires explicit authorization. Yielding between pumps inside one request does not reset its accumulated CPU budget; resumable execution is useful for responsiveness but is not by itself a Free-tier solution. Per the user's decision, continue the engine port while investigating this limit.
 
-The current checkout is on `sync-with-upstream` at `d6a92a91`; source changes made during this review are not committed. Stylo and html5ever are pinned by commit. The other six dependency forks are selected by branch name. I checked each named remote branch against its local HEAD on 2026-09-24; all matched and were reachable, and Cargo.lock records the matching commit IDs. Keep their resolved revisions in build provenance because those branch names can move.
+The current checkout is on `sync-with-upstream` at `1a47b5aa`; the review changes are committed and pushed to `origin/sync-with-upstream`. All dependency fork checkouts are clean, and their current local HEADs are already present on their configured fork remotes. Stylo and html5ever are pinned by commit. The other six dependency forks are selected by branch name. Keep their resolved revisions in build provenance because those branch names can move.
 
 ## 2. Definition of “finished”
 
@@ -155,7 +155,7 @@ Then add a small real-Worker/workerd integration test, without deploying to Clou
 
 ## 7. Workstream E — timers, promises, and scheduling
 
-The host-pull scheduler, timer IDs/cancellation, deadline export and basic promise/microtask ordering are implemented. Remaining work: nested/interval timer stress, characterize `requestAnimationFrame`, and improve execution interruption. A host deadline cannot interrupt a synchronous infinite page script.
+The host-pull scheduler, timer IDs/cancellation, deadline export and basic promise/microtask ordering are implemented. A runtime probe shows `requestAnimationFrame` accepts callbacks but does not run them, so it is reported unsupported. Remaining work: nested/interval timer stress and improve execution interruption. A host deadline cannot interrupt a synchronous infinite page script.
 
 ## 8. Workstream F — storage and other browser services
 
@@ -248,13 +248,13 @@ Every layer should run against the production profile in CI. Preserve build arti
 - [x] Storage is in-memory per WASM instance; reset is documented as navigation/cancellation, not runtime destruction.
 - [x] CPU renderer limitations and unsupported service classes are documented in `WORKER-ABI.md`.
 - [x] Incremental production build passes; the module reports ABI 3, imports exactly the five allowed `env` functions, has no WASI/wasm-bindgen imports, and stays below the size limit.
-- [x] Current artifact passes the 49-test Node suite, the local workerd root smoke, 39 shared workerd fixture cases, and screenshot response.
+- [x] Current artifact passes the 50-test Node suite, the local workerd root smoke, 39 shared workerd fixture cases, and screenshot response.
 - [x] Resolved fork revisions are recorded in Cargo.lock and each remote named branch matched local HEAD at the audit.
 - [x] Ordinary accepted top-level navigation aborts superseded host fetches and retires their Rust callbacks; the adapter suite covers a slow request.
 - [ ] Audit incomplete-navigation teardown, canceled-load retention, response-reader/clone cancellation, and memory bounds across stress loads.
 - [ ] Upgrade evaluation beyond its serialized single-result slot: promise awaiting, result/error contract, timeout semantics and correlation.
 - [ ] Complete request streaming and Fetch semantics where required; until then fail closed for credentialed/preflight CORS and other unsupported paths.
-- [ ] Probe `requestAnimationFrame`, WebSocket, history traversal and other native blocking/API assumptions; document supported behavior or explicit unsupported outcomes.
+- [x] Probe `requestAnimationFrame` and WebSocket progression; both are reported unsupported because callbacks do not fire and WebSocket remains CONNECTING. History traversal and other native blocking/API assumptions still need probes.
 - [ ] Add a curated fixture matrix and CI checks for the Worker profile, exact imports, ABI, size, Node tests and local workerd. CI must not require deleting local build artifacts.
 - [ ] Measure production CPU and total isolate memory on the intended Workers plan. The repeatable Node diagnostic now reports 331.447 ms CPU bootstrap, 250.463 ms page work, 36.313 ms maximum pump CPU, and four pumps over 10 ms; these are not production quota measurements. Workers Paid remains the recorded initial target.
 - [ ] Keep the MCP/OAuth host separate; deployment is outside this port's completion criteria.
@@ -433,9 +433,9 @@ Other surfaces checked (fresh `about:blank` runtime, no page load unless noted):
 | `indexedDB` | `typeof indexedDB === "undefined"` — not implemented, referencing it is inert. |
 | `caches` (Cache Storage) | `typeof caches === "undefined"` — same. |
 | `document.cookie` | Silent no-op: assignment doesn't throw, read-back is always `""`. Matches WORKER-ABI.md's "cookies... not provided," but it's a silent no-op rather than an explicit error — a script that depends on cookie persistence fails confusingly later rather than immediately. |
-| `new WebSocket(url)` | Constructs without throwing. Not exercised further (no `.send`/`onopen` check) — unknown whether it silently never connects or eventually errors; worth a follow-up probe before relying on this line. |
+| `new WebSocket(url)` | Constructs in `CONNECTING` state (`readyState === 0`) but no `open` or `error` event fires after 30 Worker pump turns; the WebSocket transport is reported unsupported. |
 | `canvas.getContext("webgl")` | Returns `null` immediately — correct, spec-compliant "unsupported" signal. |
-| `requestAnimationFrame(cb)` | Accepts the callback without throwing. Whether `cb` ever actually fires was not verified — same "unknown, needs a follow-up probe" caveat as WebSocket. |
+| `requestAnimationFrame(cb)` | Accepts the callback without throwing, but callback did not fire after 30 Worker pump turns; reported unsupported. |
 | `fetch(..., {credentials:"include"})` cross-origin | Rejects immediately with `TypeError: Network error: CORS check failed` once given enough pump turns to settle. Fails closed as WORKER-ABI.md claims. |
 | Cross-origin `fetch` with no `Access-Control-Allow-Origin` header | Same explicit `TypeError` rejection. Fails closed as claimed. |
 | `fetch(..., {redirect:"manual"})` | Call itself doesn't throw; actual redirect-handling behavior under `manual` mode was not exercised. |
@@ -445,6 +445,6 @@ Not yet characterized this pass: streaming/large request bodies past the
 256 KiB in-memory limit, preflighted (non-simple) CORS requests, nested
 `Worker`/`ServiceWorker` construction (the one attempt here hit
 an unrelated URL-parsing `SyntaxError` before reaching the real question),
-and whether `requestAnimationFrame`/`WebSocket` ever progress past
-construction. These would be reasonable next targets for another no-rebuild
-characterization pass before spending a build cycle on any of them.
+and whether history traversal completes safely. The runtime probes now classify
+`requestAnimationFrame` and WebSocket transport as unsupported rather than
+leaving them unverified.

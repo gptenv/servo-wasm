@@ -423,7 +423,8 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   assert.equal(runtime.capabilities().abiVersion, 3);
   assert.ok(runtime.capabilities().supported.includes('cpu-screenshots'));
   assert.ok(runtime.capabilities().unsupported.includes('cookies'));
-  assert.ok(runtime.capabilities().unverified.includes('request-animation-frame'));
+  assert.ok(runtime.capabilities().unsupported.includes('request-animation-frame'));
+  assert.ok(runtime.capabilities().unsupported.includes('websocket-transport'));
 
   const turn = async () => {
     runtime.pump();
@@ -730,6 +731,41 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     assert.fail(JSON.stringify({ settledResult, lateResult: runtime.pageResult(), lateTurns,
       trapped: String(runtime.trapped ?? ''), log: fetchErrors.slice(logStart) }));
   };
+
+  await t.test('characterize animation frames and WebSocket behavior', async () => {
+    assert.equal(runtime.evaluatePage(
+      'requestAnimationFrame(() => document.body.dataset.rafProbe = "fired"); 1',
+    ), true);
+    for (let i = 0; i < 30; i++) await turn();
+    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
+    assert.equal(runtime.evaluatePage(
+      'document.body.dataset.rafProbe === "fired" ? 42 : 0',
+    ), true);
+    for (let i = 0; i < 10; i++) await turn();
+    const animationFrameResult = runtime.pageResult();
+    assert.deepEqual(animationFrameResult, { Ok: { Number: 0 } },
+      'requestAnimationFrame accepts callbacks but does not run them');
+
+    assert.equal(runtime.evaluatePage(
+      'try { const ws = new WebSocket("ws://example.test/socket");' +
+      'ws.addEventListener("open", () => document.body.dataset.wsProbe = "open");' +
+      'ws.addEventListener("error", () => document.body.dataset.wsProbe = "error");' +
+      'document.body.dataset.wsConstructed = String(ws.readyState); } catch (e) {' +
+      'document.body.dataset.wsConstructed = e.name; } 1',
+    ), true);
+    for (let i = 0; i < 30; i++) await turn();
+    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
+    assert.equal(runtime.evaluatePage(
+      'JSON.stringify({frame: document.body.dataset.rafProbe || "not-fired", ' +
+      'socket: document.body.dataset.wsProbe || "no-event", ' +
+      'socketState: document.body.dataset.wsConstructed || "no-constructor"})',
+    ), true);
+    for (let i = 0; i < 10; i++) await turn();
+    const behaviorResult = runtime.pageResult();
+    assert.deepEqual(behaviorResult, { Ok: { String:
+      '{"frame":"not-fired","socket":"no-event","socketState":"0"}' } },
+    'WebSocket remains CONNECTING without open or error events');
+  });
 
   await t.test('settling budgets and concurrent calls fail explicitly', async () => {
     assert.deepEqual(await runtime.pumpUntilSettled({ maxTurns: 0 }), { settled: false, turns: 0 });

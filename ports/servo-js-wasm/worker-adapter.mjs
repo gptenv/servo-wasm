@@ -38,8 +38,9 @@ const WORKER_CAPABILITIES = Object.freeze({
     'cookies', 'indexeddb', 'cache-storage', 'service-workers',
     'dedicated-shared-workers', 'webgl', 'webgpu',
     'credentialed-preflight-cors', 'streaming-request-bodies',
+    'request-animation-frame', 'websocket-transport',
   ]),
-  unverified: Object.freeze(['request-animation-frame', 'websocket', 'history-traversal']),
+  unverified: Object.freeze(['history-traversal']),
 });
 
 function bytesToString(bytes) {

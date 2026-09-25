@@ -23,13 +23,14 @@ render time in `x-render-ms`. `npm run workerd` in the parent directory starts i
 
 To check the actual uncompressed bundle size without deploying, run
 `npx --yes wrangler@4.136.3 deploy --dry-run --outdir /tmp/servo-wasm-worker-dry-run`
-from this directory. The current bundle is **54,636.84 KiB uncompressed**
-(15,793.18 KiB gzip), measured on 2026-09-23. The WASM alone is **55,923,533 bytes**.
+from this directory. The current bundle is **60,945.86 KiB uncompressed**
+(18,139.27 KiB gzip), measured on 2026-09-24. The WASM alone is
+**62,360,507 bytes**, under the 64 MiB Workers bundle ceiling.
 The production
 Workers Free CPU limit is 10 ms per request; this local smoke test does not
 enforce it. Run `node ports/servo-js-wasm/tests/cpu-benchmark.mjs` from the
 repository root for a repeatable local CPU diagnostic.
 
-The broader raw-WASM suite is `node --test ports/servo-js-wasm/tests/wasm.test.mjs`
-from the repository root (run with `npm test` in the parent directory). See
+The broader raw-WASM suite is `npm test` from `ports/servo-js-wasm`. It currently
+passes 50 tests against the production-stripped artifact. See
 [the versioned host contract](../WORKER-ABI.md) for API behavior and limitations.
