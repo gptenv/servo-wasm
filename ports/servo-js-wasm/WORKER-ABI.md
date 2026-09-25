@@ -50,6 +50,12 @@ could grow WASM memory. The adapter copies each input and frees it after the cal
 
 ## Browser and scheduling lifecycle
 
+`runtime.capabilities()` returns a frozen `{abiVersion, supported, partial,
+unsupported, unverified}` report for the host-facing feature set. Treat an
+unverified entry as unavailable until it has a passing runtime characterization.
+The report describes this adapter's support contract; it does not replace
+host-side URL/SSRF policy.
+
 One browser/SpiderMonkey runtime may be bootstrapped per WASM instance. A second
 bootstrap returns false. Use a separate instance for unrelated incoming requests;
 do not share mutable runtime state across requests or users.
@@ -71,8 +77,10 @@ any staged document.
 does not report settlement while an accepted evaluation has no result yet; if the
 result never arrives, the budget is exhausted and it returns `settled:false`. `pageResult()` returns
 the serialized Servo result once available. This is a low-level, single-result
-slot: serialize evaluations and read each result before starting the next one.
-It does not await returned JavaScript promises or implement a script timeout.
+slot: the adapter rejects a second evaluation until the first result is read.
+Reading it consumes the adapter's result slot. The raw WASM ABI does not enforce
+this sequencing. Evaluation does not await returned JavaScript promises or
+implement a script timeout.
 
 `pumpStatus()` returns `{fetches, progressed}` from a bit-packed export (bit zero
 is progress, remaining bits count host fetch dispatches). One pump advances the
@@ -169,8 +177,8 @@ Servo's real image cache; decoding work is queued and run by the pump, not a
 thread pool. Canvas 2D is rasterized in-process by `vello_cpu` (single-threaded
 on wasm32), including `getImageData`, `putImageData`, `drawImage`, patterns,
 gradients and `toDataURL`/`toBlob`. `getContext("webgl")` returns `null`. Canvas
-text uses the fonts below. Page screenshots are not
-implemented: layout does not produce a display list on the Worker today.
+text uses the fonts below. Page screenshots use Servo's display lists and the
+Worker CPU renderer described above.
 
 ## Fonts
 
@@ -208,6 +216,11 @@ network fetch. These bounds do not prove Cloudflare CPU or total-memory complian
 
 Only simple non-credentialed direct cross-origin GET/HEAD requests have CORS
 support. Preflighted/credentialed requests and cross-origin script-fetch redirects
-fail closed. Cookies, general request-body streams, full redirect semantics,
-screenshots, and hard script deadlines are not provided by this ABI. The eventual
-host must add its own destination/SSRF policy before accepting arbitrary users.
+fail closed. Cookies and general request-body streams are not implemented. Full
+Fetch redirect/manual-redirect behavior, response-reader and cloned-response
+cancellation semantics, WebSocket/service-worker/IndexedDB/Cache Storage support,
+and hard script deadlines remain unsupported or uncharacterized. Screenshots
+are implemented with the CPU renderer described above; backdrop filters and
+non-rounded clip paths have rendering gaps, and only the tested mask cases are
+covered. The eventual host must add its own destination/SSRF policy before
+accepting arbitrary users.

@@ -234,6 +234,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   const requests = [];
   const fetchErrors = [];
   let slowFetchAborted = false;
+  let ordinaryNavigationFetchAborted = false;
   let activeQueuedFetches = 0;
   let peakQueuedFetches = 0;
   let beforeHeadersAborted = false;
@@ -324,6 +325,14 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
           }, { once: true });
         });
       }
+      if (url.endsWith('/ordinary-slow')) {
+        return new Promise((_, reject) => {
+          init.signal.addEventListener('abort', () => {
+            ordinaryNavigationFetchAborted = true;
+            reject(new DOMException('aborted by navigation', 'AbortError'));
+          }, { once: true });
+        });
+      }
       if (url.endsWith('/data.json')) {
         return new Response('{"value":"fetch-ok"}', {
           status: 200,
@@ -411,6 +420,10 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       );
     },
   });
+  assert.equal(runtime.capabilities().abiVersion, 3);
+  assert.ok(runtime.capabilities().supported.includes('cpu-screenshots'));
+  assert.ok(runtime.capabilities().unsupported.includes('cookies'));
+  assert.ok(runtime.capabilities().unverified.includes('request-animation-frame'));
 
   const turn = async () => {
     runtime.pump();
@@ -449,6 +462,8 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       'return false } catch (e) { return e.name === "SecurityError" } })() && ' +
       'getComputedStyle(document.querySelector("#answer")).color === "rgb(255, 0, 0)" ? 42 : 0',
   ), true);
+  assert.throws(() => runtime.evaluatePage('42'), /Read the previous page evaluation result/,
+    'the adapter rejects a second evaluation while the single result slot is pending');
   for (let i = 0; i < 10; i++) await turn();
   if (runtime.pageResult()?.Ok?.Number !== 42) {
     runtime.evaluatePage('JSON.stringify({' +
@@ -497,6 +512,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       'document.body.dataset.corsPreflightBlocked = "yes"); 1',
   ), true);
   for (let i = 0; i < 30; i++) await turn();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
   assert.equal(runtime.evaluatePage(
     'document.body.dataset.failed === "yes" && ' +
       'document.body.dataset.oversize === "yes" && ' +
@@ -538,6 +554,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   ), true);
   const queueStatus = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
   assert.equal(queueStatus.settled, true);
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
   assert.equal(runtime.evaluatePage(
     'document.body.dataset.queueDone === "true" ? 42 : 0',
   ), true);
@@ -563,6 +580,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     nextTimerDelayMs: runtime.nextTimerDelayMs(),
     pendingFetchCount: runtime.pendingFetchCount(),
   }));
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
   assert.equal(runtime.evaluatePage(
     'document.body.dataset.timer === "fired" ? 42 : 0',
   ), true);
@@ -573,12 +591,14 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   // idle it counts as settled under networkIdleMs.
   assert.equal(runtime.evaluatePage('window.poll = setInterval(() => {}, 50); 1'), true);
   for (let i = 0; i < 5; i++) await turn();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
   assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 600 })).settled, false);
   const idleStatus = await runtime.pumpUntilSettled({ maxDurationMs: 3_000, networkIdleMs: 200 });
   assert.equal(idleStatus.settled, true, JSON.stringify(idleStatus));
   assert.equal(idleStatus.timersPending, true);
   assert.equal(runtime.evaluatePage('clearInterval(window.poll); 1'), true);
   for (let i = 0; i < 5; i++) await turn();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
 
   const heapBeforeRepeatLoads = runtime.instance.exports.memory.buffer.byteLength;
   for (let page = 0; page < 4; page++) {
@@ -599,6 +619,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
 
   assert.equal(runtime.evaluatePage('globalThis.oldPageSentinel = "private"; 42'), true);
   for (let i = 0; i < 10; i++) await turn();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
   assert.equal(runtime.loadPage('https://other.example/'), true);
   for (let i = 0; i < 50; i++) await turn();
   assert.equal(runtime.evaluatePage(
@@ -635,6 +656,19 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(slowFetchAborted, true);
   assert.equal(runtime.pendingFetchCount(), 0);
+
+  assert.equal(runtime.loadPage('https://example.test/ordinary-slow'), true);
+  for (let i = 0; i < 10; i++) await turn();
+  assert.ok(runtime.pendingFetchCount() > 0);
+  assert.equal(runtime.loadPage('https://example.test/'), true);
+  for (let i = 0; i < 50; i++) await turn();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ordinaryNavigationFetchAborted, true,
+    'ordinary navigation must abort the abandoned page\'s host request');
+  assert.equal(runtime.pendingFetchCount(), 0,
+    'ordinary navigation must retire the abandoned page\'s Rust callback');
+  assert.equal(runtime.reset(), true);
+  for (let i = 0; i < 10; i++) await turn();
 
   assert.throws(() => runtime.loadHtml('<p>nope</p>', { url: 'data:text/html,nope' }),
     TypeError);
@@ -681,6 +715,8 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   };
   const checkPage = async (expression) => {
     const logStart = fetchErrors.length;
+    // Consume the setup evaluation's result before using the single result slot again.
+    runtime.pageResult();
     assert.equal(runtime.evaluatePage(`(${expression}) ? 42 : 0`), true);
     await settle();
     const settledResult = runtime.pageResult();
@@ -710,6 +746,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       'fetch("/abort-before", {signal: beforeController.signal}).catch(e => ' +
       'document.body.dataset.beforeAbort = e.name); 1');
     for (let i = 0; i < 10; i++) await turn();
+    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
     assert.ok(requests.some(({ url }) => url.endsWith('/abort-before')));
     runtime.evaluatePage('beforeController.abort(); 1');
     await settle();

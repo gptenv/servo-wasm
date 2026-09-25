@@ -1,4 +1,11 @@
-# Cloudflare Worker WASM port handoff
+# Cloudflare Worker WASM port handoff — superseded
+
+> This handoff reflects an earlier, pre-rendering stage of the port and is not
+> an accurate description of the current implementation. For current behavior
+> and remaining release work, use [wasm-worker-port-plan.md](wasm-worker-port-plan.md)
+> and [WORKER-ABI.md](../ports/servo-js-wasm/WORKER-ABI.md). The historical
+> debugging notes below may still be useful for the root causes they describe;
+> do not use its status claims or recommended next steps as current.
 
 *Last updated by Claude Sonnet 5, end of session 2026-09-21. Supersedes the
 prior handoff of the same name (that one's still in git history if you want

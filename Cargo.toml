@@ -63,7 +63,10 @@ cc = "1.2"
 cfg-if = "1.0.4"
 chacha20poly1305 = { version = "0.11", features = ["rand_core", "zeroize"] }
 chardetng = "1.0"
-chrono = { version = "0.4", features = ["serde"] }
+# Chrono's default `wasmbind` feature imports JS Date functions on wasm32.
+# The raw Worker target has no wasm-bindgen host; Workers use UTC, which
+# Chrono's wasm32-unknown-unknown fallback provides without JS bindings.
+chrono = { version = "0.4", default-features = false, features = ["clock", "oldtime", "serde", "std"] }
 content-security-policy = { version = "0.9", features = ["serde"] }
 cookie = { package = "cookie", version = "0.18" }
 criterion = "0.8"

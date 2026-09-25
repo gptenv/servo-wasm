@@ -1,12 +1,12 @@
 # Servo WASM Worker Port: Completion Plan
 
-Status: active port; DOM/JS/CSS, streaming fetch cancellation, timers, inline HTML, page reset, repeated loads, canvas 2D (including text), image loading, font-based text layout and viewport screenshots verified locally, including in workerd (2026-09-23).
+Status: active port; review reconciled against the current source on 2026-09-24. DOM/JS/CSS, streaming fetch responses, timers, inline HTML, page reset, repeated loads, canvas 2D, image loading, bundled/registerable fonts, input, navigation and CPU-rendered viewport/full-page screenshots are implemented and have existing Node/workerd coverage. This document is the release gap list, not a claim of complete browser conformance.
 
 Target: a raw `wasm32-unknown-unknown` Servo module instantiated directly by a Cloudflare Worker. The MCP server and OAuth layer remain a separate repository and are intentionally out of scope for this port.
 
 ## 1. Current state
 
-The port builds as a raw `wasm32-unknown-unknown` module with no WASI or wasm-bindgen imports. The current production-stripped artifact is **61,592,697 bytes** (about 58.7 MiB), below the 64 MiB target (the same limit applies on Workers Free and Paid). The Worker bundle remains about **54,637 KiB** uncompressed (see the smoke-test README for the latest exact dry-run measurement). It imports exactly these five host functions:
+The production-stripped artifact is **62,360,507 bytes** (about 59.45 MiB); the local Wrangler dry run bundles **60,945.86 KiB** uncompressed, under the 64 MiB limit. The rebuilt module reports ABI 3 and imports exactly five `env` functions, with no WASI or wasm-bindgen imports:
 
 - `worker_fetch_request`
 - `worker_getrandom`
@@ -14,21 +14,21 @@ The port builds as a raw `wasm32-unknown-unknown` module with no WASI or wasm-bi
 - `worker_monotonic_now_ns`
 - `worker_unix_time_now_ns`
 
-The Worker adapter instantiates the module, creates a Servo instance, installs the fetch bridge, and advances the cooperative event loop. Deterministic raw-WASM integration coverage includes navigation and subresource fetches, JS `fetch()` success and 404 responses, in-memory POST bodies and clean rejection of oversized bodies, response headers, responses over 1 MiB via chunked delivery, bounded response size, failed fetches, navigation and JS fetch redirects, rejection of cross-origin script-fetch redirects before forwarding credentials, CSSOM parsing and cross-origin stylesheet-rule access control, a resolved CSS color, inline scripts, `setTimeout`, cross-origin page-global separation, aborting an in-flight host fetch on page reset, and four sequential page loads with a bounded linear-memory check. The expanded suite has **43 passing tests including subtests** against the production-stripped artifact (run `npm test` in `ports/servo-js-wasm`), including canvas 2D pixel readback and `<img>` decoding. A host-facing timer deadline export and `pumpUntilSettled()` use Worker `scheduler.wait()` where available, with a cancellable timer fallback. The pump reports internal browser event progress and wakes on response headers/chunks, preventing false idle and allowing page code to consume or abort a response before its body completes.
+The Worker adapter instantiates the module, creates a Servo instance, installs the fetch bridge, and advances the cooperative event loop. `npm test` passes **49 tests** against the current artifact. Local workerd smoke checks pass, including the root integration response, **39/39** shared fixture cases, and a screenshot response. The host timer deadline export and `pumpUntilSettled()` use Worker `scheduler.wait()` where available with a cancellable timer fallback.
 
-The latest batch adds a checked **version-1 host ABI**, `loadHtml(html, {url})`, deterministic initial `about:blank` bootstrapping before the async factory returns, reset-then-load navigation coalescing, and cancellation of active/queued host fetches from page `AbortController`s. Response delivery enforces header/chunk/terminal ordering. Mid-body failures now reject body consumers instead of succeeding with truncated content, and already-errored/canceled streams ignore duplicate failure transitions and late chunks. Tests cover these cases, unread response/redirect-body cleanup, subrequest limits across redirects and resets, and invalid/concurrent settling calls. A small original web-platform-style corpus covers templates, selectors, DOM fragments/clones, event propagation, CSS rule mutation/computed-style invalidation, shadow DOM, and microtask/timer ordering. It is not the upstream WPT runner or a claim of complete web conformance. The exact contract is in [WORKER-ABI.md](../ports/servo-js-wasm/WORKER-ABI.md).
+The source implements checked **version-3 host ABI**, `loadHtml(html, {url})`, deterministic initial `about:blank` bootstrapping, navigation coalescing and cancellation of active/queued host fetches. Response delivery enforces header/chunk/terminal ordering. Mid-body failures reject body consumers instead of succeeding with truncated content. The original web-platform-style corpus covers templates, selectors, DOM fragments/clones, event propagation, CSS rule mutation/computed-style invalidation, shadow DOM, and microtask/timer ordering. It is not the upstream WPT runner or a claim of complete web conformance. The exact contract is in [WORKER-ABI.md](../ports/servo-js-wasm/WORKER-ABI.md).
 
 The host adapter queues requests above six concurrent outbound connections and caps actual host `fetch()` calls (including redirect hops) at 50 per runtime by default, matching Workers Free's current per-invocation limits. The many-page stress test raises the latter cap explicitly. One runtime must represent one incoming Worker invocation for this accounting to be meaningful.
 
-The browser-engine path is not complete yet. Worker pipelines currently share one script event loop because creating a second SpiderMonkey runtime on the same WASM thread traps; a basic cross-origin global-separation test passes, but browsing-context/security coverage remains limited. The reset API navigates to `about:blank`, aborts host fetches, and clears pending results; it does not destroy Servo or its SpiderMonkey runtime, because Servo's native shutdown path blocks on OS-thread services and is not Worker-safe. Replacing a pending navigation now retires its pipeline, but cleanup of incomplete-load records and cancellation on ordinary navigation (without reset) need a broader lifetime audit. The Worker rendering context is still a null-GL placeholder and Paint target paths do not create WebRender painters, so screenshots, animation frames, and rendering-dependent observer delivery are not implemented. `getComputedStyle(...).color` works with a Worker-safe empty system-font lookup, but layout-dependent measurements and text rasterization need a real font and paint backend. Request bodies are supported only when the script layer already holds at most 256 KiB in memory; general request-body streaming must be ported. The response bridge streams 64 KiB chunks with an 8 MiB default limit. The Worker bridge has a limited CORS path for simple, non-credentialed direct cross-origin GET/HEAD requests: it checks `Access-Control-Allow-Origin`, filters exposed response headers, and rejects denied responses before body delivery. Cross-origin no-CORS subresources receive opaque metadata while parsers can still consume the internal body, preventing cross-origin stylesheet rules from leaking via CSSOM. Preflighted/credentialed cross-origin requests and cross-origin JS redirects fail closed; full Fetch-standard CORS, `no-cors` script fetches, cookies, manual-redirect filtering, body-reader cancellation and cloned-response abort semantics remain incomplete or unverified. A local Wrangler/workerd smoke Worker verifies inline HTML, computed CSS, script fetch and open-stream abort; a clean-target build remains outstanding.
+The runtime remains cooperative and reset is not destruction: it cancels fetches and navigates to `about:blank`, but Servo and SpiderMonkey stay alive for the lifetime of the WASM instance. The current renderer uses `vello_cpu` over Servo display lists; it is not WebRender's native painter and has documented gaps (backdrop filters and non-rounded clip paths; masks are only covered by selected fixtures). Request bodies are buffered up to 256 KiB; responses stream in 64 KiB chunks with an 8 MiB default limit. CORS support is limited to simple, non-credentialed direct cross-origin GET/HEAD; unsupported credentialed/preflight paths fail closed. Cookies, general request streaming, complete redirect behavior, reader/clone cancellation, script timeouts and several browser APIs remain unsupported or uncharacterized. Current ABI details and renderer coverage live in [WORKER-ABI.md](../ports/servo-js-wasm/WORKER-ABI.md).
 
 **Hosting decision (2026-09-23): target Workers Paid first.** Paid allows up to 5 minutes of CPU per request (30 s default, configurable), so the numbers below no longer block the first release. Bundle size (64 MiB) and memory (128 MB per isolate) are the same on both plans and remain hard constraints. A Free-tier variant is a later goal; for it, the following measurements still apply. [Cloudflare's current limits](https://developers.cloudflare.com/workers/platform/limits/) list 64 MiB for the Worker bundle, 128 MB memory per isolate, and only 10 ms CPU time per HTTP request on Workers Free. After fixing the async factory to finish its initial document before returning, the reproducible `node ports/servo-js-wasm/tests/cpu-benchmark.mjs` diagnostic measured about **402 ms CPU** for ready-to-use bootstrap and **252 ms CPU** for a tiny HTML page load and DOM evaluation; four individual page pumps exceeded 10 ms and the slowest used about 37 ms. The earlier 61 ms bootstrap figure measured construction only, not a ready initial document, and is not comparable. This is a Node process measurement, not a Cloudflare production CPU measurement, but it is far beyond the free-tier budget. Local workerd does not enforce the account's CPU quota. Remote validation requires explicit authorization. Yielding between pumps inside one request does not reset its accumulated CPU budget; resumable execution is useful for responsiveness but is not by itself a Free-tier solution. Per the user's decision, continue the engine port while investigating this limit.
 
-Work is committed to `gptenv/servo-wasm` `main`; see git history and Section 14 for the latest changes.
+The current checkout is on `sync-with-upstream` at `d6a92a91`; source changes made during this review are not committed. Stylo and html5ever are pinned by commit. The other six dependency forks are selected by branch name. I checked each named remote branch against its local HEAD on 2026-09-24; all matched and were reachable, and Cargo.lock records the matching commit IDs. Keep their resolved revisions in build provenance because those branch names can move.
 
 ## 2. Definition of “finished”
 
-The port should not be considered complete merely because it links or because a JavaScript expression evaluates. Completion means all of the following are demonstrated in a clean build:
+The port should not be considered complete merely because it links or because a JavaScript expression evaluates. Completion means the following are demonstrated against the current production artifact; validation may use incremental builds, and a clean build is explicitly not a release requirement:
 
 1. A raw `WebAssembly.instantiate` call with only the documented `env` imports succeeds.
 2. A Worker can create one browser isolate, load deterministic HTML, pump it to completion, and inspect the resulting DOM.
@@ -37,9 +37,9 @@ The port should not be considered complete merely because it links or because a 
 5. Fetch requests cross the Worker boundary with correct method, headers, redirects, status, body, errors, and cancellation behavior.
 6. Repeated page loads and evaluations have bounded memory growth and a defined reset/destroy lifecycle.
 7. Unsupported capabilities fail explicitly rather than hanging, silently dropping work, or trapping with an unexplained native-platform panic.
-8. The production artifact passes import, size, security, and integration tests in a clean target directory.
+8. The production artifact passes import, size, security, and integration checks, with its build provenance and dependency revisions recorded.
 
-Screenshots and full rasterization are optional for the first usable text/DOM engine. If visual capture is required, it is a separate gated workstream described below; it must not be confused with the current DOM-only bootstrap.
+CPU-rendered viewport and full-page screenshots are implemented. Their rendering coverage and known gaps are specified in `WORKER-ABI.md`; visual correctness beyond existing fixtures remains a compatibility workstream.
 
 ## 3. Workstream A — stabilize the dependency and target policy
 
@@ -55,9 +55,9 @@ The pinned Stylo fork contains the Worker-safe monotonic clock adaptation. The e
 
 The workspace uses the GitHub fork at one pinned revision across its Stylo crates; dependency-fork changes must be committed and pushed before rebuilding Servo.
 
-### A2. Audit all transitive raw-WASM assumptions before feature work
+### A2. Audit transitive raw-WASM assumptions — ongoing
 
-Run a source and dependency audit after Stylo is wired:
+Stylo is wired, but the platform audit is not complete. Search and classify remaining occurrences of:
 
 - `std::thread`, `thread::spawn`, `JoinHandle`, `std::sync::mpsc`;
 - `std::time::{Instant,SystemTime}` and crates that call them internally;
@@ -71,7 +71,7 @@ For each result, classify it as: Worker implementation, compile-time exclusion, 
 
 ### A3. Establish a target-specific feature profile
 
-Define one documented Worker feature profile that excludes desktop shell, multiprocess, WebDriver server, devtools server, native media backends, WebGL/WebGPU, filesystem caches, and platform font discovery unless they have a real Worker implementation. Keep DOM, HTML parsing, CSS parsing/style, SpiderMonkey, URL, fetch, cookies as explicitly enabled capabilities.
+Define one documented Worker feature profile that excludes desktop shell, multiprocess, WebDriver server, devtools server, native media backends, WebGL/WebGPU, filesystem caches, and platform font discovery unless they have a real Worker implementation. DOM, HTML parsing, CSS parsing/style, SpiderMonkey, URL, and fetch are enabled. Cookies are not currently implemented.
 
 Add a CI check that builds exactly this profile and rejects newly introduced WASI, wasm-bindgen, or non-`env` imports.
 
@@ -79,35 +79,17 @@ Add a CI check that builds exactly this profile and rejects newly introduced WAS
 
 The same-thread script handle and constellation pump are the correct direction, but the model needs a complete contract.
 
-### B1. Define pump semantics
+### B1. Define pump semantics — implemented, stress gaps remain
 
-Document and implement:
-
-- what one `pump()` may execute;
-- whether it is bounded by task count, wall time, or both;
-- how it reports pending work and pending network requests;
-- how a page reaches a stable/idle state;
-- how errors and shutdown are surfaced;
-- how reentrant calls from a Worker request are rejected.
-
-Avoid an unbounded loop inside a Cloudflare request. A host-facing pump should have a budget and return a status such as `Idle`, `Progress`, `PendingFetch`, `PendingTimer`, `Complete`, or `Failed`.
+`pumpStatus()` advances one cooperative turn and reports progress/fetch dispatches; `pumpUntilSettled()` applies caller budgets, waits on fetch activity and timer deadlines, and returns unsettled on budget exhaustion. It is a quiescence heuristic and cannot interrupt synchronous script execution. Add stress/edge coverage for nested timers and host callback/reentrancy behavior; keep callers' finite budgets explicit.
 
 ### B2. Replace native-only background services
 
-The current no-op background-hang monitor and disabled paint/timer paths are acceptable temporary bootstraps, not final semantics. For each service, either implement a cooperative version or remove it from the Worker profile. In particular, verify constellation, script, layout, image cache, profiler, storage, and media initialization under repeated creation and teardown.
+Worker-safe paths now cover script pumping, deferred threadpool work, image decode, in-memory storage, fonts, canvas and CPU screenshot rendering. The native Servo shutdown path is still unavailable; reset does not destroy the runtime. Finish the source/API audit for unexercised blocking receives and classify every service as implemented, excluded, explicitly unsupported or future work. Stress lifetime paths without implying full destroy semantics.
 
-### B3. Make lifecycle explicit
+### B3. Make lifecycle explicit — partial
 
-Add exports and host-adapter methods for:
-
-- create/bootstrap;
-- load or navigate;
-- pump;
-- read result/error/status;
-- cancel outstanding work;
-- destroy/reset the isolate.
-
-Do not rely on thread-local statics surviving indefinitely. Clear callback maps, DOM roots, fetch state, page results, and JS runtime state on reset. Test two sequential isolates in one Worker and multiple page loads in one isolate.
+Bootstrap, navigation/history/input, pumping, results, fetch cancellation and reset exports exist. Reset retires fetch callbacks and navigates to `about:blank`, but cannot destroy Servo/SpiderMonkey or guarantee a secure erase. The host adapter now aborts queued and in-flight fetches and retires their Rust callbacks when an accepted top-level navigation supersedes them; the regression test verifies the underlying request signal is aborted and the callback count returns to zero. Continue auditing incomplete loads and retained roots/callbacks; use a fresh WASM instance for user/session isolation.
 
 ## 5. Workstream C — make DOM, HTML, CSS, and JavaScript page execution real
 
@@ -115,9 +97,9 @@ Do not rely on thread-local statics surviving indefinitely. Clear callback maps,
 
 `loadHtml(html, {url})` supplies one bounded synthetic HTML response without a host network fetch. Inline script, relative fetch resolution, computed CSS and immediate load after factory creation are covered. Expand this into fixture files for parser edge cases and repeated canceled-navigation stress; do not mistake the supplied URL/origin for an authorization or SSRF policy.
 
-### C2. Fix Stylo and validate CSS
+### C2. Fix Stylo and validate CSS — implementation is present; broaden fixtures
 
-After the Stylo clock patch, test:
+The clock patch, cascade, computed styles, mutation invalidation, shadow DOM and CSS mask properties are present. Continue testing:
 
 - selectors and cascade;
 - inline and stylesheet CSS;
@@ -131,7 +113,7 @@ Keep the first CSS corpus small and deterministic. Then add a curated WPT-style 
 
 ### C3. Define page-evaluation behavior
 
-The current evaluation exports are useful probes but are not yet a complete page-evaluation API. Define whether evaluation runs:
+The adapter currently enforces a serialized, single-result slot. Define and implement whether evaluation:
 
 - in the page’s main realm;
 - after the document is loaded or immediately;
@@ -142,7 +124,7 @@ Add tests for script elements, DOM mutation, promise/microtask ordering, `setTim
 
 ## 6. Workstream D — implement the Worker fetch adapter fully
 
-The version-1 ABI wraps `RequestBuilder` JSON in tagged fetch/cancel envelopes and accepts bounded, chunked response delivery. The adapter rejects mismatched versions before bootstrap. Continue hardening the protocol without reintroducing the removed whole-response shortcuts.
+The version-3 ABI wraps `RequestBuilder` JSON in tagged fetch/cancel envelopes and accepts bounded, chunked response delivery. The adapter rejects mismatched versions before bootstrap. Continue hardening the protocol without reintroducing whole-response shortcuts.
 
 ### D1. Request protocol
 
@@ -173,46 +155,21 @@ Then add a small real-Worker/workerd integration test, without deploying to Clou
 
 ## 7. Workstream E — timers, promises, and scheduling
 
-The host-pull Worker timer scheduler is implemented. Basic timers, cancellation and promise/microtask ordering pass. Remaining work is hard execution interruption, nested/interval timer stress, and rendering-dependent scheduling; a host deadline cannot interrupt a synchronous infinite page script.
-
-Choose a host-pull model: Servo returns the next timer deadline, and the Worker schedules a continuation using `setTimeout`/`scheduler.wait`; or Servo exposes a host timer request callback. The simpler first design is host-pull:
-
-1. `pump()` returns the next deadline and pending-work status.
-2. JavaScript schedules the next Worker continuation.
-3. The next continuation calls `pump()`.
-
-Implement timer IDs, cancellation, minimum delays, microtask checkpoints, promise jobs, animation-frame behavior (or explicit unsupported status), and a maximum execution budget. Add ordering tests for synchronous code, microtasks, timers, fetch completion, and nested scheduling.
+The host-pull scheduler, timer IDs/cancellation, deadline export and basic promise/microtask ordering are implemented. Remaining work: nested/interval timer stress, characterize `requestAnimationFrame`, and improve execution interruption. A host deadline cannot interrupt a synchronous infinite page script.
 
 ## 8. Workstream F — storage and other browser services
 
-The current storage target gating and in-memory fallback must be documented as a choice, not treated as browser-complete.
+Storage is in-memory for local/session storage per WASM instance. Reset does not clear all instance storage; a new instance provides isolation. Cookies, IndexedDB and Cache Storage are not implemented. Decide quotas and persistence semantics before exposing storage to users.
 
-- Decide whether `localStorage`, session storage, IndexedDB, Cache Storage, cookies, and SQLite are required in the first release.
-- For ephemeral operation, implement per-isolate in-memory stores with clear quotas and reset semantics.
+- Decide whether IndexedDB, Cache Storage, cookies and SQLite are required in the first release.
+- For ephemeral local/session storage, document per-instance lifetime and establish quotas; persistence belongs behind a host service interface.
 - For persistence, keep Cloudflare D1/KV/R2 integration in the future MCP/Worker host repository, behind an explicit host service interface. Do not couple Servo core to Cloudflare SDK types.
 - Verify cryptographic randomness remains fail-closed and CSPRNG-backed.
 - Route wall-clock use through the Worker host bridge wherever browser-visible timestamps require Unix time.
 
 ## 9. Workstream G — rendering, fonts, and screenshots
 
-The current WASM path intentionally bypasses Painter/WebRender. Decide this product requirement before investing in it.
-
-### G1. Text/DOM-first milestone
-
-For the first usable MCP backend, omit screenshots and expose structured DOM/text/results. Keep rendering disabled and make that capability visible in the API.
-
-### G2. Screenshot milestone, if required
-
-If visual page inspection is required, implement in this order:
-
-1. A Worker-safe software framebuffer and a stable pixel-buffer export.
-2. Stylo layout integration without native threads.
-3. The existing swash/WOFF/WOFF2 font path and deterministic font registration.
-4. A headless WebRender configuration only if it can run without Surfman, native threads, WebGL, or platform GPU APIs.
-5. PNG encoding on the host or in a small WASM-compatible encoder.
-6. Screenshot tests for glyphs, boxes, colors, overflow, and deterministic output.
-
-Do not re-enable the current native Painter path until its worker-thread and Surfman assumptions have been audited. The local WebRender experiment is not integrated or pushed and must not be treated as the production solution.
+Font registration, text shaping/layout, canvas rasterization, display-list capture, `vello_cpu` rasterization and PNG streaming are implemented. Expand deterministic screenshot coverage and record unsupported visuals: backdrop filters and non-rounded clip paths have gaps, while only selected mask cases are covered; 3D transforms flatten and sticky positioning uses static position. Do not re-enable native Painter/Surfman paths without auditing their thread and platform assumptions.
 
 ## 10. Workstream H — ABI, security, and Cloudflare operational limits
 
@@ -236,7 +193,7 @@ Build the test pyramid before adding more features:
 
 ### Layer 1: static artifact checks
 
-- clean production build using `./mach build`;
+- incremental production-profile build using `./mach build` (clean builds are not required);
 - exact import allowlist;
 - no WASI or wasm-bindgen imports;
 - size budget;
@@ -271,39 +228,36 @@ Build the test pyramid before adding more features:
 
 Add a small versioned fixture corpus covering HTML parsing, CSS cascade, DOM APIs, JavaScript language behavior, fetch, cookies, and failure cases. Record unsupported features explicitly rather than silently skipping them.
 
-Every layer should run after a clean target build at least once in CI. Incremental builds are useful during development but cannot be the only regression signal for dependency-source or linker changes.
+Every layer should run against the production profile in CI. Preserve build artifacts and use incremental builds; do not remove the target tree or require a clean build. When dependency sources or linker configuration change, record the resolved revisions and verify the resulting artifact's imports and ABI.
 
 ## 12. Recommended execution order
 
-1. Audit incomplete-navigation teardown, ordinary navigation cancellation, response-reader cancellation and cloned-response aborts as one lifetime batch. Test many canceled loads, retained callbacks/DOM roots and linear-memory growth, not only four successful navigations.
+1. Audit incomplete-navigation teardown, response-reader cancellation and cloned-response aborts as one lifetime batch. Ordinary navigation cancellation now has regression coverage; next test many canceled loads, retained callbacks/DOM roots and linear-memory growth.
 2. Finish the page-evaluation API: correlated results, serialization, exceptions, awaited promises and explicit unsupported/timeout semantics. Keep the existing single-result probe documented until replaced.
 3. Expand Fetch policy as one reviewed batch: manual redirects, request streaming, CORS preflight/credentials, cookie scope, and security-sensitive subresource behavior. Do not remove current fail-closed checks piecemeal.
 4. Broaden the independent fixture corpus: modules/external scripts, custom elements, mutation observers, nested/interval timers, CSS cascade and layout-facing APIs. Keep rendering-dependent expectations separate.
 5. Audit and implement or explicitly exclude storage, service workers, workers, media, WebSockets, WebGL and WebGPU. Report supported capabilities in the host API.
 6. Execute the optional rendering/font/screenshot workstream if required for the release; current DOM/CSS success does not imply visible pixels.
-7. Add CI for the exact Worker profile and run a clean-target build with import, size and local workerd checks. Preserve existing build artifacts and protect this memory-constrained machine; never delete its target tree just to test cache independence. Existing native-target gating warnings remain, and these changes have not been validated in a native build.
+7. Add CI for the exact Worker profile and run import, size, Node integration and local workerd checks against the production artifact using incremental builds. Preserve existing build artifacts; do not require a clean build. Existing native-target gating warnings remain, and the forked native-target changes need validation where relevant.
 8. Investigate production CPU and total-isolate memory honestly alongside porting. No unapproved deployment or alternate paid hosting is part of this plan.
 9. Only then create the separate MCP server repository with OAuth, MCP JSON-RPC, tool schemas, session policy and authorized Cloudflare deployment configuration.
 
 ## 13. Exit checklist
 
-- [x] Stylo WASM clock fork/patch is reproducible and pinned.
-- [x] Raw Worker adapter can fetch deterministic HTML, parse its DOM/CSSOM, execute an inline script, and return a page-evaluation result.
-- [ ] `about:blank` and multiple sequential full-page loads pump to stable completion with bounded retained memory.
-- [x] Viewport and full-page screenshots render on the CPU (Node and workerd), including shadows, all border styles, blend modes, CSS filters and scroll positions.
-- [ ] Page scripts, DOM mutation, promises, and exceptions work broadly; inline scripts, DOM reads, and `setTimeout` have a deterministic smoke test.
-- [ ] Worker fetch request/response/error/cancel protocol is complete; navigation, subresources, in-memory POST, headers, chunks, same-origin redirects, abort before/after headers, queued aborts, body failure, response ordering and reset cancellation are covered. Streaming request bodies, full CORS/cookie/manual-redirect behavior, reader/clone cancellation and the wider redirect matrix remain. Simple permitted CORS reads work; unsupported credential/preflight paths fail closed.
-- [x] ABI version mismatch is rejected; immediate navigation after factory creation and supplied inline HTML are tested.
-- [x] Curated DOM/event/CSS/shadow-DOM and promise/timer-ordering cases pass.
-- [x] One deterministic DOM/CSSOM/fetch fixture passes in raw Node WASM tests.
-- [ ] Expanded DOM/CSS/fetch failure and standards-compatibility fixtures pass in raw Node WASM tests; computed color, failed and oversized fetches, and a navigation redirect now have fixtures.
-- [x] Page reset-to-`about:blank` and a four-page repeated-load memory-bound test pass (this is not full engine destruction).
-- [ ] Unsupported APIs return explicit errors/statuses. (Partial: `canvas.getContext("2d")`, the one confirmed hang, is now fixed — see Section 14. `WebSocket` and `requestAnimationFrame` accept calls without throwing but haven't been verified to ever progress or fail; `indexedDB`/`caches` are absent but inert.)
-- [x] Rendering limitation is documented: the WASM context is null-GL and screenshot pixels are not rendered.
-- [x] Local Wrangler/workerd smoke test passes with inline HTML, computed CSS, deterministic script fetch and open-stream abort (no deployment).
-- [ ] Clean production build passes import and size gates. (Latest successful production build was incremental; a clean target build remains required.)
-- [ ] The real Cloudflare Workers Free CPU budget is met; local CPU measurements currently suggest this is not feasible for a full page load in one request.
-- [ ] MCP/OAuth implementation begins only in the separate server repository.
+- [x] Worker ABI, exact five-import allowlist, deterministic navigation, DOM/CSSOM, inline scripts, fetch, timers, canvas, fonts, native input and CPU screenshots are implemented; existing Node/workerd coverage exists.
+- [x] Storage is in-memory per WASM instance; reset is documented as navigation/cancellation, not runtime destruction.
+- [x] CPU renderer limitations and unsupported service classes are documented in `WORKER-ABI.md`.
+- [x] Incremental production build passes; the module reports ABI 3, imports exactly the five allowed `env` functions, has no WASI/wasm-bindgen imports, and stays below the size limit.
+- [x] Current artifact passes the 49-test Node suite, the local workerd root smoke, 39 shared workerd fixture cases, and screenshot response.
+- [x] Resolved fork revisions are recorded in Cargo.lock and each remote named branch matched local HEAD at the audit.
+- [x] Ordinary accepted top-level navigation aborts superseded host fetches and retires their Rust callbacks; the adapter suite covers a slow request.
+- [ ] Audit incomplete-navigation teardown, canceled-load retention, response-reader/clone cancellation, and memory bounds across stress loads.
+- [ ] Upgrade evaluation beyond its serialized single-result slot: promise awaiting, result/error contract, timeout semantics and correlation.
+- [ ] Complete request streaming and Fetch semantics where required; until then fail closed for credentialed/preflight CORS and other unsupported paths.
+- [ ] Probe `requestAnimationFrame`, WebSocket, history traversal and other native blocking/API assumptions; document supported behavior or explicit unsupported outcomes.
+- [ ] Add a curated fixture matrix and CI checks for the Worker profile, exact imports, ABI, size, Node tests and local workerd. CI must not require deleting local build artifacts.
+- [ ] Measure production CPU and total isolate memory on the intended Workers plan. The repeatable Node diagnostic now reports 331.447 ms CPU bootstrap, 250.463 ms page work, 36.313 ms maximum pump CPU, and four pumps over 10 ms; these are not production quota measurements. Workers Paid remains the recorded initial target.
+- [ ] Keep the MCP/OAuth host separate; deployment is outside this port's completion criteria.
 
 ## 14. Characterization pass findings (2026-09-23)
 

@@ -16,6 +16,32 @@ const FREE_TIER_SUBREQUESTS = 50;
 const WORKER_ABI_VERSION = 3;
 const encoder = new TextEncoder();
 
+const WORKER_CAPABILITIES = Object.freeze({
+  abiVersion: WORKER_ABI_VERSION,
+  supported: Object.freeze([
+    'navigation', 'mouse-keyboard-input', 'html-dom',
+    'javascript', 'cssom', 'computed-style', 'layout-measurements',
+    'timers', 'microtasks', 'fetch', 'canvas-2d', 'image-decoding',
+    'font-registration', 'cpu-screenshots', 'local-session-storage',
+  ]),
+  partial: Object.freeze({
+    fetch: 'Response bodies stream; request bodies are buffered up to 256 KiB. ' +
+      'CORS is limited to simple non-credentialed cross-origin GET/HEAD.',
+    screenshots: 'CPU display-list renderer; backdrop filters and non-rounded ' +
+      'clip paths are incomplete, and mask coverage is limited to tested cases.',
+    lifecycle: 'reset cancels work and navigates to about:blank; it does not ' +
+      'destroy Servo or SpiderMonkey. Use a fresh WASM instance for isolation.',
+    pageEvaluation: 'Serialized single-result slot; returned promises are not awaited ' +
+      'and synchronous scripts cannot be interrupted.',
+  }),
+  unsupported: Object.freeze([
+    'cookies', 'indexeddb', 'cache-storage', 'service-workers',
+    'dedicated-shared-workers', 'webgl', 'webgpu',
+    'credentialed-preflight-cors', 'streaming-request-bodies',
+  ]),
+  unverified: Object.freeze(['request-animation-frame', 'websocket', 'history-traversal']),
+});
+
 function bytesToString(bytes) {
   return new TextDecoder().decode(bytes);
 }
@@ -151,6 +177,7 @@ class ServoWorkerRuntime {
   #subrequestCount = 0;
   #inFlightFetches = new Set();
   #fetchControllers = new Map();
+  #responseStartedFetches = new Set();
   #fetchQueue = [];
   #generation = 0;
   #inlinePage = null;
@@ -159,6 +186,7 @@ class ServoWorkerRuntime {
   #settling = false;
   #trap = null;
   #evaluationPending = false;
+  #evaluationResultReady = false;
   #screenshotStreamActive = false;
   #pressedModifiers = new Set();
 
@@ -186,6 +214,11 @@ class ServoWorkerRuntime {
     this.#log = log;
     this.#maxResponseBytes = maxResponseBytes;
     this.#maxSubrequests = maxSubrequests;
+  }
+
+  /** Machine-readable support report for this Worker ABI. */
+  capabilities() {
+    return WORKER_CAPABILITIES;
   }
 
   #write(value) {
@@ -355,6 +388,7 @@ class ServoWorkerRuntime {
       }
       responseStarted = beginResult === 1;
       if (!responseStarted) throw new Error('Servo rejected response metadata');
+      this.#responseStartedFetches.add(requestId);
       this.#notifyActivity();
 
       let received = 0;
@@ -436,6 +470,7 @@ class ServoWorkerRuntime {
       }).finally(() => {
         this.#inFlightFetches.delete(tracked);
         this.#fetchControllers.delete(request.id);
+        this.#responseStartedFetches.delete(request.id);
         if (generation === this.#generation) this.#drainFetchQueue();
       });
     this.#inFlightFetches.add(tracked);
@@ -454,11 +489,29 @@ class ServoWorkerRuntime {
     const [ptr, len] = this.#write(url);
     try {
       const accepted = this.instance.exports.servo_worker_load_page(ptr, len) === 1;
-      if (accepted) this.#inlinePage = null;
+      if (accepted) {
+        this.#inlinePage = null;
+        this.#cancelFetchesForNavigation();
+      }
       return accepted;
     } finally {
       this.#free(ptr, len);
     }
+  }
+
+  #cancelFetchesForNavigation() {
+    const requests = new Map([
+      ...this.#fetchQueue.map((request) => [request.id, request]),
+      ...[...this.#fetchControllers.keys()].map((id) => [id, null]),
+    ]);
+    this.#fetchQueue = [];
+    for (const id of requests.keys()) {
+      this.#fetchControllers.get(id)?.abort();
+      this.#deliverError(id, 'Canceled by top-level navigation',
+        this.#responseStartedFetches.has(id));
+      this.#responseStartedFetches.delete(id);
+    }
+    if (requests.size) this.#notifyActivity();
   }
 
   /** Navigate to one host-supplied HTML document without an outbound fetch. */
@@ -596,10 +649,16 @@ class ServoWorkerRuntime {
   }
 
   evaluatePage(source) {
+    if (this.#evaluationPending || this.#evaluationResultReady) {
+      throw new Error('Read the previous page evaluation result before starting another');
+    }
     const [ptr, len] = this.#write(source);
     try {
       const accepted = this.instance.exports.servo_worker_evaluate_page(ptr, len) === 1;
-      if (accepted) this.#evaluationPending = true;
+      if (accepted) {
+        this.#evaluationPending = true;
+        this.#evaluationResultReady = false;
+      }
       return accepted;
     } finally {
       this.#free(ptr, len);
@@ -693,6 +752,7 @@ class ServoWorkerRuntime {
       const timerDelay = this.nextTimerDelayMs();
       if (this.#evaluationPending && this.instance.exports.servo_worker_page_result_len()) {
         this.#evaluationPending = false;
+        this.#evaluationResultReady = true;
       }
       if (this.#evaluationPending) {
         // An accepted evaluation has not produced its result yet. Its result
@@ -750,6 +810,7 @@ class ServoWorkerRuntime {
   reset() {
     this.#generation++;
     this.#evaluationPending = false;
+    this.#evaluationResultReady = false;
     for (const controller of this.#fetchControllers.values()) controller.abort();
     this.#fetchControllers.clear();
     this.#inFlightFetches.clear();
@@ -840,7 +901,7 @@ class ServoWorkerRuntime {
       start(controller) {
         controller.enqueue(copyResult(length));
       },
-      pull(controller) {
+      pull: (controller) => {
         const length = exports.servo_worker_stream_png_next();
         if (length) {
           controller.enqueue(copyResult(length));
@@ -875,6 +936,14 @@ class ServoWorkerRuntime {
     const ptr = this.instance.exports.servo_worker_page_result_ptr();
     const len = this.instance.exports.servo_worker_page_result_len();
     if (!len) return undefined;
-    return JSON.parse(bytesToString(new Uint8Array(this.instance.exports.memory.buffer, ptr, len)));
+    this.#evaluationPending = false;
+    const result = JSON.parse(bytesToString(new Uint8Array(this.instance.exports.memory.buffer, ptr, len)));
+    this.#evaluationResultReady = false;
+    return result;
+  }
+
+  /** Alias for pageResult(), which consumes the single result slot. */
+  takePageResult() {
+    return this.pageResult();
   }
 }
