@@ -58,16 +58,26 @@ jobs:
       - name: Add the raw WASM target
         run: rustup target add wasm32-unknown-unknown
 
-      - name: Install pinned WASI C and C++ archives
+      - name: Install pinned WASI toolchain
         run: |
-          curl -fsSL --retry 3 --output "$RUNNER_TEMP/wasi-sysroot-29.0.tar.gz" \
-            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-29/wasi-sysroot-29.0.tar.gz
-          echo 'd99d5c4b277a725b7b56bf9d591609972ecac3207520a66408927280f191f6c7  '"$RUNNER_TEMP/wasi-sysroot-29.0.tar.gz" | sha256sum --check
-          tar -xzf "$RUNNER_TEMP/wasi-sysroot-29.0.tar.gz" -C "$RUNNER_TEMP"
-          test -f "$RUNNER_TEMP/wasi-sysroot-29.0/lib/wasm32-wasi/libc.a"
-          test -f "$RUNNER_TEMP/wasi-sysroot-29.0/lib/wasm32-wasi/libc++.a"
-          test -f "$RUNNER_TEMP/wasi-sysroot-29.0/lib/wasm32-wasi/libc++abi.a"
-          test -f "$RUNNER_TEMP/wasi-sysroot-29.0/lib/wasm32-wasi/libwasi-emulated-getpid.a"
+          curl -fsSL --retry 3 --output "$RUNNER_TEMP/wasi-sdk-29.0-x86_64-linux.tar.gz" \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-29/wasi-sdk-29.0-x86_64-linux.tar.gz
+          echo '87d1d1a2879d139cdc624b968efad3d4a97b8078cdff95e63ac88ecafd1a0171  '"$RUNNER_TEMP/wasi-sdk-29.0-x86_64-linux.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/wasi-sdk-29.0-x86_64-linux.tar.gz" -C "$RUNNER_TEMP"
+          sdk="$RUNNER_TEMP/wasi-sdk-29.0-x86_64-linux"
+          "$sdk/bin/clang" --version
+          test -f "$sdk/share/wasi-sysroot/lib/wasm32-wasi/libc.a"
+          test -f "$sdk/share/wasi-sysroot/lib/wasm32-wasi/libc++.a"
+          test -f "$sdk/share/wasi-sysroot/lib/wasm32-wasi/libc++abi.a"
+          test -f "$sdk/share/wasi-sysroot/lib/wasm32-wasi/libwasi-emulated-getpid.a"
+          test ! -e /usr/share/wasi-sysroot
+          sudo ln -s "$sdk/share/wasi-sysroot" /usr/share/wasi-sysroot
+          mkdir -p "$RUNNER_TEMP/worker-toolchain-bin"
+          ln -s "$GITHUB_WORKSPACE/.github/scripts/worker-clang" "$RUNNER_TEMP/worker-toolchain-bin/clang"
+          ln -s "$GITHUB_WORKSPACE/.github/scripts/worker-clang" "$RUNNER_TEMP/worker-toolchain-bin/clang++"
+          chmod +x "$GITHUB_WORKSPACE/.github/scripts/worker-clang"
+          echo "SERVO_WASI_SDK_DIR=$sdk" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/worker-toolchain-bin" >> "$GITHUB_PATH"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -75,7 +85,7 @@ jobs:
 
       - name: Build the production Worker artifact incrementally
         env:
-          WASM_CXX_LIB_DIR: ${{ runner.temp }}/wasi-sysroot-29.0/lib/wasm32-wasi
+          WASM_CXX_LIB_DIR: ${{ runner.temp }}/wasi-sdk-29.0-x86_64-linux/share/wasi-sysroot/lib/wasm32-wasi
         shell: bash
         run: |
           set -o pipefail
@@ -90,9 +100,21 @@ jobs:
           set -o pipefail
           npm test 2>&1 | tee "$RUNNER_TEMP/worker-tests.log"
 
+      - name: Bundle the complete Worker without deploying
+        working-directory: ports/servo-js-wasm/workerd-smoke
+        shell: bash
+        run: |
+          set -o pipefail
+          npx --yes wrangler@4.136.3 deploy --dry-run --outdir "$RUNNER_TEMP/worker-bundle" \
+            2>&1 | tee "$RUNNER_TEMP/worker-bundle.log"
+
       - name: Record release artifact manifest
         working-directory: ports/servo-js-wasm
-        run: node release-manifest.mjs > "$RUNNER_TEMP/worker-release-manifest.json"
+        env:
+          SERVO_WORKER_BUNDLE_DIR: ${{ runner.temp }}/worker-bundle
+        run: |
+          node release-manifest.mjs > "$RUNNER_TEMP/worker-release-manifest.json"
+          node dependency-inventory.mjs > "$RUNNER_TEMP/worker-dependency-inventory.json"
 
       - name: Start local workerd and exercise the Worker smoke routes
         working-directory: ports/servo-js-wasm/workerd-smoke
@@ -134,6 +156,8 @@ jobs:
           path: |
             ${{ runner.temp }}/worker-build.log
             ${{ runner.temp }}/worker-tests.log
+            ${{ runner.temp }}/worker-bundle.log
             ${{ runner.temp }}/workerd.log
             ${{ runner.temp }}/worker-release-manifest.json
+            ${{ runner.temp }}/worker-dependency-inventory.json
             target/wasm32-unknown-unknown/production-stripped/servo_js_wasm.wasm

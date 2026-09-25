@@ -69,6 +69,8 @@ unsupported, unverified}` report for the host-facing feature set. Treat an
 unverified entry as unavailable until it has a passing runtime characterization.
 The report describes this adapter's support contract; it does not replace
 host-side URL/SSRF policy.
+The broader API inventory and unverified areas are tracked in
+[`worker-compatibility-matrix.md`](../../docs/worker-compatibility-matrix.md).
 
 `document.cookie` and Worker fetch requests use Servo's in-memory RFC 6265 cookie
 jar. Final responses and followed same-origin redirects store `Set-Cookie`

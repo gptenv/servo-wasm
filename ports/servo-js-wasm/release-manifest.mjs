@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 const file = (path) => readFileSync(new URL(path, import.meta.url));
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -20,6 +21,19 @@ const version = new WebAssembly.Instance(module, {
 const source = lock.toString();
 const gitSources = [...new Set(source.match(/git\+[^"\n]+#[0-9a-f]{40}/g) ?? [])].sort();
 const command = (program, args) => execFileSync(program, args, { encoding: 'utf8' }).trim();
+const bundleFiles = process.env.SERVO_WORKER_BUNDLE_DIR
+  ? readdirSync(process.env.SERVO_WORKER_BUNDLE_DIR)
+      .filter((name) => name.endsWith('.wasm') || name.endsWith('.js'))
+      .sort()
+      .map((name) => {
+        const bytes = readFileSync(join(process.env.SERVO_WORKER_BUNDLE_DIR, name));
+        return { name, bytes: bytes.length, sha256: sha256(bytes) };
+      })
+  : null;
+const bundleBytes = bundleFiles?.reduce((sum, file) => sum + file.bytes, 0) ?? null;
+if (bundleBytes !== null && bundleBytes >= 64 * 1024 * 1024) {
+  throw new Error(`Worker upload exceeds 64 MiB (${bundleBytes} bytes)`);
+}
 
 console.log(JSON.stringify({
   schema: 1,
@@ -28,6 +42,8 @@ console.log(JSON.stringify({
   workerAbiVersion: version,
   wasmBytes: wasm.length,
   wasmSha256: sha256(wasm),
+  bundleBytes,
+  bundleFiles,
   adapterSha256: sha256(adapter),
   cargoLockSha256: sha256(lock),
   gitSources,

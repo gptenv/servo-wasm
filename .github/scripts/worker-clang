@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+compiler="${0##*/}"
+for argument in "$@"; do
+  if [[ "$argument" == --target=wasm32-unknown-unknown ]]; then
+    exec "$SERVO_WASI_SDK_DIR/bin/$compiler" "$@"
+  fi
+done
+exec "/usr/bin/$compiler" "$@"
