@@ -72,6 +72,8 @@ jobs:
           test -f "$sdk/share/wasi-sysroot/lib/wasm32-wasi/libc++.a"
           test -f "$sdk/share/wasi-sysroot/lib/wasm32-wasi/libc++abi.a"
           test -f "$sdk/share/wasi-sysroot/lib/wasm32-wasi/libwasi-emulated-getpid.a"
+          test -f "$sdk/share/wasi-sysroot/include/wasm32-wasi/stdio.h"
+          test -f "$sdk/share/wasi-sysroot/include/wasm32-wasi/c++/v1/cstdio"
           test ! -e /usr/share/wasi-sysroot
           sudo ln -s "$sdk/share/wasi-sysroot" /usr/share/wasi-sysroot
           mkdir -p "$RUNNER_TEMP/worker-toolchain-bin"
@@ -80,7 +82,10 @@ jobs:
           chmod +x "$GITHUB_WORKSPACE/.github/scripts/worker-clang"
           printf '#include <stdio.h>\nint probe(void) { return EOF; }\n' | \
             SERVO_WASI_SDK_DIR="$sdk" "$RUNNER_TEMP/worker-toolchain-bin/clang" \
-              --target=wasm32-unknown-unknown -nostdlib -x c -c -o "$RUNNER_TEMP/wasi-stdio-probe.o" -
+              --target=wasm32-unknown-unknown -D__wasi__=1 -nostdlib -x c -c -o "$RUNNER_TEMP/wasi-stdio-probe.o" -
+          printf '#include <cstdio>\nint probe() { return EOF; }\n' | \
+            SERVO_WASI_SDK_DIR="$sdk" "$RUNNER_TEMP/worker-toolchain-bin/clang++" \
+              --target=wasm32-unknown-unknown -D__wasi__=1 -nostdlib -x c++ -c -o "$RUNNER_TEMP/wasi-cstdio-probe.o" -
           echo "SERVO_WASI_SDK_DIR=$sdk" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/worker-toolchain-bin" >> "$GITHUB_PATH"
 

@@ -4,8 +4,14 @@ set -euo pipefail
 compiler="${0##*/}"
 for argument in "$@"; do
   if [[ "$argument" == --target=wasm32-unknown-unknown ]]; then
-    exec "$SERVO_WASI_SDK_DIR/bin/$compiler" \
-      "--sysroot=$SERVO_WASI_SDK_DIR/share/wasi-sysroot" "$@"
+    sysroot="$SERVO_WASI_SDK_DIR/share/wasi-sysroot"
+    includes=( -isystem "$sysroot/include/wasm32-wasi" )
+    if [[ "$compiler" == clang++ ]]; then
+      includes=( -isystem "$sysroot/include/wasm32-wasi/c++/v1" "${includes[@]}" )
+    fi
+    # Keep the fork's worker-include shims before the SDK's target headers.
+    exec "$SERVO_WASI_SDK_DIR/bin/$compiler" "--sysroot=$sysroot" \
+      "$@" "${includes[@]}"
   fi
 done
 exec "/usr/bin/$compiler-19" "$@"
