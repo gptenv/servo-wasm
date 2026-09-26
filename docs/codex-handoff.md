@@ -20,7 +20,7 @@ checkboxes in the trackers without test evidence.
   pushed, and locked in `Cargo.lock`.
 - The host ABI is **version 8**. The adapter (`worker-adapter.mjs`) and the WASM
   artifact must come from the same build.
-- Local verification from the uncommitted tree: the production-stripped build
+- Local verification of revision `d765febd97a`: the production-stripped build
   succeeds; `npm test` passes 125/125; local workerd root, 15 fixtures,
   screenshot and `/runaway` routes pass. The artifact has exactly five `env`
   imports; Wrangler 4.136.3 bundles 61,471.79 KiB.

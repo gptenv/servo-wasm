@@ -6,7 +6,7 @@ Target: a raw `wasm32-unknown-unknown` Servo module instantiated directly by a C
 
 ## 1. Current state
 
-The current ABI 8 production-stripped artifact, built incrementally with locked dependencies from mozjs-wasm `f942001b4`, is **62,878,568 bytes** (about 60.0 MiB), SHA-256 `80aea1fef28df417cdac8ce570ced10dbe3780e78e47077be882dd82917143fc`. A Wrangler 4.136.3 dry run bundles **61,471.79 KiB** of Worker JavaScript and WASM. The Worker imports exactly five `env` functions, with no WASI or wasm-bindgen imports:
+The current ABI 8 production-stripped artifact from servo-wasm `d765febd97a`, built incrementally with locked dependencies from mozjs-wasm `f942001b4`, is **62,878,568 bytes** (about 60.0 MiB), SHA-256 `80aea1fef28df417cdac8ce570ced10dbe3780e78e47077be882dd82917143fc`. A Wrangler 4.136.3 dry run bundles **61,471.79 KiB** of Worker JavaScript and WASM. The Worker imports exactly five `env` functions, with no WASI or wasm-bindgen imports:
 
 - `worker_fetch_request`
 - `worker_getrandom`
