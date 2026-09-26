@@ -1,7 +1,7 @@
-# Raw Worker ABI, version 5
+# Raw Worker ABI, version 6
 
 The JavaScript adapter and WASM artifact are a matched pair. The adapter checks
-`servo_worker_abi_version() === 5` and checks the required redirect-cookie export
+`servo_worker_abi_version() === 6` and checks the required redirect-cookie export
 before running constructors or bootstrap. Rebuild
 the artifact whenever the interface or serialized request representation changes.
 This is a project-internal protocol, not an MCP protocol or a stable upstream Servo API.
@@ -18,17 +18,22 @@ Exactly five function imports exist, all in `env`:
 | `worker_monotonic_now_ns()` | Return monotonic nanoseconds as a JavaScript `bigint`. |
 | `worker_unix_time_now_ns()` | Return Unix-epoch nanoseconds as a JavaScript `bigint`. |
 
-The fetch import carries `{version:5, kind:"fetch", request:...}`,
-`{version:5, kind:"cancel", request_ids:[...]}`,
-`{version:5, kind:"web_socket_connect", request_id, url, protocols}`, or
-`{version:5, kind:"web_socket_action", request_id, action}`. IDs serialize as
+The fetch import carries `{version:6, kind:"fetch", request:...}`,
+`{version:6, kind:"cancel", request_ids:[...]}`,
+`{version:6, kind:"web_socket_connect", request_id, url, protocols}`, or
+`{version:6, kind:"web_socket_action", request_id, action}`. IDs serialize as
 UUID strings. The WebSocket commands use the Worker's `WebSocket` host API; the
 adapter reports open, message, close and error events through the
 `servo_worker_websocket_*` exports and forwards page send/close actions to the
 host socket. Binary frames are exposed as `ArrayBuffer` in the page.
-The request uses Servo's `RequestBuilder` serialization (including URL, method,
-byte-string headers, destination, mode, credentials and redirect policy). A body
-is currently supported only via `body.worker_bytes`, limited to 256 KiB.
+The fetch request DTO contains only `id`, `url`, `method`, `headers`, `body`,
+`destination` and `redirect_mode`. `headers` is an ordered array of
+`[name, byte-array]` entries, preserving repeated fields. `body` is null or
+`{worker_bytes: byte-array|null}`. Only buffered request bodies up to 256 KiB
+are supported; an unbuffered body is rejected. Servo's internal `RequestBuilder`
+fields are not part of this protocol.
+The adapter rejects host commands over 2 MiB, malformed request DTOs, header
+lists over 64 KiB, and mismatched protocol versions before dispatch.
 Cancellation retires the Rust callback first, then cancels queued/active host I/O.
 
 ## Response lifecycle

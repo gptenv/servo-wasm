@@ -72,7 +72,45 @@ struct WorkerRedirectCookies {
     set_cookies: Vec<String>,
 }
 
-const WORKER_ABI_VERSION: u32 = 5;
+const WORKER_ABI_VERSION: u32 = 6;
+
+/// The stable host-facing subset of a Servo request. Do not serialize
+/// RequestBuilder here: its internal fields are not an ABI contract.
+#[derive(serde::Serialize)]
+struct WorkerFetchRequest<'a> {
+    id: String,
+    url: String,
+    method: &'a str,
+    headers: Vec<(&'a str, &'a [u8])>,
+    body: Option<WorkerFetchBody<'a>>,
+    destination: &'a Destination,
+    redirect_mode: &'a net_traits::request::RedirectMode,
+}
+
+#[derive(serde::Serialize)]
+struct WorkerFetchBody<'a> {
+    worker_bytes: Option<&'a [u8]>,
+}
+
+impl<'a> WorkerFetchRequest<'a> {
+    fn from_request(request: &'a RequestBuilder) -> Self {
+        Self {
+            id: request.id.0.to_string(),
+            url: request.url.url().as_str().to_owned(),
+            method: request.method.as_str(),
+            headers: request
+                .headers
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_bytes()))
+                .collect(),
+            body: request.body.as_ref().map(|body| WorkerFetchBody {
+                worker_bytes: body.worker_bytes.as_deref(),
+            }),
+            destination: &request.destination,
+            redirect_mode: &request.redirect_mode,
+        }
+    }
+}
 
 #[derive(serde::Serialize)]
 struct WorkerHostMessage<'a> {
@@ -85,7 +123,7 @@ struct WorkerHostMessage<'a> {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum WorkerHostCommand<'a> {
     Fetch {
-        request: &'a RequestBuilder,
+        request: WorkerFetchRequest<'a>,
     },
     Cancel {
         request_ids: &'a [RequestId],
@@ -819,7 +857,9 @@ fn install_fetch_adapter() {
                         return;
                     },
                 };
-                let payload = encode_host_command(WorkerHostCommand::Fetch { request: &request });
+                let payload = encode_host_command(WorkerHostCommand::Fetch {
+                    request: WorkerFetchRequest::from_request(&request),
+                });
                 let accepts_cookies = servo::worker_request_accepts_cookies(&request);
                 FETCH_CALLBACKS.with(|callbacks| {
                     callbacks.borrow_mut().insert(
@@ -983,7 +1023,9 @@ fn queue_worker_fetch(mut request: RequestBuilder, mut callback: net_traits::Box
             return;
         },
     };
-    let payload = encode_host_command(WorkerHostCommand::Fetch { request: &request });
+    let payload = encode_host_command(WorkerHostCommand::Fetch {
+        request: WorkerFetchRequest::from_request(&request),
+    });
     let accepts_cookies = servo::worker_request_accepts_cookies(&request);
     let callback = GenericCallback::new(move |message| {
         if let Ok(message) = message {

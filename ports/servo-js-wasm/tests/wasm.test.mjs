@@ -3,7 +3,7 @@ import { randomFillSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
 import test from 'node:test';
-import { createServoWorkerRuntime } from '../worker-adapter.mjs';
+import { createServoWorkerRuntime, parseWorkerHostMessage } from '../worker-adapter.mjs';
 import { webPlatformCases } from './web-platform-cases.mjs';
 
 // No WASI import object here, deliberately: this module used to require 15
@@ -39,6 +39,30 @@ const wasmPath = process.env.SERVO_WASM_PATH ??
   new URL('../../../target/wasm32-unknown-unknown/production-stripped/servo_js_wasm.wasm', import.meta.url);
 const wasmBytes = readFileSync(wasmPath);
 const wasm = new WebAssembly.Module(wasmBytes);
+const hostCommand = (value) => new TextEncoder().encode(JSON.stringify(value));
+
+test('host command parser rejects mismatched ABI and malformed bounded DTOs', () => {
+  const request = {
+    id: 'request-id', url: 'https://example.test/', method: 'GET',
+    headers: [['accept', [116, 101, 120, 116]]], body: null,
+    destination: 'None', redirect_mode: 'Follow',
+  };
+  const valid = { version: 6, kind: 'fetch', request };
+  assert.deepEqual(parseWorkerHostMessage(hostCommand(valid)), valid);
+  for (const malformed of [
+    { ...valid, version: 5 },
+    { ...valid, request: { ...request, method: 'GET\r\nCookie: x' } },
+    { ...valid, request: { ...request, headers: [['cookie\r\nx', [1]]] } },
+    { ...valid, request: { ...request, headers: [['x', [256]]] } },
+    { ...valid, request: { ...request, body: { worker_bytes: [256] } } },
+    { version: 6, kind: 'cancel', request_ids: [''] },
+    { version: 6, kind: 'unrecognized' },
+  ]) {
+    assert.throws(() => parseWorkerHostMessage(hostCommand(malformed)));
+  }
+  assert.throws(() => parseWorkerHostMessage(new Uint8Array(2 * 1024 * 1024 + 1)),
+    /exceeds 2 MiB/);
+});
 let instance;
 const unixEpochNsAtStartup = BigInt(Date.now()) * 1_000_000n;
 instance = new WebAssembly.Instance(wasm, {
@@ -156,7 +180,7 @@ test('SpiderMonkey smoke export runs in wasm', () => {
 });
 
 test('Worker lifecycle exports are present and initially idle', () => {
-  assert.equal(instance.exports.servo_worker_abi_version(), 5);
+  assert.equal(instance.exports.servo_worker_abi_version(), 6);
   assert.equal(typeof instance.exports.servo_worker_reset, 'function');
   assert.equal(typeof instance.exports.servo_worker_pump_status, 'function');
   assert.equal(typeof instance.exports.servo_worker_pending_fetch_count, 'function');
@@ -486,7 +510,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       return socket;
     },
   });
-  assert.equal(runtime.capabilities().abiVersion, 5);
+  assert.equal(runtime.capabilities().abiVersion, 6);
   assert.ok(runtime.capabilities().supported.includes('cpu-screenshots'));
   assert.ok(runtime.capabilities().partial.cookies);
   assert.ok(runtime.capabilities().supported.includes('indexeddb'));
@@ -1256,6 +1280,61 @@ test('host subrequest budget counts redirects and separates invocation from sess
   await settle();
   assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
   assert.equal(requests.length, 3, 'new invocation must not replenish the session cap');
+});
+
+test('late WebSocket events after reset cannot call the retired page', async () => {
+  const sockets = [];
+  const runtime = await createServoWorkerRuntime(wasm, {
+    log: () => {},
+    webSocketFactory: () => {
+      const listeners = new Map();
+      const socket = {
+        protocol: '',
+        addEventListener(type, listener) {
+          const entries = listeners.get(type) ?? [];
+          entries.push(listener);
+          listeners.set(type, entries);
+        },
+        emit(type, event = {}) {
+          for (const listener of listeners.get(type) ?? []) listener(event);
+        },
+        close() {},
+      };
+      sockets.push(socket);
+      return socket;
+    },
+  });
+  runtime.loadHtml('<!doctype html><body><script>' +
+    'new WebSocket("wss://socket.example/late");</script>',
+  { url: 'https://socket.example/' });
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 3_000 })).settled, true);
+  assert.equal(sockets.length, 1);
+  assert.equal(runtime.reset(), true);
+  const websocketExports = [
+    'servo_worker_websocket_open',
+    'servo_worker_websocket_message',
+    'servo_worker_websocket_close',
+  ];
+  let staleExportCalls = 0;
+  for (const name of websocketExports) {
+    const original = runtime.instance.exports[name];
+    runtime.instance.exports[name] = (...args) => {
+      staleExportCalls++;
+      return original(...args);
+    };
+  }
+  for (const type of ['open', 'message', 'error', 'close']) {
+    sockets[0].emit(type, { data: 'late', code: 1000, reason: 'late' });
+  }
+  assert.equal(staleExportCalls, 0);
+  assert.equal(runtime.trapped, null);
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 3_000 })).settled, true);
+  assert.equal(runtime.evaluatePage('42'), true);
+  assert.throws(() => runtime.beginInvocation(), /Finish or cancel pending Worker work/);
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 3_000 })).settled, true);
+  assert.throws(() => runtime.beginInvocation(), /Finish or cancel pending Worker work/);
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.doesNotThrow(() => runtime.beginInvocation());
 });
 
 test('screenshots rasterize backgrounds, borders, text, images and canvas', async () => {

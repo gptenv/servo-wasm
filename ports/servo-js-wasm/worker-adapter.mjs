@@ -12,9 +12,10 @@ const RESPONSE_CHUNK_BYTES = 64 * 1024;
 const MAX_REDIRECTS = 10;
 const MAX_OUTGOING_CONNECTIONS = 6;
 const MAX_PENDING_FETCHES = 50;
+const MAX_HOST_MESSAGE_BYTES = 2 * 1024 * 1024;
 const FREE_TIER_SUBREQUESTS = 50;
 const DEFAULT_SESSION_SUBREQUESTS = 10_000;
-const WORKER_ABI_VERSION = 5;
+const WORKER_ABI_VERSION = 6;
 const encoder = new TextEncoder();
 
 const WORKER_CAPABILITIES = Object.freeze({
@@ -58,6 +59,65 @@ const WORKER_CAPABILITIES = Object.freeze({
 
 function bytesToString(bytes) {
   return new TextDecoder().decode(bytes);
+}
+
+/** Decode the versioned, bounded command sent by the trusted WASM module. */
+export function parseWorkerHostMessage(bytes) {
+  if (bytes.byteLength > MAX_HOST_MESSAGE_BYTES) {
+    throw new RangeError('Servo Worker host command exceeds 2 MiB');
+  }
+  const message = JSON.parse(bytesToString(bytes));
+  if (!message || typeof message !== 'object' || Array.isArray(message) ||
+      message.version !== WORKER_ABI_VERSION) {
+    throw new TypeError('Servo Worker host protocol version mismatch');
+  }
+  const identifier = (id) => typeof id === 'string' && id.length > 0 && id.length <= 64;
+  if (message.kind === 'fetch') {
+    const request = message.request;
+    if (!request || typeof request !== 'object' || Array.isArray(request) ||
+        !identifier(request.id) || typeof request.url !== 'string' ||
+        request.url.length > 16 * 1024 ||
+        typeof request.method !== 'string' || !/^[A-Z]{1,32}$/.test(request.method) ||
+        !Array.isArray(request.headers) || request.headers.length > 256 ||
+        typeof request.destination !== 'string' ||
+        typeof request.redirect_mode !== 'string') {
+      throw new TypeError('Malformed Servo Worker fetch command');
+    }
+    let headerBytes = 0;
+    for (const entry of request.headers) {
+      if (!Array.isArray(entry) || entry.length !== 2 ||
+          typeof entry[0] !== 'string' || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(entry[0]) ||
+          !Array.isArray(entry[1]) ||
+          !entry[1].every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
+        throw new TypeError('Malformed Servo Worker fetch header');
+      }
+      headerBytes += entry[0].length + entry[1].length;
+    }
+    if (headerBytes > MAX_RESPONSE_HEADERS_BYTES) {
+      throw new RangeError('Servo Worker request headers exceed 64 KiB');
+    }
+    if (request.body !== null && request.body !== undefined) {
+      const body = request.body?.worker_bytes;
+      if (body !== null && body !== undefined &&
+          (!Array.isArray(body) || body.length > 256 * 1024 ||
+           !body.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255))) {
+        throw new TypeError('Malformed Servo Worker request body');
+      }
+    }
+  } else if (message.kind === 'cancel') {
+    if (!Array.isArray(message.request_ids) || message.request_ids.length > MAX_PENDING_FETCHES ||
+        !message.request_ids.every(identifier)) {
+      throw new TypeError('Malformed Servo Worker cancel command');
+    }
+  } else if (message.kind === 'web_socket_connect' ||
+             message.kind === 'web_socket_action') {
+    if (!identifier(message.request_id)) {
+      throw new TypeError('Malformed Servo Worker WebSocket command');
+    }
+  } else {
+    throw new TypeError('Unknown Servo Worker host command');
+  }
+  return message;
 }
 
 function requestUrl(request) {
@@ -153,15 +213,11 @@ export async function createServoWorkerRuntime(wasmModule, {
       },
       worker_fetch_request: (ptr, len) => {
         const bytes = new Uint8Array(runtime.instance.exports.memory.buffer, ptr, len);
-        const message = JSON.parse(bytesToString(bytes));
-        if (message.version !== WORKER_ABI_VERSION) {
-          throw new Error('Servo Worker host protocol version mismatch');
-        }
+        const message = parseWorkerHostMessage(bytes);
         if (message.kind === 'fetch') runtime.dispatchFetch(message.request);
         else if (message.kind === 'cancel') runtime.cancelFetches(message.request_ids);
         else if (message.kind === 'web_socket_connect') runtime.connectWebSocket(message);
         else if (message.kind === 'web_socket_action') runtime.webSocketAction(message);
-        else throw new Error('Unknown Servo Worker host command');
       },
     },
   };
@@ -252,8 +308,13 @@ class ServoWorkerRuntime {
 
   /** Start a new serialized host invocation after the previous one has settled. */
   beginInvocation() {
+    if (this.#trap) {
+      throw new Error('Servo runtime is unusable after a WASM trap; create a new runtime',
+        { cause: this.#trap });
+    }
     if (this.#inFlightFetches.size || this.#fetchQueue.length ||
-        this.pendingFetchCount() || this.#settling || this.#screenshotStreamActive) {
+        this.pendingFetchCount() || this.#settling || this.#screenshotStreamActive ||
+        this.#evaluationPending || this.#evaluationResultReady) {
       throw new Error('Finish or cancel pending Worker work before a new invocation');
     }
     this.#subrequestCount = 0;
@@ -556,13 +617,18 @@ class ServoWorkerRuntime {
     }
     try {
       const socket = this.#webSocketFactory(url, protocols);
+      const generation = this.#generation;
+      const current = () => generation === this.#generation &&
+        this.#webSockets.get(id) === socket;
       socket.binaryType = 'arraybuffer';
       this.#webSockets.set(id, socket);
       socket.addEventListener('open', () => {
+        if (!current()) return;
         this.#callWebSocketExport('servo_worker_websocket_open', id,
           encoder.encode(socket.protocol || ''));
       }, { once: true });
       socket.addEventListener('message', (event) => {
+        if (!current()) return;
         const isText = typeof event.data === 'string';
         const bytes = isText ? encoder.encode(event.data) :
           event.data instanceof ArrayBuffer ? new Uint8Array(event.data) :
@@ -577,10 +643,12 @@ class ServoWorkerRuntime {
           Number(isText));
       });
       socket.addEventListener('error', () => {
+        if (!current()) return;
         this.#deliverWebSocketClose(id, 0xffffffff, '', true);
         this.#webSockets.delete(id);
       }, { once: true });
       socket.addEventListener('close', (event) => {
+        if (!current()) return;
         this.#deliverWebSocketClose(id, event.code === 1005 ? 0xffffffff : event.code,
           event.reason || '', false);
         this.#webSockets.delete(id);

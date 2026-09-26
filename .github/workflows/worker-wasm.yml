@@ -78,6 +78,9 @@ jobs:
           ln -s "$GITHUB_WORKSPACE/.github/scripts/worker-clang" "$RUNNER_TEMP/worker-toolchain-bin/clang"
           ln -s "$GITHUB_WORKSPACE/.github/scripts/worker-clang" "$RUNNER_TEMP/worker-toolchain-bin/clang++"
           chmod +x "$GITHUB_WORKSPACE/.github/scripts/worker-clang"
+          printf '#include <stdio.h>\nint probe(void) { return EOF; }\n' | \
+            SERVO_WASI_SDK_DIR="$sdk" "$RUNNER_TEMP/worker-toolchain-bin/clang" \
+              --target=wasm32-unknown-unknown -nostdlib -x c -c -o "$RUNNER_TEMP/wasi-stdio-probe.o" -
           echo "SERVO_WASI_SDK_DIR=$sdk" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/worker-toolchain-bin" >> "$GITHUB_PATH"
 
