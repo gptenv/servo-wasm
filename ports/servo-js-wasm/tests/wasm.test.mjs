@@ -1935,3 +1935,54 @@ test('history traversal restores pushState entries, state and popstate', async (
   assert.equal(fetched.length, fetchesBeforeTraversal, 'same-document traversal must not refetch');
   assert.equal(runtime.trapped, null);
 });
+
+test('Blob, File and blob: URLs work in memory without trapping the instance', async (t) => {
+  const runtime = await createServoWorkerRuntime(wasm, { log: () => {} });
+  const load = async (origin) => {
+    runtime.loadHtml('<!doctype html><title>blob</title><body></body>', { url: `${origin}/` });
+    assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+  };
+  const value = async (source) => {
+    const result = await runtime.evaluate(source, { maxDurationMs: 10_000 });
+    assert.equal(runtime.trapped, null);
+    return result;
+  };
+  await load('https://blob-a.example');
+  const cases = [
+    ['Blob.text()', 'new Blob(["hi"]).text()', { String: 'hi' }],
+    ['Blob.slice().text()', 'new Blob(["abcdef"]).slice(1, 4).text()', { String: 'bcd' }],
+    ['structured clone of a Blob', 'structuredClone(new Blob(["c"])).text()', { String: 'c' }],
+    ['File metadata', '(() => { const f = new File(["z"], "z.txt", { type: "text/plain" });' +
+      ' return [f.name, f.size, f.type, Math.abs(f.lastModified - Date.now()) < 60000]; })()',
+    { Array: [{ String: 'z.txt' }, { Number: 1 }, { String: 'text/plain' }, { Boolean: true }] }],
+    ['FormData with a File', '(() => { const d = new FormData();' +
+      ' d.append("f", new File(["zz"], "z.txt")); return new Response(d).text()' +
+      '.then((t) => t.includes("filename=\\"z.txt\\"") && t.includes("zz")); })()',
+    { Boolean: true }],
+    ['fetch of a blob: URL', 'fetch(URL.createObjectURL(new Blob(["blobbody"], { type: "text/x-a" })))' +
+      '.then((r) => Promise.all([r.text(), r.headers.get("content-type")]))',
+    { Array: [{ String: 'blobbody' }, { String: 'text/x-a' }] }],
+    ['fetch of a sliced blob: URL',
+      'fetch(URL.createObjectURL(new Blob(["abcdef"]).slice(2, 5))).then((r) => r.text())',
+      { String: 'cde' }],
+    ['revoked blob: URL fails', '(() => { const u = URL.createObjectURL(new Blob(["x"]));' +
+      ' URL.revokeObjectURL(u); return fetch(u).then(() => "fetched", (e) => e.name); })()',
+    { String: 'TypeError' }],
+    ['non-GET blob: fetch fails', 'fetch(URL.createObjectURL(new Blob(["x"])), { method: "POST" })' +
+      '.then(() => "fetched", (e) => e.name)', { String: 'TypeError' }],
+    ['<img> from a blob: URL', 'new Promise((resolve) => { const i = new Image();' +
+      ' i.onload = () => resolve(i.naturalWidth); i.onerror = () => resolve("error");' +
+      ' i.src = URL.createObjectURL(new Blob([\'<svg xmlns="http://www.w3.org/2000/svg"' +
+      ' width="3" height="2"/>\'], { type: "image/svg+xml" })); })', { Number: 3 }],
+  ];
+  for (const [name, source, expected] of cases) {
+    await t.test(name, async () => assert.deepEqual(await value(source), { Ok: expected }));
+  }
+
+  await t.test('a blob: URL is not readable from another origin', async () => {
+    const url = (await value('URL.createObjectURL(new Blob(["secret"]))')).Ok.String;
+    await load('https://blob-b.example');
+    assert.deepEqual(await value(`fetch(${JSON.stringify(url)}).then((r) => r.text(), (e) => e.name)`),
+      { Ok: { String: 'TypeError' } });
+  });
+});

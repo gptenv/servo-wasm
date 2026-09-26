@@ -285,7 +285,13 @@ original error. Create a new runtime (a new instance) to continue.
 ## In-process resources and rendering
 
 `data:` URLs are decoded inside the module (Fetch "scheme fetch" semantics, a
-basic response in every mode) and never become host subrequests. Images use
+basic response in every mode) and never become host subrequests. `blob:` URLs
+are also resolved inside the module, from an in-memory blob store that stands
+in for Servo's file manager (`components/net/worker_blob_store.rs`): only GET
+is allowed, the URL must be valid (or held by a request's claim token) and
+belong to the requesting origin, and the whole blob is returned (no range
+requests). Blobs, slices, `File` objects and object URLs live in WASM memory
+for the life of the instance and count toward the 128 MB isolate limit. Images use
 Servo's real image cache; decoding work is queued and run by the pump, not a
 thread pool. Canvas 2D is rasterized in-process by `vello_cpu` (single-threaded
 on wasm32), including `getImageData`, `putImageData`, `drawImage`, patterns,

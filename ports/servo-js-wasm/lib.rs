@@ -992,6 +992,19 @@ fn install_fetch_adapter() {
         match channels {
             net_traits::FetchChannels::ResponseMsg(callback) => {
                 let request_id = request.id;
+                // Image and other resource-thread loads of in-module URLs.
+                let scheme = request.url.url().scheme().to_owned();
+                if scheme == "data" || scheme == "blob" {
+                    let callback: net_traits::BoxedFetchCallback = Box::new(move |message| {
+                        let _ = callback.send(message);
+                    });
+                    if scheme == "data" {
+                        fetch_worker_data_url(request, callback);
+                    } else {
+                        fetch_worker_blob_url(request, callback);
+                    }
+                    return;
+                }
                 let visibility = match worker_response_visibility(&mut request) {
                     Ok(visibility) => visibility,
                     Err(error) => {
@@ -1152,6 +1165,10 @@ fn queue_worker_fetch(mut request: RequestBuilder, mut callback: net_traits::Box
         fetch_worker_data_url(request, callback);
         return;
     }
+    if request.url.url().scheme() == "blob" {
+        fetch_worker_blob_url(request, callback);
+        return;
+    }
     let visibility = match worker_response_visibility(&mut request) {
         Ok(visibility) => visibility,
         Err(error) => {
@@ -1205,17 +1222,40 @@ fn worker_log(message: &str) {
 /// Resolve a `data:` URL inside the Worker, like Fetch's scheme fetch does:
 /// it needs no network access, so it must not become a host subrequest (which
 /// would also subject it to the cross-origin checks meant for real origins).
-fn fetch_worker_data_url(request: RequestBuilder, mut callback: net_traits::BoxedFetchCallback) {
-    let request_id = request.id;
-    let url = request.url.url();
-    let decoded = data_url::DataUrl::process(url.as_str())
+fn fetch_worker_data_url(request: RequestBuilder, callback: net_traits::BoxedFetchCallback) {
+    let decoded = data_url::DataUrl::process(request.url.url().as_str())
         .ok()
         .and_then(|data| {
             let mime = data.mime_type().to_string();
             data.decode_to_vec().ok().map(|(body, _)| (mime, body))
-        });
-    let Some((mime_type, body)) = decoded else {
-        let error = NetworkError::ResourceLoadError("Invalid data: URL".into());
+        })
+        .ok_or_else(|| NetworkError::ResourceLoadError("Invalid data: URL".into()));
+    deliver_worker_local_response(request, callback, decoded);
+}
+
+/// Fetch a `blob:` URL from the Worker's in-memory blob store, following the
+/// native blob protocol handler: GET only, identified by the URL's claim
+/// token. Range requests are not supported; the whole blob is returned.
+fn fetch_worker_blob_url(request: RequestBuilder, callback: net_traits::BoxedFetchCallback) {
+    let result = if request.method != Method::GET {
+        Err(NetworkError::InvalidMethod)
+    } else {
+        servo::read_worker_blob_url(&request.url)
+            .map(|blob| (blob.type_string, blob.bytes))
+            .map_err(|error| NetworkError::BlobURLStoreError(format!("{error:?}")))
+    };
+    deliver_worker_local_response(request, callback, result);
+}
+
+/// Deliver a response produced inside the module (`data:` and `blob:` URLs).
+/// These responses are basic (same-origin) for every request mode.
+fn deliver_worker_local_response(
+    request: RequestBuilder,
+    mut callback: net_traits::BoxedFetchCallback,
+    result: Result<(String, Vec<u8>), NetworkError>,
+) {
+    let request_id = request.id;
+    let fail = |callback: &mut net_traits::BoxedFetchCallback, error: NetworkError| {
         callback(FetchResponseMsg::ProcessResponse(
             request_id,
             Err(error.clone()),
@@ -1225,16 +1265,19 @@ fn fetch_worker_data_url(request: RequestBuilder, mut callback: net_traits::Boxe
             Err(error),
             ResourceFetchTiming::new(ResourceTimingType::Resource),
         ));
-        return;
+    };
+    let (mime_type, body) = match result {
+        Ok(response) => response,
+        Err(error) => return fail(&mut callback, error),
     };
     let mut headers = HeaderMap::new();
     if let Ok(value) = HeaderValue::from_str(&mime_type) {
         headers.insert(header::CONTENT_TYPE, value);
     }
-    let mut metadata = Metadata::default(url);
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(body.len()));
+    let mut metadata = Metadata::default(request.url.url());
     metadata.set_content_type(mime::Mime::from_str(&mime_type).ok().as_ref());
     metadata.headers = Some(Serde(headers));
-    // data: responses are basic (same-origin) for every request mode.
     let visibility = if request.destination == Destination::None {
         WorkerResponseVisibility::Basic
     } else {
@@ -1242,18 +1285,7 @@ fn fetch_worker_data_url(request: RequestBuilder, mut callback: net_traits::Boxe
     };
     let metadata = match filter_worker_metadata(metadata, &visibility) {
         Ok(metadata) => metadata,
-        Err(error) => {
-            callback(FetchResponseMsg::ProcessResponse(
-                request_id,
-                Err(error.clone()),
-            ));
-            callback(FetchResponseMsg::ProcessResponseEOF(
-                request_id,
-                Err(error),
-                ResourceFetchTiming::new(ResourceTimingType::Resource),
-            ));
-            return;
-        },
+        Err(error) => return fail(&mut callback, error),
     };
     callback(FetchResponseMsg::ProcessResponse(request_id, Ok(metadata)));
     if !body.is_empty() {

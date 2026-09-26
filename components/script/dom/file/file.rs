@@ -38,6 +38,22 @@ pub(crate) struct File {
     webkit_relative_path: USVString,
 }
 
+/// The current wall-clock time. `SystemTime::now()` panics on the raw
+/// Worker target, which reads the host clock instead.
+fn now() -> SystemTime {
+    #[cfg(target_arch = "wasm32")]
+    {
+        std::time::UNIX_EPOCH +
+            std::time::Duration::from_nanos(
+                servo_base::cross_process_instant::CrossProcessInstant::unix_time_now_ns(),
+            )
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        SystemTime::now()
+    }
+}
+
 impl File {
     fn new_inherited(
         blob_impl: &BlobImpl,
@@ -49,7 +65,7 @@ impl File {
             blob: Blob::new_inherited(blob_impl),
             name,
             // https://w3c.github.io/FileAPI/#dfn-lastModified
-            modified: modified.unwrap_or_else(SystemTime::now),
+            modified: modified.unwrap_or_else(now),
             webkit_relative_path,
         }
     }

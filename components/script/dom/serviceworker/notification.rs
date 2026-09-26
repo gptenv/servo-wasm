@@ -4,6 +4,7 @@
 
 use std::rc::Rc;
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
@@ -598,6 +599,10 @@ fn create_notification_with_settings_object(
     let base_url = global.api_base_url();
     // step 3: Let fallbackTimestamp be the number of milliseconds from
     //         the Unix epoch to settings’s current wall time, rounded to the nearest integer.
+    #[cfg(target_arch = "wasm32")]
+    let fallback_timestamp =
+        servo_base::cross_process_instant::CrossProcessInstant::unix_time_now_ns() / 1_000_000;
+    #[cfg(not(target_arch = "wasm32"))]
     let fallback_timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

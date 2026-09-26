@@ -258,6 +258,22 @@ pub mod resource_thread {
                         }
                     });
                 },
+                CoreResourceMsg::ToFileManager(message) => {
+                    crate::worker_blob_store::handle(message);
+                },
+                CoreResourceMsg::RevokeTokenForFile(request) => {
+                    crate::worker_blob_store::invalidate_token(
+                        &net_traits::filemanager_thread::FileTokenCheck::Required(request.token),
+                        &request.blob_id,
+                    );
+                },
+                CoreResourceMsg::RefreshTokenForFile(request) => {
+                    if let net_traits::filemanager_thread::FileTokenCheck::Required(token) =
+                        crate::worker_blob_store::token_for_file(&request.blob_id, true)
+                    {
+                        let _ = request.new_token_sender.send(token);
+                    }
+                },
                 // Anything else is unsupported on the Worker. Dropping the
                 // message drops any reply sender, so a caller waiting on it
                 // gets an error instead of waiting forever.
@@ -281,6 +297,7 @@ pub mod resource_thread {
     ) -> (ResourceThreads, ResourceThreads, Box<dyn AsyncRuntime>) {
         let (sender, receiver) = channel().expect("create Worker resource channel");
         RESOURCE_RECEIVER.with(|slot| *slot.borrow_mut() = Some(receiver));
+        crate::worker_blob_store::set_resource_sender(sender.clone());
         net_traits::set_worker_resource_pump(Box::new(|| {
             pump_worker_fetches();
         }));
@@ -293,6 +310,8 @@ pub mod resource_thread {
     }
 }
 pub mod subresource_integrity;
+#[cfg(target_arch = "wasm32")]
+pub mod worker_blob_store;
 #[cfg(feature = "test-util")]
 pub mod test_util;
 #[cfg(not(target_arch = "wasm32"))]
