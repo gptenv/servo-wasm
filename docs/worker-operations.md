@@ -40,7 +40,11 @@ Classify failures as input rejection, resource limit, network error, timeout,
 storage error or WASM trap. Log the URL origin only when needed for diagnosis;
 do not log cookies, authorization headers, response bodies, page content or
 evaluation source by default. The hosting service must supply authentication,
-egress policy, retention, session expiry and deletion.
+retention, session expiry and deletion. Enforce destination policy in both the
+injected `fetchImpl` and `webSocketFactory`; the adapter calls `fetchImpl` for
+each redirect hop, so check every URL rather than only the initial navigation.
+Reject private or unintended host destinations according to the service's
+declared allowlist, and do not grant a page the host's credentials.
 
 ## Recover and roll back
 

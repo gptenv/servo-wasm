@@ -13,7 +13,7 @@ This matrix describes the raw Worker artifact and adapter, not a guarantee that 
 | IndexedDB | Partial | Open/write/read passes. Abort/rollback, indexes, cursors, key ranges, upgrades, concurrency, structured clone and restart coverage remain open. |
 | Cache Storage | Partial | `open`, `has`, ordered `keys` and `delete` pass. Cache request/response operations are absent. |
 | Storage Manager | Partial | `estimate()` resolves with a metadata-only usage lower bound and unenforced 32 MiB estimate; `persist()` and `persisted()` report false. |
-| Canvas 2D, images, fonts | Partial | Canvas drawing, image decoding and font registration pass focused tests. Decoded-allocation budgets and malformed-input stress remain open. |
+| Canvas 2D, images, fonts | Partial | Canvas drawing, image decoding and font registration pass focused tests. Raster and Worker SVG images have 8 Mpixel per-image limits; aggregate decoded-allocation budgets and malformed-input stress remain open. |
 | CPU screenshots | Partial | Backgrounds, borders, text, images, canvas, shadows, filters, masks and scroll captures have deterministic fixtures. Sticky positioning, 3D, backdrop filters and clipping still have gaps. |
 | Input | Partial | Mouse, keyboard and scroll dispatch exist and have focused coverage. Accessibility output and broader input semantics remain unverified. |
 | History | Unverified | `goBack`, `goForward` and `reload` exports exist; traversal/state correctness is not established. |

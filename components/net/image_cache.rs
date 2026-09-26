@@ -67,6 +67,8 @@ const FALLBACK_RIPPY: &[u8] = include_bytes!("resources/rippy.png");
 /// test uses very large values for viewBox. Hence, we just clamp the maximum
 /// width/height of the pixmap allocated for rasterization.
 const MAX_SVG_PIXMAP_DIMENSION: u32 = 5000;
+#[cfg(target_arch = "wasm32")]
+const MAX_WORKER_SVG_PIXMAP_PIXELS: u64 = 8 * 1024 * 1024;
 
 //
 // TODO(gw): Remaining work on image cache:
@@ -1084,13 +1086,6 @@ impl ImageCache for ImageCacheImpl {
                 .remove_all_for_id(old_mapped_image_id);
         }
 
-        if store
-            .svg_rasterization_task_store
-            .is_or_set_being_rasterized(image_id, requested_size)
-        {
-            return None;
-        }
-
         let natural_size = vector_image.svg_tree.size().to_int_size();
         let tinyskia_requested_size = {
             let width = requested_size
@@ -1115,6 +1110,23 @@ impl ImageCache for ImageCacheImpl {
                 "Asked for requested size {:?} which has zero size. Not returning image",
                 requested_size
             );
+            return None;
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        if u64::from(tinyskia_requested_size.width()) * u64::from(tinyskia_requested_size.height())
+            > MAX_WORKER_SVG_PIXMAP_PIXELS
+        {
+            debug!("Worker SVG rasterization exceeds the decoded pixel limit");
+            return None;
+        }
+
+        // Mark a request active only after validating its dimensions. Invalid
+        // sizes must not leave a permanent in-progress entry behind.
+        if store
+            .svg_rasterization_task_store
+            .is_or_set_being_rasterized(image_id, requested_size)
+        {
             return None;
         }
 

@@ -1385,6 +1385,28 @@ test('screenshots rasterize backgrounds, borders, text, images and canvas', asyn
   assert.ok(inked > 50, `text should draw glyphs (inked ${inked} pixels)`);
 });
 
+test('oversized SVG rasterization fails within the Worker pixel budget', async () => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 200,
+    height: 200,
+    log: () => {},
+    fetchImpl: async () => new Response(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="5000" height="5000">' +
+        '<rect width="5000" height="5000" fill="red"/></svg>',
+      { headers: { 'content-type': 'image/svg+xml' } },
+    ),
+  });
+  runtime.loadHtml('<!doctype html><body style="margin:0;background:white">' +
+    '<img src="large.svg" width="5000" height="5000"></body>',
+  { url: 'https://image.example/' });
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 3_000 })).settled, true);
+  const png = decodePng(await runtime.screenshot({ maxDurationMs: 3_000 }));
+  assert.equal(runtime.trapped, null);
+  assert.equal(png.width, 200);
+  assert.equal(png.height, 200);
+  assert.deepEqual(png.pixel(100, 100), [255, 255, 255, 255]);
+});
+
 test('screenshots draw shadows and filters, follow scrolling, and capture full pages', async () => {
   const runtime = await createServoWorkerRuntime(wasm, {
     width: 300,
