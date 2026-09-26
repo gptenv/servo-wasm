@@ -321,9 +321,10 @@ class ServoWorkerRuntime {
 
   constructor(instance, fetchImpl, webSocketFactory, log, maxResponseBytes,
               maxSubrequests, maxSessionSubrequests) {
-    // A WASM trap does not unwind Rust state (held RefCell borrows, partial
-    // updates), so after the first trap every later export call would fail
-    // with a misleading secondary panic. Refuse them explicitly instead.
+    // A WASM trap or host-side stack overflow does not unwind Rust state
+    // (held RefCell borrows, partial updates), so after the first fatal export
+    // failure every later call could fail with a misleading secondary panic.
+    // Refuse them explicitly instead.
     const exports = {};
     for (const [name, value] of Object.entries(instance.exports)) {
       exports[name] = typeof value !== 'function' ? value : (...args) => {
@@ -334,7 +335,9 @@ class ServoWorkerRuntime {
         try {
           return value(...args);
         } catch (error) {
-          if (error instanceof WebAssembly.RuntimeError) this.#trap = error;
+          if (error instanceof WebAssembly.RuntimeError || error instanceof RangeError) {
+            this.#trap = error;
+          }
           throw error;
         }
       };
