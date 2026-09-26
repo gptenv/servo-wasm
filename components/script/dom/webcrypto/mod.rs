@@ -3,5 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 pub(crate) mod crypto;
+#[cfg(feature = "webcrypto")]
 pub(crate) mod cryptokey;
+#[cfg(feature = "webcrypto")]
 pub(crate) mod subtlecrypto;

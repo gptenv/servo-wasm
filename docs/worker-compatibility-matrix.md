@@ -21,7 +21,7 @@ This matrix describes the raw Worker artifact and adapter, not a guarantee that 
 | Forms and uploads/downloads | Unverified | No declared Worker compatibility corpus yet. Streaming request bodies are unsupported. |
 | Streams, messaging, permissions | Unverified | No declared Worker compatibility corpus yet; individual native implementations may exist. |
 | Synchronous XHR, Web Audio | Unsupported | Synchronous http(s) XHR throws `NetworkError` and `AudioContext`/`OfflineAudioContext` throw `NotSupportedError` instead of hanging or trapping (regression test runs in a child process with a deadline). |
-| Web Crypto (`crypto`) | Unsupported | The Worker build omits Servo's `webcrypto` feature, so `crypto` (including `getRandomValues` and `randomUUID`) is undefined. Splitting `Crypto` from `SubtleCrypto` would restore the common calls without the ~30 crypto crates. |
+| Web Crypto (`crypto`) | Partial | `crypto.getRandomValues()` and `crypto.randomUUID()` pass production-artifact coverage in the no-default-features Worker build. `crypto.subtle`/`SubtleCrypto` remains absent because the Worker build omits the heavyweight `webcrypto` feature. |
 | Dedicated/shared workers and service workers | Unsupported | No cooperative Worker services are exposed in this port. |
 | Media and audio | Unverified | No declared Worker compatibility corpus or host policy yet. |
 | WebGL and WebGPU | Unsupported by design | Both are intentional exclusions. A software WebGL shim is a separate project. |

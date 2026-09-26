@@ -13,23 +13,23 @@ checkboxes in the trackers without test evidence.
 
 ## State at handoff
 
-- Branch `main` of `gptenv/servo-wasm`. Pushed through `90bb31fc6cb`. One more
-  commit, containing the sync-XHR, Worker and Web Audio fixes described below,
-  may be local only: check `git status -sb` and ask the user before pushing.
+- Branch `main` of `gptenv/servo-wasm`, remote HEAD `cd29215de5e`. Local changes
+  after that revision add basic Web Crypto and repair its no-feature module
+  gating; the CI workflow update is also local. Do not push without asking.
 - `gptenv/mozjs-wasm` `main` is at `f942001b4` (the script work budget),
   pushed, and locked in `Cargo.lock`.
 - The host ABI is **version 8**. The adapter (`worker-adapter.mjs`) and the WASM
   artifact must come from the same build.
-- Local verification of the last build: `npm test` passes 124/124. The local
-  workerd smoke routes pass: root, 15 cases, screenshot and `/runaway`. The
-  artifact has exactly five `env` imports, and the Wrangler bundle is about
-  61.5 MiB of the 64 MiB limit.
-- **CI is red.** The Worker WASM job fails in "Build the production Worker
-  artifact incrementally". That failure predates this work. Its logs need a
-  GitHub sign-in, and the user chose to skip CI for now. Don't sign in on
-  their behalf. If they later allow it, reproduce the build locally with the
-  pinned WASI SDK 29 (URL and checksum are in
-  `.github/workflows/worker-wasm.yml`).
+- Local verification from the uncommitted tree: the production-stripped build
+  succeeds; `npm test` passes 125/125; local workerd root, 15 fixtures,
+  screenshot and `/runaway` routes pass. The artifact has exactly five `env`
+  imports; Wrangler 4.136.3 bundles 61,471.79 KiB.
+- **CI is still red at remote HEAD `cd29215de5e`.** The public Actions API
+  identifies the failing step as "Build the production Worker artifact
+  incrementally"; downloading its detailed log returns 403 without GitHub
+  authentication. The local workflow now uses the documented `./mach build`
+  command and checks both `<cstdio>` and `<cstring>` with the pinned target
+  wrapper. It still needs a remote run. Do not sign in on the user's behalf.
 - `servo-mcp` (separate repo, separate owner) pins servo-wasm as a submodule at
   an ABI 4-era revision. Don't edit it. Its owner must take the adapter and WASM
   as a pair, size `scriptBudget`, and apply their egress policy to every method
@@ -116,50 +116,43 @@ preflights, cross-origin POST bodies and, once a preflight passes, any method.
 The host's destination/SSRF policy must cover every method
 (`worker-operations.md`).
 
+7. **Basic Web Crypto.** The no-default-features build now exposes
+   `crypto.getRandomValues()` and `crypto.randomUUID()` while keeping
+   `SubtleCrypto` gated. The first attempted module split also exposed
+   `cryptokey` and the full `subtlecrypto` Rust modules without their optional
+   dependencies; those submodules are now feature-gated. The local production
+   build and artifact suite pass after that fix.
+
 ## Open work, in suggested order
 
-1. **Web Crypto.** `crypto` is undefined because the Worker build omits the
-   `webcrypto` feature.
-   - Why it matters: this is a large compatibility gap. `getRandomValues` and
-     `randomUUID` are used everywhere.
-   - Suggested approach: split `Crypto.webidl`, which is gated by
-     `// skip-unless CARGO_FEATURE_WEBCRYPTO`, so that `Crypto` with
-     `getRandomValues`/`randomUUID` is always built and only `SubtleCrypto`
-     needs the feature.
-   - Where the gating lives: `script` `dom/mod.rs`, `window.rs`,
-     `workerglobalscope.rs` and `structuredclone.rs`.
-   - Entropy: getrandom already uses the Worker host.
-   - Constraints: `aws-lc-rs` (C code) is used only for SHA/HMAC/PBKDF2, and
-     bundle headroom is about 2.5 MiB, so SubtleCrypto itself needs a
-     size/buildability check.
-2. **R1 remaining: aggregate memory limits.**
+1. **R1 remaining: aggregate memory limits.**
    - Covers blobs, the history-state map, evaluation buffers, decoded
      images/fonts, DOM growth and storage.
    - Calibrate the 20M budget on real Cloudflare. This needs the user's
      authorization to deploy or run remote tests.
-3. **R2 batch B: credentialed CORS.**
+2. **R2 batch B: credentialed CORS.**
    - Blocked until the Worker cookie jar honours the SameSite
      site-for-cookies context on cross-site requests (`attach_worker_cookies`
      and `set_worker_cookie_from_header` in `components/net/lib.rs`).
    - Without that, enabling it would leak Lax/Strict cookies.
    - Also still open: redirects after a preflight, and a preflight cache.
-4. **R5 Cache API.** `Cache.match/put/add/addAll/delete` and
+3. **R5 Cache API.** `Cache.match/put/add/addAll/delete` and
    `CacheStorage.match` aren't implemented. This spans WebIDL, script and the
    storage backend. Also needed: broader IndexedDB tests (abort, indexes,
    cursors, upgrades).
-5. **R4 persistence.** A versioned host storage bridge, designed with the
+4. **R4 persistence.** A versioned host storage bridge, designed with the
    `servo-mcp` owner, and real quota enforcement (`client_storage.rs` only
    estimates usage today).
-6. **R3 lifecycle.** Close/erase semantics and replacing a trapped instance
+5. **R3 lifecycle.** Close/erase semantics and replacing a trapped instance
    from committed state. Remember that reset is not destruction. Use a fresh
    instance for isolation.
-7. **R8 gaps found by the probe:**
+6. **R8 gaps found by the probe:**
    - `FontFace`, `document.fonts.load`, `IntersectionObserver`, `window.print`
      and `execCommand` are absent. They are probably gated by Servo
      preferences; check them and enable with tests where they work.
    - `video.play()` never settles. It should reject.
    - Workers and service workers are unsupported.
-8. **Keep hunting traps.** The Worker resource handler still drops unknown
+7. **Keep hunting traps.** The Worker resource handler still drops unknown
    `CoreResourceMsg` variants, and `script` sometimes calls `recv().unwrap()`
    on the reply, which traps. The API probe style that worked: run each API in
    its own `node` process under an OS `timeout` (scratch scripts weren't kept;

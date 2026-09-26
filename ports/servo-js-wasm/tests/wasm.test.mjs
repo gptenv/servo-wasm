@@ -1845,6 +1845,22 @@ test('evaluate() correlates results and awaits returned promises', async (t) => 
       { Ok: { String: 'fetched /data' } }],
     ['async function', '(async () => { await null; return document.title; })()',
       { Ok: { String: 'eval' } }],
+    ['basic Web Crypto without SubtleCrypto', `(() => {
+      const bytes = new Uint8Array(32);
+      const returned = crypto.getRandomValues(bytes);
+      return {
+        sameView: returned === bytes,
+        nonzero: bytes.some((byte) => byte !== 0),
+        uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+          crypto.randomUUID()),
+        subtleAbsent: !('subtle' in crypto),
+      };
+    })()`, { Ok: { Object: {
+      sameView: { Boolean: true },
+      nonzero: { Boolean: true },
+      uuid: { Boolean: true },
+      subtleAbsent: { Boolean: true },
+    } } }],
     ['overridden Promise.prototype.then',
       'Promise.prototype.then = () => {}; Promise.resolve(7)', { Ok: { Number: 7 } }],
   ];

@@ -363,8 +363,11 @@ thread or spawn a native thread, so they fail explicitly instead: synchronous
 `XMLHttpRequest` to http(s) URLs throws `NetworkError` (the host cannot answer
 until the script returns; synchronous `data:` and `blob:` requests still
 work), and `new Worker()`, `new AudioContext()` and `new OfflineAudioContext()`
-throw `NotSupportedError`. `crypto` is absent because the Worker build omits
-the `webcrypto` feature. Script execution is bounded by the
+throw `NotSupportedError`. The production artifact exposes basic Web Crypto:
+`crypto.getRandomValues()` uses the host CSPRNG bridge and `crypto.randomUUID()`
+produces version 4 UUIDs; both pass the no-default-features runtime suite.
+`SubtleCrypto` remains absent because the Worker build omits the heavyweight
+`webcrypto` feature. Script execution is bounded by the
 operation budget above, not by CPU time. WebGL and WebGPU
 are intentional exclusions. Screenshots
 are implemented with the CPU renderer described above; backdrop filters and

@@ -16,15 +16,19 @@ use uuid::Uuid;
 use crate::dom::bindings::codegen::Bindings::CryptoBinding::CryptoMethods;
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::reflector::DomGlobal;
-use crate::dom::bindings::root::{DomRoot, MutNullableDom};
+use crate::dom::bindings::root::DomRoot;
+#[cfg(feature = "webcrypto")]
+use crate::dom::bindings::root::MutNullableDom;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::globalscope::GlobalScope;
+#[cfg(feature = "webcrypto")]
 use crate::dom::subtlecrypto::SubtleCrypto;
 
 // https://developer.mozilla.org/en-US/docs/Web/API/Crypto
 #[dom_struct]
 pub(crate) struct Crypto {
     reflector_: Reflector,
+    #[cfg(feature = "webcrypto")]
     subtle: MutNullableDom<SubtleCrypto>,
 }
 
@@ -32,6 +36,7 @@ impl Crypto {
     fn new_inherited() -> Crypto {
         Crypto {
             reflector_: Reflector::new(),
+            #[cfg(feature = "webcrypto")]
             subtle: MutNullableDom::default(),
         }
     }
@@ -43,6 +48,7 @@ impl Crypto {
 
 impl CryptoMethods<crate::DomTypeHolder> for Crypto {
     /// <https://w3c.github.io/webcrypto/#dfn-Crypto-attribute-subtle>
+    #[cfg(feature = "webcrypto")]
     fn Subtle(&self, cx: &mut js::context::JSContext) -> DomRoot<SubtleCrypto> {
         self.subtle
             .or_init(|| SubtleCrypto::new(cx, &self.global()))

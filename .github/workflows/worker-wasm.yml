@@ -86,6 +86,9 @@ jobs:
           printf '#include <cstdio>\nint probe() { return EOF; }\n' | \
             SERVO_WASI_SDK_DIR="$sdk" "$RUNNER_TEMP/worker-toolchain-bin/clang++" \
               --target=wasm32-unknown-unknown -D__wasi__=1 -nostdlib -x c++ -c -o "$RUNNER_TEMP/wasi-cstdio-probe.o" -
+          printf '#include <cstring>\nint probe() { return std::strlen("ok"); }\n' | \
+            SERVO_WASI_SDK_DIR="$sdk" "$RUNNER_TEMP/worker-toolchain-bin/clang++" \
+              --target=wasm32-unknown-unknown -D__wasi__=1 -nostdlib -x c++ -c -o "$RUNNER_TEMP/wasi-cstring-probe.o" -
           echo "SERVO_WASI_SDK_DIR=$sdk" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/worker-toolchain-bin" >> "$GITHUB_PATH"
 
@@ -99,8 +102,8 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo build --locked --target wasm32-unknown-unknown --no-default-features --jobs 2 \
-            --profile production-stripped --manifest-path ports/servo-js-wasm/Cargo.toml \
+          ./mach build --target wasm32-unknown-unknown --no-default-features --jobs 2 \
+            --profile production-stripped --manifest-path ports/servo-js-wasm/Cargo.toml -- --locked \
             2>&1 | tee "$RUNNER_TEMP/worker-build.log"
 
       - name: Check the production artifact and run Node integration coverage
