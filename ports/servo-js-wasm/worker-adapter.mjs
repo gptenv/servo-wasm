@@ -75,7 +75,7 @@ const WORKER_CAPABILITIES = Object.freeze({
   }),
   unsupported: Object.freeze([
     'service-workers',
-    'dedicated-shared-workers', 'webgl', 'webgpu',
+    'dedicated-shared-workers', 'webgl', 'webgpu', 'web-audio', 'synchronous-xhr',
     'credentialed-cross-origin-cors', 'streaming-request-bodies',
   ]),
   unverified: Object.freeze([]),

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { randomFillSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { createServoWorkerRuntime, parseWorkerHostMessage } from '../worker-adapter.mjs';
 import { webPlatformCases } from './web-platform-cases.mjs';
@@ -2124,5 +2126,54 @@ test('CORS preflight and simple POST follow Fetch and decide in the engine', asy
     serve({ preflight: { status: 204, headers: allow({ 'access-control-allow-methods': 'PUT' }) } });
     assert.equal(await attempt('{ method: "PUT" }', limited), 'err:TypeError');
     assert.deepEqual(methods(), ['OPTIONS']);
+  });
+});
+
+test('APIs that would block or spawn threads fail explicitly instead of hanging or trapping', () => {
+  // A native hang cannot be interrupted from JavaScript, so these run in a
+  // child process under a hard deadline.
+  const adapter = new URL('../worker-adapter.mjs', import.meta.url).href;
+  const script = `
+    import { readFileSync } from 'node:fs';
+    import { createServoWorkerRuntime } from ${JSON.stringify(adapter)};
+    const wasm = new WebAssembly.Module(readFileSync(${JSON.stringify(
+      typeof wasmPath === 'string' ? wasmPath : fileURLToPath(wasmPath))}));
+    const runtime = await createServoWorkerRuntime(wasm, { log: () => {},
+      fetchImpl: async () => new Response('pong') });
+    runtime.loadHtml('<!doctype html><title>t</title>', { url: 'https://block.example/' });
+    await runtime.pumpUntilSettled();
+    const cases = {
+      syncXhr: '(() => { const x = new XMLHttpRequest(); x.open("GET", "/ping", false);' +
+        ' try { x.send(); return "sent"; } catch (e) { return e.name + ":" + x.readyState; } })()',
+      syncXhrData: '(() => { const x = new XMLHttpRequest();' +
+        ' x.open("GET", "data:text/plain,inline", false); x.send(); return x.responseText; })()',
+      asyncXhr: 'new Promise((r) => { const x = new XMLHttpRequest(); x.open("GET", "/ping");' +
+        ' x.onload = () => r(x.responseText); x.send(); })',
+      worker: '(() => { try { new Worker("/w.js"); return "created"; } catch (e) { return e.name; } })()',
+      audio: '(() => { try { new AudioContext(); return "created"; } catch (e) { return e.name; } })()',
+      offlineAudio: '(() => { try { new OfflineAudioContext(1, 1, 44100); return "created"; }' +
+        ' catch (e) { return e.name; } })()',
+    };
+    const out = {};
+    for (const [name, source] of Object.entries(cases)) {
+      const result = await runtime.evaluate(source, { maxDurationMs: 5000 });
+      out[name] = result.Ok?.String ?? JSON.stringify(result);
+    }
+    out.trapped = runtime.trapped !== null;
+    console.log(JSON.stringify(out));
+  `;
+  const child = spawnSync(process.execPath, ['--stack-size=2000', '--input-type=module', '-e', script],
+    { encoding: 'utf8', timeout: 120_000 });
+  assert.equal(child.signal, null, `child did not finish: ${child.stderr.slice(-400)}`);
+  assert.equal(child.status, 0, child.stderr.slice(-400));
+  const result = JSON.parse(child.stdout.trim().split('\n').pop());
+  assert.deepEqual(result, {
+    syncXhr: 'NetworkError:4',
+    syncXhrData: 'inline',
+    asyncXhr: 'pong',
+    worker: 'NotSupportedError',
+    audio: 'NotSupportedError',
+    offlineAudio: 'NotSupportedError',
+    trapped: false,
   });
 });

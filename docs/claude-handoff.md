@@ -1,5 +1,7 @@
 # Cloudflare Worker WASM port handoff — superseded
 
+> The current handoff is [codex-handoff.md](codex-handoff.md).
+>
 > This handoff reflects an earlier, pre-rendering stage of the port and is not
 > an accurate description of the current implementation. For current behavior
 > and remaining release work, use [wasm-worker-port-plan.md](wasm-worker-port-plan.md)

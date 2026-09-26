@@ -161,6 +161,7 @@ impl Worker {
 
 impl WorkerMethods<crate::DomTypeHolder> for Worker {
     /// <https://html.spec.whatwg.org/multipage/#dom-worker>
+    #[cfg_attr(target_arch = "wasm32", allow(unreachable_code, unused_variables))]
     fn Constructor(
         cx: &mut JSContext,
         global: &GlobalScope,
@@ -168,6 +169,12 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
         script_url: TrustedScriptURLOrUSVString,
         worker_options: &WorkerOptions,
     ) -> Fallible<DomRoot<Worker>> {
+        // A Cloudflare Worker cannot spawn the thread a dedicated worker runs
+        // on; fail explicitly instead of panicking.
+        #[cfg(target_arch = "wasm32")]
+        return Err(Error::NotSupported(Some(
+            "Dedicated workers are not supported in this runtime".into(),
+        )));
         // Step 1: Let compliantScriptURL be the result of invoking the
         // Get Trusted Type compliant string algorithm with TrustedScriptURL,
         // this's relevant global object, scriptURL, "Worker constructor", and "script".

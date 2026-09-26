@@ -1633,6 +1633,19 @@ impl XMLHttpRequest {
             )
         };
 
+        // The Worker host completes network requests asynchronously, after
+        // this script turn returns. A synchronous request would block forever
+        // waiting for a response that cannot arrive, so it fails as a network
+        // error. data: and blob: URLs are answered inside the module.
+        #[cfg(target_arch = "wasm32")]
+        if self.sync.get() && matches!(request_builder.url.url().scheme(), "http" | "https") {
+            self.process_partial_response(
+                cx,
+                XHRProgress::Errored(self.generation_id.get(), Error::Network(None)),
+            );
+            return Err(Error::Network(None));
+        }
+
         *self.canceller.safe_borrow_mut(cx.no_gc()) =
             FetchCanceller::new(request_builder.id, false, global.core_resource_thread());
 

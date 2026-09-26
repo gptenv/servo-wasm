@@ -98,12 +98,19 @@ impl OfflineAudioContext {
 
 impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
     /// <https://webaudio.github.io/web-audio-api/#dom-offlineaudiocontext-offlineaudiocontext>
+    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
     fn Constructor(
         cx: &mut JSContext,
         window: &Window,
         proto: Option<HandleObject>,
         options: &OfflineAudioContextOptions,
     ) -> Fallible<DomRoot<OfflineAudioContext>> {
+        // A Cloudflare Worker cannot spawn the audio render thread.
+        #[cfg(target_arch = "wasm32")]
+        return Err(Error::NotSupported(Some(
+            "Web Audio is not supported in this runtime".into(),
+        )));
+        #[cfg(not(target_arch = "wasm32"))]
         OfflineAudioContext::new(
             cx,
             window,
@@ -115,6 +122,7 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
     }
 
     /// <https://webaudio.github.io/web-audio-api/#dom-offlineaudiocontext-offlineaudiocontext-numberofchannels-length-samplerate>
+    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
     fn Constructor_(
         cx: &mut JSContext,
         window: &Window,
@@ -123,6 +131,11 @@ impl OfflineAudioContextMethods<crate::DomTypeHolder> for OfflineAudioContext {
         length: u32,
         sample_rate: Finite<f32>,
     ) -> Fallible<DomRoot<OfflineAudioContext>> {
+        #[cfg(target_arch = "wasm32")]
+        return Err(Error::NotSupported(Some(
+            "Web Audio is not supported in this runtime".into(),
+        )));
+        #[cfg(not(target_arch = "wasm32"))]
         OfflineAudioContext::new(cx, window, proto, number_of_channels, length, *sample_rate)
     }
 

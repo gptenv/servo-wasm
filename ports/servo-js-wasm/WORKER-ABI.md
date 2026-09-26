@@ -358,7 +358,13 @@ must therefore cover every method, including preflights and cross-origin
 streams are not implemented. Full Fetch redirect/manual-redirect behavior,
 response-reader and cloned-response cancellation semantics, service-worker
 support, IndexedDB transaction behavior and Cache request/response operations
-remain unsupported or uncharacterized. Script execution is bounded by the
+remain unsupported or uncharacterized. Some APIs would block the Worker's only
+thread or spawn a native thread, so they fail explicitly instead: synchronous
+`XMLHttpRequest` to http(s) URLs throws `NetworkError` (the host cannot answer
+until the script returns; synchronous `data:` and `blob:` requests still
+work), and `new Worker()`, `new AudioContext()` and `new OfflineAudioContext()`
+throw `NotSupportedError`. `crypto` is absent because the Worker build omits
+the `webcrypto` feature. Script execution is bounded by the
 operation budget above, not by CPU time. WebGL and WebGPU
 are intentional exclusions. Screenshots
 are implemented with the CPU renderer described above; backdrop filters and

@@ -20,6 +20,8 @@ This matrix describes the raw Worker artifact and adapter, not a guarantee that 
 | Blob, File and blob: URLs | Partial | An in-memory blob store answers Servo's file-manager messages. `Blob` reads/slices/structured clones, `File` metadata, `FileReader`, multipart `FormData` bodies, `createObjectURL`/`revokeObjectURL`, `fetch()` and `<img>` loads of blob: URLs, the origin check and revocation pass. Blob URL range requests are unsupported, there is no file picker, and blob memory is not yet counted toward an aggregate limit. |
 | Forms and uploads/downloads | Unverified | No declared Worker compatibility corpus yet. Streaming request bodies are unsupported. |
 | Streams, messaging, permissions | Unverified | No declared Worker compatibility corpus yet; individual native implementations may exist. |
+| Synchronous XHR, Web Audio | Unsupported | Synchronous http(s) XHR throws `NetworkError` and `AudioContext`/`OfflineAudioContext` throw `NotSupportedError` instead of hanging or trapping (regression test runs in a child process with a deadline). |
+| Web Crypto (`crypto`) | Unsupported | The Worker build omits Servo's `webcrypto` feature, so `crypto` (including `getRandomValues` and `randomUUID`) is undefined. Splitting `Crypto` from `SubtleCrypto` would restore the common calls without the ~30 crypto crates. |
 | Dedicated/shared workers and service workers | Unsupported | No cooperative Worker services are exposed in this port. |
 | Media and audio | Unverified | No declared Worker compatibility corpus or host policy yet. |
 | WebGL and WebGPU | Unsupported by design | Both are intentional exclusions. A software WebGL shim is a separate project. |

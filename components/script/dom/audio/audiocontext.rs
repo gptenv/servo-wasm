@@ -110,12 +110,19 @@ impl AudioContext {
 
 impl AudioContextMethods<crate::DomTypeHolder> for AudioContext {
     /// <https://webaudio.github.io/web-audio-api/#AudioContext-constructors>
+    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
     fn Constructor(
         cx: &mut js::context::JSContext,
         window: &Window,
         proto: Option<HandleObject>,
         options: &AudioContextOptions,
     ) -> Fallible<DomRoot<AudioContext>> {
+        // A Cloudflare Worker cannot spawn the audio render thread.
+        #[cfg(target_arch = "wasm32")]
+        return Err(Error::NotSupported(Some(
+            "Web Audio is not supported in this runtime".into(),
+        )));
+        #[cfg(not(target_arch = "wasm32"))]
         AudioContext::new(cx, window, proto, options)
     }
 
