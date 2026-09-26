@@ -5306,7 +5306,7 @@ dependencies = [
 [[package]]
 name = "mozjs"
 version = "0.26.3"
-source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#b81b2cdfe63bed6fcde2c6a5898c12296ceb900f"
+source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#4c75bc3aa0737abfa1285059a4843dad120b4632"
 dependencies = [
  "bindgen",
  "cc",
@@ -5320,7 +5320,7 @@ dependencies = [
 [[package]]
 name = "mozjs_collator_glue"
 version = "153.3.0"
-source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#b81b2cdfe63bed6fcde2c6a5898c12296ceb900f"
+source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#4c75bc3aa0737abfa1285059a4843dad120b4632"
 dependencies = [
  "arraystring",
  "arrayvec",
@@ -5334,7 +5334,7 @@ dependencies = [
 [[package]]
 name = "mozjs_icu_collator"
 version = "153.3.0"
-source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#b81b2cdfe63bed6fcde2c6a5898c12296ceb900f"
+source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#4c75bc3aa0737abfa1285059a4843dad120b4632"
 dependencies = [
  "displaydoc",
  "icu_locale",
@@ -5354,12 +5354,12 @@ dependencies = [
 [[package]]
 name = "mozjs_icu_collator_data"
 version = "153.3.0"
-source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#b81b2cdfe63bed6fcde2c6a5898c12296ceb900f"
+source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#4c75bc3aa0737abfa1285059a4843dad120b4632"
 
 [[package]]
 name = "mozjs_icu_collections"
 version = "153.3.0"
-source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#b81b2cdfe63bed6fcde2c6a5898c12296ceb900f"
+source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#4c75bc3aa0737abfa1285059a4843dad120b4632"
 dependencies = [
  "displaydoc",
  "icu_casemap",
@@ -5373,7 +5373,7 @@ dependencies = [
 [[package]]
 name = "mozjs_icu_normalizer"
 version = "153.3.0"
-source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#b81b2cdfe63bed6fcde2c6a5898c12296ceb900f"
+source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#4c75bc3aa0737abfa1285059a4843dad120b4632"
 dependencies = [
  "displaydoc",
  "icu_properties",
@@ -5390,12 +5390,12 @@ dependencies = [
 [[package]]
 name = "mozjs_icu_normalizer_data"
 version = "153.3.0"
-source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#b81b2cdfe63bed6fcde2c6a5898c12296ceb900f"
+source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#4c75bc3aa0737abfa1285059a4843dad120b4632"
 
 [[package]]
 name = "mozjs_locale_glue"
 version = "153.3.0"
-source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#b81b2cdfe63bed6fcde2c6a5898c12296ceb900f"
+source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#4c75bc3aa0737abfa1285059a4843dad120b4632"
 dependencies = [
  "cbindgen",
  "icu_locale",
@@ -5404,7 +5404,7 @@ dependencies = [
 [[package]]
 name = "mozjs_normalizer_glue"
 version = "153.3.0"
-source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#b81b2cdfe63bed6fcde2c6a5898c12296ceb900f"
+source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#4c75bc3aa0737abfa1285059a4843dad120b4632"
 dependencies = [
  "cbindgen",
  "encoding_rs",
@@ -5416,7 +5416,7 @@ dependencies = [
 [[package]]
 name = "mozjs_properties_glue"
 version = "153.3.0"
-source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#b81b2cdfe63bed6fcde2c6a5898c12296ceb900f"
+source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#4c75bc3aa0737abfa1285059a4843dad120b4632"
 dependencies = [
  "cbindgen",
  "icu_casemap",
@@ -5427,7 +5427,7 @@ dependencies = [
 [[package]]
 name = "mozjs_sys"
 version = "153.3.0-0"
-source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#b81b2cdfe63bed6fcde2c6a5898c12296ceb900f"
+source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#4c75bc3aa0737abfa1285059a4843dad120b4632"
 dependencies = [
  "bindgen",
  "cc",
@@ -5449,7 +5449,7 @@ dependencies = [
 [[package]]
 name = "mozjs_unicode_bidi_ffi"
 version = "153.3.0"
-source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#b81b2cdfe63bed6fcde2c6a5898c12296ceb900f"
+source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#4c75bc3aa0737abfa1285059a4843dad120b4632"
 dependencies = [
  "cbindgen",
  "icu_properties",
@@ -5459,7 +5459,7 @@ dependencies = [
 [[package]]
 name = "mozjs_utf16_iter"
 version = "153.3.0"
-source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#b81b2cdfe63bed6fcde2c6a5898c12296ceb900f"
+source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#4c75bc3aa0737abfa1285059a4843dad120b4632"
 dependencies = [
  "mozjs_icu_collections",
 ]
@@ -5467,7 +5467,7 @@ dependencies = [
 [[package]]
 name = "mozjs_utf8_iter"
 version = "153.3.0"
-source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#b81b2cdfe63bed6fcde2c6a5898c12296ceb900f"
+source = "git+https://github.com/gptenv/mozjs-wasm.git?branch=main#4c75bc3aa0737abfa1285059a4843dad120b4632"
 dependencies = [
  "mozjs_icu_collections",
 ]
