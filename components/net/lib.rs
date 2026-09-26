@@ -59,6 +59,7 @@ pub mod resource_thread;
 #[cfg(target_arch = "wasm32")]
 pub mod resource_thread {
     use std::cell::RefCell;
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use crossbeam_channel::Sender;
@@ -86,6 +87,10 @@ pub mod resource_thread {
         /// The Worker's cookie jar: in memory, for the life of the instance.
         static COOKIES: RefCell<crate::cookie_storage::CookieStorage> =
             RefCell::new(crate::cookie_storage::CookieStorage::new(150));
+        /// Serialized `history.pushState()` data, as the native resource
+        /// thread keeps it, for the life of the instance.
+        static HISTORY_STATES: RefCell<HashMap<servo_base::id::HistoryStateId, Vec<u8>>> =
+            RefCell::new(HashMap::new());
     }
 
     fn set_cookie(
@@ -234,6 +239,24 @@ pub mod resource_thread {
                 CoreResourceMsg::DeleteSessionCookies(sender) => {
                     COOKIES.with(|jar| jar.borrow_mut().clear_session_cookies());
                     let _ = sender.send(());
+                },
+                CoreResourceMsg::GetHistoryState(history_state_id, sender) => {
+                    let state = HISTORY_STATES
+                        .with(|states| states.borrow().get(&history_state_id).cloned());
+                    let _ = sender.send(state);
+                },
+                CoreResourceMsg::SetHistoryState(history_state_id, structured_data) => {
+                    HISTORY_STATES.with(|states| {
+                        states.borrow_mut().insert(history_state_id, structured_data)
+                    });
+                },
+                CoreResourceMsg::RemoveHistoryStates(states_to_remove) => {
+                    HISTORY_STATES.with(|states| {
+                        let mut states = states.borrow_mut();
+                        for history_state_id in states_to_remove {
+                            states.remove(&history_state_id);
+                        }
+                    });
                 },
                 // Anything else is unsupported on the Worker. Dropping the
                 // message drops any reply sender, so a caller waiting on it

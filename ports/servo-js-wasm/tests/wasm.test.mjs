@@ -47,16 +47,16 @@ test('host command parser rejects mismatched ABI and malformed bounded DTOs', ()
     headers: [['accept', [116, 101, 120, 116]]], body: null,
     destination: 'None', redirect_mode: 'Follow',
   };
-  const valid = { version: 7, kind: 'fetch', request };
+  const valid = { version: 8, kind: 'fetch', request };
   assert.deepEqual(parseWorkerHostMessage(hostCommand(valid)), valid);
   for (const malformed of [
-    { ...valid, version: 6 },
+    { ...valid, version: 7 },
     { ...valid, request: { ...request, method: 'GET\r\nCookie: x' } },
     { ...valid, request: { ...request, headers: [['cookie\r\nx', [1]]] } },
     { ...valid, request: { ...request, headers: [['x', [256]]] } },
     { ...valid, request: { ...request, body: { worker_bytes: [256] } } },
-    { version: 7, kind: 'cancel', request_ids: [''] },
-    { version: 7, kind: 'unrecognized' },
+    { version: 8, kind: 'cancel', request_ids: [''] },
+    { version: 8, kind: 'unrecognized' },
   ]) {
     assert.throws(() => parseWorkerHostMessage(hostCommand(malformed)));
   }
@@ -180,7 +180,9 @@ test('SpiderMonkey smoke export runs in wasm', () => {
 });
 
 test('Worker lifecycle exports are present and initially idle', () => {
-  assert.equal(instance.exports.servo_worker_abi_version(), 7);
+  assert.equal(instance.exports.servo_worker_abi_version(), 8);
+  assert.equal(typeof instance.exports.servo_worker_evaluate_page_async, 'function');
+  assert.equal(Number(instance.exports.servo_worker_poll_page_evaluation(1)), -1);
   assert.equal(typeof instance.exports.servo_worker_set_script_budget, 'function');
   assert.equal(typeof instance.exports.servo_worker_script_budget_terminations, 'function');
   assert.equal(typeof instance.exports.servo_worker_reset, 'function');
@@ -515,7 +517,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       return socket;
     },
   });
-  assert.equal(runtime.capabilities().abiVersion, 7);
+  assert.equal(runtime.capabilities().abiVersion, 8);
   assert.ok(runtime.capabilities().supported.includes('script-operation-budget'));
   assert.ok(runtime.capabilities().supported.includes('cpu-screenshots'));
   assert.ok(runtime.capabilities().partial.cookies);
@@ -1810,4 +1812,126 @@ test('runaway scripts exhaust the per-turn operation budget without disabling th
     assert.equal(runtime.scriptBudgetTerminations, before);
     assert.deepEqual(await followUp(), { Ok: { String: '4999950000' } });
   });
+});
+
+test('evaluate() correlates results and awaits returned promises', async (t) => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    log: () => {},
+    fetchImpl: async (input) =>
+      new Response(`fetched ${new URL(typeof input === 'string' ? input : input.url).pathname}`),
+  });
+  runtime.loadHtml('<!doctype html><title>eval</title><body></body>',
+    { url: 'https://evaluate.example/' });
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+  const cases = [
+    ['synchronous value', '1 + 1', { Ok: { Number: 2 } }],
+    ['structured value', '({ list: [1, "x"], none: null })',
+      { Ok: { Object: { list: { Array: [{ Number: 1 }, { String: 'x' }] }, none: 'Null' } } }],
+    ['resolved promise', 'Promise.resolve(42)', { Ok: { Number: 42 } }],
+    ['timer-settled promise', 'new Promise((r) => setTimeout(() => r("late"), 50))',
+      { Ok: { String: 'late' } }],
+    ['network-settled promise', 'fetch("/data").then((r) => r.text())',
+      { Ok: { String: 'fetched /data' } }],
+    ['async function', '(async () => { await null; return document.title; })()',
+      { Ok: { String: 'eval' } }],
+    ['overridden Promise.prototype.then',
+      'Promise.prototype.then = () => {}; Promise.resolve(7)', { Ok: { Number: 7 } }],
+  ];
+  for (const [name, source, expected] of cases) {
+    await t.test(name, async () => {
+      assert.deepEqual(await runtime.evaluate(source, { maxDurationMs: 10_000 }), expected);
+    });
+  }
+
+  await t.test('rejections and exceptions become errors', async () => {
+    const rejected = await runtime.evaluate('Promise.reject(new Error("nope"))');
+    assert.equal(rejected.Err.EvaluationFailure.message, 'nope');
+    const thrown = await runtime.evaluate('throw new TypeError("bad")');
+    assert.ok('Err' in thrown);
+  });
+
+  await t.test('a promise that never settles times out and is canceled', async () => {
+    const startedAt = performance.now();
+    assert.deepEqual(await runtime.evaluate('new Promise(() => {})', { maxDurationMs: 500 }),
+      { Err: 'Timeout' });
+    assert.ok(performance.now() - startedAt < 5_000);
+    assert.doesNotThrow(() => runtime.beginInvocation());
+    assert.deepEqual(await runtime.evaluate('3'), { Ok: { Number: 3 } });
+  });
+
+  await t.test('a runaway evaluation is terminated by the script budget', async () => {
+    const result = await runtime.evaluate('for (;;) {}', { maxDurationMs: 20_000 });
+    assert.ok('Err' in result);
+    assert.deepEqual(await runtime.evaluate('4'), { Ok: { Number: 4 } });
+  });
+
+  await t.test('reset cancels a pending evaluation', async () => {
+    // A pending timer keeps the page busy, so only the reset can end the wait.
+    const pending = runtime.evaluate('new Promise((r) => setTimeout(r, 5000))',
+      { maxDurationMs: 10_000 });
+    setTimeout(() => runtime.reset(), 50);
+    assert.deepEqual(await pending, { Err: 'Canceled' });
+    await runtime.pumpUntilSettled({ maxDurationMs: 10_000 });
+  });
+
+  await t.test('evaluation and settling do not drive the pump concurrently', async () => {
+    const settling = runtime.pumpUntilSettled({ maxDurationMs: 10_000 });
+    await assert.rejects(runtime.evaluate('1'), /already running/);
+    await settling;
+  });
+});
+
+test('history traversal restores pushState entries, state and popstate', async () => {
+  const fetched = [];
+  const runtime = await createServoWorkerRuntime(wasm, {
+    log: () => {},
+    fetchImpl: async (input) => {
+      const url = new URL(typeof input === 'string' ? input : input.url);
+      fetched.push(url.pathname);
+      return new Response('<!doctype html><title>' + url.pathname + '</title><body><script>' +
+        'window.pops = []; addEventListener("popstate", (e) => pops.push(JSON.stringify(e.state)));' +
+        '</script>', { headers: { 'content-type': 'text/html' } });
+    },
+  });
+  const settle = async () =>
+    assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+  const page = async () => (await runtime.evaluate(
+    '[location.pathname, document.title, JSON.stringify(history.state), pops.join(",")]'))
+    .Ok.Array.map((value) => value.String);
+
+  assert.equal(runtime.loadPage('https://history.example/a'), true);
+  await settle();
+  assert.equal(runtime.loadPage('https://history.example/b'), true);
+  await settle();
+  assert.equal(runtime.goBack(), true);
+  await settle();
+  assert.deepEqual(await page(), ['/a', '/a', 'null', '']);
+  assert.equal(runtime.goForward(), true);
+  await settle();
+  assert.deepEqual(await page(), ['/b', '/b', 'null', '']);
+  const fetchesBeforeReload = fetched.length;
+  assert.equal(runtime.reload(), true);
+  await settle();
+  assert.equal(fetched.length, fetchesBeforeReload + 1);
+
+  // The constellation records each pushState between pumps; settle before
+  // traversing so the entries exist.
+  await runtime.evaluate('history.pushState({ n: 1 }, "", "/b1")');
+  await settle();
+  await runtime.evaluate('history.pushState({ n: 2 }, "", "/b2")');
+  await settle();
+  const fetchesBeforeTraversal = fetched.length;
+  // Returning to a pushState entry used to trap the instance: the Worker's
+  // resource handler dropped the history-state request.
+  assert.equal(runtime.goBack(), true);
+  await settle();
+  assert.deepEqual(await page(), ['/b1', '/b', '{"n":1}', '{"n":1}']);
+  assert.equal(runtime.goBack(), true);
+  await settle();
+  assert.deepEqual(await page(), ['/b', '/b', 'null', '{"n":1},null']);
+  assert.equal(runtime.goForward(), true);
+  await settle();
+  assert.deepEqual(await page(), ['/b1', '/b', '{"n":1}', '{"n":1},null,{"n":1}']);
+  assert.equal(fetched.length, fetchesBeforeTraversal, 'same-document traversal must not refetch');
+  assert.equal(runtime.trapped, null);
 });

@@ -1,6 +1,6 @@
 # Worker operations and recovery
 
-This runbook applies to the raw WASM engine and `worker-adapter.mjs` at ABI 7.
+This runbook applies to the raw WASM engine and `worker-adapter.mjs` at ABI 8.
 The Worker remains a controlled-evaluation prototype. It does not yet provide
 durable browser state or aggregate memory limits for untrusted pages; script
 execution is bounded per pump turn by a work budget, not by CPU time.

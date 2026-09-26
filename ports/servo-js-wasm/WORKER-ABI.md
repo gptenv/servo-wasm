@@ -1,8 +1,8 @@
-# Raw Worker ABI, version 7
+# Raw Worker ABI, version 8
 
 The JavaScript adapter and WASM artifact are a matched pair. The adapter checks
-`servo_worker_abi_version() === 7` and checks that every export it requires
-(redirect-cookie processing and the script operation budget) is present before
+`servo_worker_abi_version() === 8` and checks that every export it requires
+(redirect-cookie processing, the script budget and correlated evaluation) is present before
 running constructors or bootstrap. Rebuild
 the artifact whenever the interface or serialized request representation changes.
 This is a project-internal protocol, not an MCP protocol or a stable upstream Servo API.
@@ -19,10 +19,10 @@ Exactly five function imports exist, all in `env`:
 | `worker_monotonic_now_ns()` | Return monotonic nanoseconds as a JavaScript `bigint`. |
 | `worker_unix_time_now_ns()` | Return Unix-epoch nanoseconds as a JavaScript `bigint`. |
 
-The fetch import carries `{version:7, kind:"fetch", request:...}`,
-`{version:7, kind:"cancel", request_ids:[...]}`,
-`{version:7, kind:"web_socket_connect", request_id, url, protocols}`, or
-`{version:7, kind:"web_socket_action", request_id, action}`. IDs serialize as
+The fetch import carries `{version:8, kind:"fetch", request:...}`,
+`{version:8, kind:"cancel", request_ids:[...]}`,
+`{version:8, kind:"web_socket_connect", request_id, url, protocols}`, or
+`{version:8, kind:"web_socket_action", request_id, action}`. IDs serialize as
 UUID strings. The WebSocket commands use the Worker's `WebSocket` host API; the
 adapter reports open, message, close and error events through the
 `servo_worker_websocket_*` exports and forwards page send/close actions to the
@@ -117,14 +117,39 @@ without a host network fetch; relative resources still use the host adapter.
 Only one supplied document may be staged at a time. A normal load or reset clears
 any staged document.
 
-`evaluatePage(source)` queues a main-page-realm evaluation. `pumpUntilSettled()`
+`await evaluate(source, {maxDurationMs, maxTurns})` evaluates `source` in the
+main page realm and, when it returns a promise or thenable, waits for it to
+settle. It resolves with `{Ok: value}` or `{Err: error}`: values use the
+WebDriver JSON clone (`Number`, `String`, `Array`, `Object`, `Element`, ...)
+and a thrown exception or rejection becomes
+`{Err: {EvaluationFailure: {message, filename, line_number, column, stack}}}`.
+Promise settlement uses Servo's internal promise reactions, so a page that
+overrides `Promise.prototype.then` cannot intercept it. `evaluate()` drives the
+pump itself and returns as soon as its result arrives. If the budget is
+exhausted, or the page goes idle with the promise still pending, it cancels
+the evaluation and resolves with `{Err: "Timeout"}`; `reset()` resolves a
+pending evaluation with `{Err: "Canceled"}`. Synchronous work in the evaluated
+script is bounded by the script budget. Like `pumpUntilSettled()`, only one
+may run at a time.
+
+The raw exports are `servo_worker_evaluate_page_async(ptr, len)`, which
+returns a nonzero evaluation ID (zero if rejected, including when 64
+evaluations are already pending); `servo_worker_poll_page_evaluation(id)`,
+which returns 1 when the result JSON is in
+`servo_worker_page_evaluation_result_ptr/len()` (the ID is then retired), 0
+while pending and -1 for an unknown, canceled or retired ID; and
+`servo_worker_cancel_page_evaluation(id)`. A reply for a canceled ID is
+discarded. If the document is replaced before the script runs, the result is
+`{Err: "WebViewNotReady"}`.
+
+`evaluatePage(source)` is the older interface. It queues a main-page-realm evaluation. `pumpUntilSettled()`
 does not report settlement while an accepted evaluation has no result yet; if the
 result never arrives, the budget is exhausted and it returns `settled:false`. `pageResult()` returns
 the serialized Servo result once available. This is a low-level, single-result
 slot: the adapter rejects a second evaluation until the first result is read.
 Reading it consumes the adapter's result slot. The raw WASM ABI does not enforce
-this sequencing. Evaluation does not await returned JavaScript promises. An
-evaluation terminated by the script operation budget produces an `Err` result.
+this sequencing. It does not await returned promises; use `evaluate()` for
+that. An evaluation terminated by the script budget produces an `Err` result.
 
 `requestAnimationFrame()` is driven by the Worker script timer after a frame is
 requested. The adapter's `pumpUntilSettled()` includes its next deadline so
@@ -192,6 +217,13 @@ untrusted page as a signal to retire that session's runtime.
 `loadPage(url)` performs native top-level navigation. `goBack()`, `goForward()`,
 and `reload()` expose session-history traversal and reload; each returns whether
 Servo accepted the action. Pump the runtime afterward to complete navigation.
+Traversal between documents reloads them; traversal between `pushState()`
+entries of one document keeps it, restores `history.state` and fires
+`popstate`. The Worker keeps pushed state data in memory for the life of the
+instance. Session history lives in the constellation, which records a
+`pushState()` between pumps: settle after a script changes history before
+traversing, or the traversal can overtake the new entry. `history.length`
+always reports 1.
 
 `pointerMove(x, y)`, `mouseDown(x, y, button)`, `mouseUp(x, y, button)`,
 `click(x, y, button)`, `scrollBy(deltaX, deltaY, {x, y})`, `keyDown(key)`,

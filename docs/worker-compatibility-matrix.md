@@ -16,7 +16,7 @@ This matrix describes the raw Worker artifact and adapter, not a guarantee that 
 | Canvas 2D, images, fonts | Partial | Canvas drawing, image decoding and font registration pass focused tests. Raster and Worker SVG images have 8 Mpixel per-image limits; aggregate decoded-allocation budgets and malformed-input stress remain open. |
 | CPU screenshots | Partial | Backgrounds, borders, text, images, canvas, shadows, filters, masks and scroll captures have deterministic fixtures. Sticky positioning, 3D, backdrop filters and clipping still have gaps. |
 | Input | Partial | Mouse, keyboard and scroll dispatch exist and have focused coverage. Accessibility output and broader input semantics remain unverified. |
-| History | Unverified | `goBack`, `goForward` and `reload` exports exist; traversal/state correctness is not established. |
+| History | Partial | Back/forward across documents, reload, and same-document `pushState` traversal with restored `history.state` and `popstate` pass (production artifact). `history.length` always reports 1; `replaceState`, hash navigation and cross-origin entries lack dedicated tests. |
 | Forms and uploads/downloads | Unverified | No declared Worker compatibility corpus yet. Streaming request bodies are unsupported. |
 | Streams, messaging, permissions | Unverified | No declared Worker compatibility corpus yet; individual native implementations may exist. |
 | Dedicated/shared workers and service workers | Unsupported | No cooperative Worker services are exposed in this port. |

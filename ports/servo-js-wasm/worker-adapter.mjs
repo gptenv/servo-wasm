@@ -15,7 +15,7 @@ const MAX_PENDING_FETCHES = 50;
 const MAX_HOST_MESSAGE_BYTES = 2 * 1024 * 1024;
 const FREE_TIER_SUBREQUESTS = 50;
 const DEFAULT_SESSION_SUBREQUESTS = 10_000;
-const WORKER_ABI_VERSION = 7;
+const WORKER_ABI_VERSION = 8;
 // Interpreter work units (loop iterations weighted by body size, calls,
 // regexp backtracks) that page scripts may run in one pump turn. About 5-11 s
 // of Node CPU when exhausted; see WORKER-ABI.md for the calibration. It is a
@@ -25,6 +25,9 @@ const REQUIRED_EXPORTS = Object.freeze([
   'servo_worker_process_redirect_cookies',
   'servo_worker_set_script_budget',
   'servo_worker_script_budget_terminations',
+  'servo_worker_evaluate_page_async',
+  'servo_worker_poll_page_evaluation',
+  'servo_worker_cancel_page_evaluation',
 ]);
 const encoder = new TextEncoder();
 
@@ -37,6 +40,7 @@ const WORKER_CAPABILITIES = Object.freeze({
     'font-registration', 'cpu-screenshots', 'local-session-storage',
     'request-animation-frame', 'websocket-transport',
     'indexeddb', 'cache-storage-lifecycle', 'script-operation-budget',
+    'history-traversal',
   ]),
   partial: Object.freeze({
     fetch: 'Response bodies stream; request bodies are buffered up to 256 KiB. ' +
@@ -54,9 +58,14 @@ const WORKER_CAPABILITIES = Object.freeze({
       'are not implemented.',
     screenshots: 'CPU display-list renderer; backdrop filters and non-rounded ' +
       'clip paths are incomplete, and mask coverage is limited to tested cases.',
+    history: 'Back, forward, reload, pushState/replaceState state and popstate ' +
+      'work; history.length always reports 1. Settle after pushState before ' +
+      'traversing so the entry is recorded.',
     lifecycle: 'reset cancels work and navigates to about:blank; it does not ' +
       'destroy Servo or SpiderMonkey. Use a fresh WASM instance for isolation.',
-    pageEvaluation: 'Serialized single-result slot; returned promises are not awaited.',
+    pageEvaluation: 'evaluate() correlates concurrent evaluations and awaits returned ' +
+      'promises; results are WebDriver-style JSON clones. The legacy evaluatePage() ' +
+      'single-result slot does not await promises.',
     scriptLimits: 'Each pump turn grants page scripts an interpreter work ' +
       'budget (scriptBudget); exhausting it terminates the remaining scripts in ' +
       'that turn. It bounds interpreter work, not CPU time or memory.',
@@ -66,7 +75,7 @@ const WORKER_CAPABILITIES = Object.freeze({
     'dedicated-shared-workers', 'webgl', 'webgpu',
     'credentialed-preflight-cors', 'streaming-request-bodies',
   ]),
-  unverified: Object.freeze(['history-traversal']),
+  unverified: Object.freeze([]),
 });
 
 function bytesToString(bytes) {
@@ -295,6 +304,7 @@ class ServoWorkerRuntime {
   #screenshotStreamActive = false;
   #pressedModifiers = new Set();
   #scriptBudgetTerminations = 0;
+  #pendingEvaluations = new Set();
 
   constructor(instance, fetchImpl, webSocketFactory, log, maxResponseBytes,
               maxSubrequests, maxSessionSubrequests) {
@@ -333,7 +343,8 @@ class ServoWorkerRuntime {
     }
     if (this.#inFlightFetches.size || this.#fetchQueue.length ||
         this.pendingFetchCount() || this.#settling || this.#screenshotStreamActive ||
-        this.#evaluationPending || this.#evaluationResultReady) {
+        this.#evaluationPending || this.#evaluationResultReady ||
+        this.#pendingEvaluations.size) {
       throw new Error('Finish or cancel pending Worker work before a new invocation');
     }
     this.#subrequestCount = 0;
@@ -939,6 +950,56 @@ class ServoWorkerRuntime {
     }
   }
 
+  /**
+   * Evaluate `source` in the page's main realm and await a returned promise.
+   * Resolves with `{Ok: value}` or `{Err: error}` using the same JSON form as
+   * pageResult(). If the result does not arrive within the pump budget, or
+   * the page goes idle with the promise still pending, the evaluation is
+   * canceled and the result is `{Err: "Timeout"}`; a reset yields
+   * `{Err: "Canceled"}`. Like pumpUntilSettled(), it drives the pump, so only
+   * one of them may run at a time; the ID keeps a late or stale result from
+   * being mistaken for this one.
+   */
+  async evaluate(source, { maxDurationMs = 10_000, maxTurns = 10_000 } = {}) {
+    if (typeof source !== 'string') throw new TypeError('source must be a string');
+    const [ptr, len] = this.#write(source);
+    let id;
+    try {
+      id = this.instance.exports.servo_worker_evaluate_page_async(ptr, len) >>> 0;
+    } finally {
+      this.#free(ptr, len);
+    }
+    if (!id) {
+      throw new Error('Servo rejected the evaluation: no browser, invalid script, ' +
+        'or too many pending evaluations');
+    }
+    this.#pendingEvaluations.add(id);
+    let result;
+    const done = () => {
+      if (result !== undefined) return true;
+      const status = this.instance.exports.servo_worker_poll_page_evaluation(id);
+      if (status === 1) {
+        const ptr = this.instance.exports.servo_worker_page_evaluation_result_ptr();
+        const len = this.instance.exports.servo_worker_page_evaluation_result_len();
+        result = JSON.parse(bytesToString(
+          new Uint8Array(this.instance.exports.memory.buffer, ptr, len)));
+      } else if (status === -1) {
+        result = { Err: 'Canceled' };
+      }
+      return result !== undefined;
+    };
+    try {
+      if (!done()) await this.#settle(maxDurationMs, maxTurns, undefined, undefined, done);
+      if (result === undefined) {
+        this.instance.exports.servo_worker_cancel_page_evaluation(id);
+        result = { Err: 'Timeout' };
+      }
+      return result;
+    } finally {
+      this.#pendingEvaluations.delete(id);
+    }
+  }
+
   pump() {
     return Number(this.instance.exports.servo_worker_pump());
   }
@@ -985,26 +1046,30 @@ class ServoWorkerRuntime {
    * timers (carousels, analytics, polling) otherwise never settle.
    */
   async pumpUntilSettled({ maxDurationMs = 10_000, maxTurns = 1_000, until, networkIdleMs } = {}) {
-    if (!Number.isFinite(maxDurationMs) || maxDurationMs < 0 ||
-        !Number.isSafeInteger(maxTurns) || maxTurns < 0) {
-      throw new RangeError('Pump budgets must be finite and non-negative; maxTurns must be an integer');
-    }
     if (networkIdleMs !== undefined && (!Number.isFinite(networkIdleMs) || networkIdleMs < 0)) {
       throw new RangeError('networkIdleMs must be finite and non-negative');
     }
     if (until !== undefined && typeof until !== 'function') {
       throw new TypeError('until must be a synchronous predicate');
     }
+    return this.#settle(maxDurationMs, maxTurns, until, networkIdleMs);
+  }
+
+  async #settle(maxDurationMs, maxTurns, until, networkIdleMs, done) {
+    if (!Number.isFinite(maxDurationMs) || maxDurationMs < 0 ||
+        !Number.isSafeInteger(maxTurns) || maxTurns < 0) {
+      throw new RangeError('Pump budgets must be finite and non-negative; maxTurns must be an integer');
+    }
     if (this.#settling) throw new Error('A Servo settling operation is already running');
     this.#settling = true;
     try {
-      return await this.#pumpUntilSettled(maxDurationMs, maxTurns, until, networkIdleMs);
+      return await this.#pumpUntilSettled(maxDurationMs, maxTurns, until, networkIdleMs, done);
     } finally {
       this.#settling = false;
     }
   }
 
-  async #pumpUntilSettled(maxDurationMs, maxTurns, until, networkIdleMs) {
+  async #pumpUntilSettled(maxDurationMs, maxTurns, until, networkIdleMs, done) {
     const startedAt = performance.now();
     let turns = 0;
     let quietTurns = 0;
@@ -1016,6 +1081,8 @@ class ServoWorkerRuntime {
       const status = this.pumpStatus();
       const { progressed } = status;
       scriptsTerminated += status.scriptsTerminated;
+      // A caller waiting for one result stops as soon as it is available.
+      if (done?.()) return { settled: true, turns, scriptsTerminated };
       await Promise.resolve();
 
       if (progressed || this.#activityVersion !== activityVersion) {

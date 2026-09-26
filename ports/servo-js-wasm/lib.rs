@@ -30,6 +30,9 @@ use servo::{
     WheelMode, attach_worker_cookies, pump_worker_services,
 };
 use servo::{WorkerFetchHandler, pump_worker_fetches, set_worker_fetch_handler};
+use servo::{
+    JavaScriptEvaluationError, WebDriverCommandMsg, WebDriverJSResult, WebDriverScriptCommand,
+};
 use servo_url::{ImmutableOrigin, ServoUrl};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -44,7 +47,8 @@ use uuid::Uuid;
 // Keep the inventory resource reader linked into the raw wasm module.
 use servo_default_resources as _;
 
-use servo_base::generic_channel::GenericCallback;
+use servo_base::generic_channel::{self, GenericCallback, GenericReceiver, TryReceiveError};
+use servo_base::id::BrowsingContextId;
 
 thread_local! {
     static FETCH_CALLBACKS: RefCell<HashMap<RequestId, WorkerFetchEntry>> =
@@ -56,7 +60,13 @@ thread_local! {
     static LAST_PAGE_RESULT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     /// Interpreter operations each pump turn may run; negative is unlimited.
     static SCRIPT_BUDGET: Cell<i64> = const { Cell::new(-1) };
+    static PAGE_EVALUATIONS: RefCell<HashMap<u32, GenericReceiver<WebDriverJSResult>>> =
+        RefCell::new(HashMap::new());
+    static NEXT_PAGE_EVALUATION: Cell<u32> = const { Cell::new(0) };
+    static PAGE_EVALUATION_RESULT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
+
+const MAX_PENDING_PAGE_EVALUATIONS: usize = 64;
 
 // Defined by the Worker build of mozjs_sys (js/src/vm/WorkerScriptBudget.h).
 unsafe extern "C" {
@@ -98,7 +108,7 @@ struct WorkerRedirectCookies {
     set_cookies: Vec<String>,
 }
 
-const WORKER_ABI_VERSION: u32 = 7;
+const WORKER_ABI_VERSION: u32 = 8;
 
 /// The stable host-facing subset of a Servo request. Do not serialize
 /// RequestBuilder here: its internal fields are not an ABI contract.
@@ -626,6 +636,102 @@ pub unsafe extern "C" fn servo_worker_evaluate_page(ptr: *const u8, len: usize) 
         });
         1
     })
+}
+
+/// Start a correlated evaluation in the current document's main realm.
+/// Unlike `servo_worker_evaluate_page`, a returned promise (or thenable) is
+/// awaited; its fulfillment value or rejection becomes the result. Returns a
+/// nonzero evaluation ID, or zero if the script or browser is invalid or too
+/// many evaluations are pending.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_evaluate_page_async(ptr: *const u8, len: usize) -> u32 {
+    if ptr.is_null() || len == 0 || len > 4 * 1024 * 1024 {
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let Ok(script) = std::str::from_utf8(bytes) else {
+        return 0;
+    };
+    if PAGE_EVALUATIONS.with(|evaluations| evaluations.borrow().len()) >=
+        MAX_PENDING_PAGE_EVALUATIONS
+    {
+        return 0;
+    }
+    let Some((sender, receiver)) = generic_channel::channel() else {
+        return 0;
+    };
+    let sent = BROWSER.with(|browser| {
+        let binding = browser.borrow();
+        let Some(browser) = binding.as_ref() else {
+            return false;
+        };
+        let browsing_context = BrowsingContextId::from(browser.webview.id());
+        browser
+            .servo
+            .execute_webdriver_command(WebDriverCommandMsg::ScriptCommand(
+                browsing_context,
+                WebDriverScriptCommand::ExecuteScriptWithCallback(script.to_owned(), sender),
+            ));
+        true
+    });
+    if !sent {
+        return 0;
+    }
+    let id = NEXT_PAGE_EVALUATION.with(|next| {
+        let id = next.get().wrapping_add(1).max(1);
+        next.set(id);
+        id
+    });
+    PAGE_EVALUATIONS.with(|evaluations| evaluations.borrow_mut().insert(id, receiver));
+    id
+}
+
+/// Check a correlated evaluation. Returns 1 when its JSON result is ready in
+/// the evaluation result buffer (the evaluation is then retired), 0 while it is
+/// pending, and -1 for an unknown, canceled or already retired ID.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_poll_page_evaluation(id: u32) -> i32 {
+    let outcome = PAGE_EVALUATIONS.with(|evaluations| {
+        let evaluations = evaluations.borrow();
+        let receiver = evaluations.get(&id)?;
+        Some(match receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryReceiveError::Empty) => None,
+            // The script thread dropped the reply without answering, e.g.
+            // because the document was replaced before the script ran.
+            Err(TryReceiveError::ReceiveError(_)) => {
+                Some(Err(JavaScriptEvaluationError::WebViewNotReady))
+            },
+        })
+    });
+    match outcome {
+        None => -1,
+        Some(None) => 0,
+        Some(Some(result)) => {
+            PAGE_EVALUATIONS.with(|evaluations| evaluations.borrow_mut().remove(&id));
+            let json = serde_json::to_vec(&result).unwrap_or_else(|_| {
+                br#"{"Err":"InternalError"}"#.to_vec()
+            });
+            PAGE_EVALUATION_RESULT.with(|slot| *slot.borrow_mut() = json);
+            1
+        },
+    }
+}
+
+/// Stop waiting for a correlated evaluation. A late reply is discarded.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_cancel_page_evaluation(id: u32) -> i32 {
+    PAGE_EVALUATIONS.with(|evaluations| i32::from(evaluations.borrow_mut().remove(&id).is_some()))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_page_evaluation_result_ptr() -> *const u8 {
+    PAGE_EVALUATION_RESULT.with(|result| result.borrow().as_ptr())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_page_evaluation_result_len() -> usize {
+    PAGE_EVALUATION_RESULT.with(|result| result.borrow().len())
 }
 
 /// Advance Servo and the Worker fetch queue. Returns the number of network
@@ -1211,6 +1317,8 @@ pub extern "C" fn servo_worker_reset() -> i32 {
     }
     WEBSOCKET_CALLBACKS.with(|callbacks| callbacks.borrow_mut().clear());
     LAST_PAGE_RESULT.with(|result| result.borrow_mut().clear());
+    PAGE_EVALUATIONS.with(|evaluations| evaluations.borrow_mut().clear());
+    PAGE_EVALUATION_RESULT.with(|result| result.borrow_mut().clear());
     i32::from(existed)
 }
 
