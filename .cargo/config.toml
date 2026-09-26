@@ -34,7 +34,11 @@ linker = "lld-link.exe"
 # graph, which doesn't work for something as host-specific as "how do I get
 # entropy"). See the wasm_getrandom module in components/shared/net/lib.rs
 # for the actual host-import implementation this activates.
-rustflags = ["--cfg", "getrandom_backend=\"custom\""]
+rustflags = [
+  "--cfg", "getrandom_backend=\"custom\"",
+  "-C", "link-arg=--stack-first",
+  "-C", "link-arg=--stack-size=4194304",
+]
 
 [env]
 MACOSX_DEPLOYMENT_TARGET = "13.0"
