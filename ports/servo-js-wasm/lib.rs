@@ -31,7 +31,7 @@ use servo::{
 };
 use servo::{WorkerFetchHandler, pump_worker_fetches, set_worker_fetch_handler};
 use servo_url::{ImmutableOrigin, ServoUrl};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::mem;
 use std::ptr;
@@ -54,6 +54,32 @@ thread_local! {
         RefCell::new(HashMap::new());
     static BROWSER: RefCell<Option<WorkerBrowser>> = const { RefCell::new(None) };
     static LAST_PAGE_RESULT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// Interpreter operations each pump turn may run; negative is unlimited.
+    static SCRIPT_BUDGET: Cell<i64> = const { Cell::new(-1) };
+}
+
+// Defined by the Worker build of mozjs_sys (js/src/vm/WorkerScriptBudget.h).
+unsafe extern "C" {
+    fn mozjs_worker_set_script_budget(operations: i64);
+    fn mozjs_worker_script_budget_terminations() -> u64;
+}
+
+/// Grants the configured operation budget to scripts run during one pump
+/// turn, and lifts it again so work outside a turn is not charged.
+struct ScriptBudgetTurn;
+
+impl ScriptBudgetTurn {
+    fn begin() -> Self {
+        let budget = SCRIPT_BUDGET.with(Cell::get);
+        unsafe { mozjs_worker_set_script_budget(budget) };
+        ScriptBudgetTurn
+    }
+}
+
+impl Drop for ScriptBudgetTurn {
+    fn drop(&mut self) {
+        unsafe { mozjs_worker_set_script_budget(-1) };
+    }
 }
 
 struct WorkerFetchEntry {
@@ -72,7 +98,7 @@ struct WorkerRedirectCookies {
     set_cookies: Vec<String>,
 }
 
-const WORKER_ABI_VERSION: u32 = 6;
+const WORKER_ABI_VERSION: u32 = 7;
 
 /// The stable host-facing subset of a Servo request. Do not serialize
 /// RequestBuilder here: its internal fields are not an ABI contract.
@@ -617,7 +643,25 @@ pub extern "C" fn servo_worker_pump_status() -> u32 {
     ((requests.min(u32::MAX as usize >> 1) as u32) << 1) | u32::from(progressed)
 }
 
+/// Limit the interpreter operations (loop iterations, function calls and
+/// regexp backtracks) that scripts may run during each pump turn. Once a turn
+/// exhausts it, every script in the rest of that turn is terminated
+/// uncatchably. Zero removes the limit.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_set_script_budget(operations: u64) {
+    let budget = i64::try_from(operations).unwrap_or(i64::MAX);
+    SCRIPT_BUDGET.with(|limit| limit.set(if budget == 0 { -1 } else { budget }));
+}
+
+/// Number of scripts terminated so far because a pump turn exhausted its
+/// operation budget.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_script_budget_terminations() -> u32 {
+    u32::try_from(unsafe { mozjs_worker_script_budget_terminations() }).unwrap_or(u32::MAX)
+}
+
 fn pump_worker_once() -> (usize, bool) {
+    let _budget = ScriptBudgetTurn::begin();
     // A Servo event-loop turn can enqueue a fetch, so pump once before and
     // once after it. The second pass is what makes a newly scheduled request
     // visible to the host without requiring an extra no-op turn.

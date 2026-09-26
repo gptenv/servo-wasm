@@ -5,7 +5,7 @@ This matrix describes the raw Worker artifact and adapter, not a guarantee that 
 | Area | Status | Current evidence and boundary |
 | --- | --- | --- |
 | HTML, DOM, CSSOM, script | Partial | Basic navigation, inline script, DOM/CSSOM and layout fixtures pass. Module/external-script corpus and broad WPT coverage remain open. |
-| Timers, microtasks, animation frames | Partial | Nested timers, interval cancellation and one-shot/recurring animation frames pass. Synchronous script interruption is absent. |
+| Timers, microtasks, animation frames | Partial | Nested timers, interval cancellation and one-shot/recurring animation frames pass. Runaway synchronous scripts (loops, generators, async/microtask storms, eval, regexp backtracking) are terminated by the per-turn script work budget; it bounds work, not CPU time or memory. |
 | Fetch and redirects | Partial | Simple same-origin and noncredentialed cross-origin GET/HEAD, response streaming, cancellation and bounded redirects pass focused tests. Preflight, credentialed cross-origin requests and streaming uploads are unsupported. Response-clone cancellation remains unverified. |
 | Cookies | Partial | Script cookies, final/redirect `Set-Cookie`, credentials omit, `HttpOnly` isolation and origin partitioning have focused tests. Complete SameSite site context, prefixes and partitioning policy remain open. |
 | WebSockets | Partial | Host bridge handshakes, text/binary messages and close behavior pass focused tests. Service-level egress policy must be enforced by the host. |

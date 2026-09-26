@@ -19,7 +19,9 @@ Request `http://127.0.0.1:8799/`. A passing response contains
 `{"passed":true,"result":{"Ok":{"Number":42}},"streamCanceled":true,"pendingFetches":0}`.
 `/cases?rounds=3` runs the shared fixture corpus (`tests/web-platform-cases.mjs`)
 repeatedly, and `/screenshot` returns a PNG of a small fixture page with its
-render time in `x-render-ms`. `npm run workerd` in the parent directory starts it.
+render time in `x-render-ms`. `/runaway` loads a page whose script loops forever
+and passes when the script operation budget terminates it and the runtime still
+answers a follow-up evaluation. `npm run workerd` in the parent directory starts it.
 
 To check the actual uncompressed bundle size without deploying, run
 `npx --yes wrangler@4.136.3 deploy --dry-run --outdir /tmp/servo-wasm-worker-dry-run`

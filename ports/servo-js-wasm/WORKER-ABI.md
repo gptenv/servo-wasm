@@ -1,8 +1,9 @@
-# Raw Worker ABI, version 6
+# Raw Worker ABI, version 7
 
 The JavaScript adapter and WASM artifact are a matched pair. The adapter checks
-`servo_worker_abi_version() === 6` and checks the required redirect-cookie export
-before running constructors or bootstrap. Rebuild
+`servo_worker_abi_version() === 7` and checks that every export it requires
+(redirect-cookie processing and the script operation budget) is present before
+running constructors or bootstrap. Rebuild
 the artifact whenever the interface or serialized request representation changes.
 This is a project-internal protocol, not an MCP protocol or a stable upstream Servo API.
 
@@ -18,10 +19,10 @@ Exactly five function imports exist, all in `env`:
 | `worker_monotonic_now_ns()` | Return monotonic nanoseconds as a JavaScript `bigint`. |
 | `worker_unix_time_now_ns()` | Return Unix-epoch nanoseconds as a JavaScript `bigint`. |
 
-The fetch import carries `{version:6, kind:"fetch", request:...}`,
-`{version:6, kind:"cancel", request_ids:[...]}`,
-`{version:6, kind:"web_socket_connect", request_id, url, protocols}`, or
-`{version:6, kind:"web_socket_action", request_id, action}`. IDs serialize as
+The fetch import carries `{version:7, kind:"fetch", request:...}`,
+`{version:7, kind:"cancel", request_ids:[...]}`,
+`{version:7, kind:"web_socket_connect", request_id, url, protocols}`, or
+`{version:7, kind:"web_socket_action", request_id, action}`. IDs serialize as
 UUID strings. The WebSocket commands use the Worker's `WebSocket` host API; the
 adapter reports open, message, close and error events through the
 `servo_worker_websocket_*` exports and forwards page send/close actions to the
@@ -122,46 +123,69 @@ result never arrives, the budget is exhausted and it returns `settled:false`. `p
 the serialized Servo result once available. This is a low-level, single-result
 slot: the adapter rejects a second evaluation until the first result is read.
 Reading it consumes the adapter's result slot. The raw WASM ABI does not enforce
-this sequencing. Evaluation does not await returned JavaScript promises or
-implement a script timeout.
+this sequencing. Evaluation does not await returned JavaScript promises. An
+evaluation terminated by the script operation budget produces an `Err` result.
 
 `requestAnimationFrame()` is driven by the Worker script timer after a frame is
 requested. The adapter's `pumpUntilSettled()` includes its next deadline so
 one-shot and recurring frame callbacks continue while a Worker invocation is
 active.
 
-`pumpStatus()` returns `{fetches, progressed}` from a bit-packed export (bit zero
-is progress, remaining bits count host fetch dispatches). One pump advances the
-cooperative browser loop; it is not an instruction/time-preemptible unit.
+`pumpStatus()` returns `{fetches, progressed, scriptsTerminated}`. The first two
+come from a bit-packed export (bit zero is progress, remaining bits count host
+fetch dispatches); `scriptsTerminated` counts scripts the operation budget
+stopped during that pump. One pump advances the cooperative browser loop.
 `nextTimerDelayMs()` exposes the next browser timer deadline.
 
 `pumpUntilSettled({maxDurationMs, maxTurns, until})` waits for host response activity,
 browser work and timers. It requires eight quiet turns and an optional synchronous
 predicate to report settlement. Exhausted budgets return `settled:false`.
 Concurrent settling calls are rejected. This is a quiescence heuristic, not a
-browser load event or proof that no future page work is possible. It cannot stop
-an infinite page script inside a synchronous WASM call.
+browser load event or proof that no future page work is possible. Its result
+includes `scriptsTerminated` for the pumps it ran. The host time budget cannot
+stop a synchronous page script; the operation budget below does.
 
-With `networkIdleMs`, pending or recurring timers alone no longer keep the page
-busy: once no fetch has been queued or in flight for that long, it returns
-`{settled:true, timersPending:true}`. Use it for real sites with polling,
-carousels or analytics timers, which otherwise never settle. `screenshot()`
-uses `networkIdleMs: 500` by default.
+## Script operation budget
 
-`reset()` cancels network work, retires callbacks, clears results and queues
-`about:blank`; callers must pump the reset or queue a replacement load. It is not
-a secure erase of all storage or a full engine destroy. A fresh WASM instance is
-required for isolation between unrelated users. Drop host references when the
-session ends; Servo's native blocking shutdown path is not used.
+A Worker has one thread and its clock does not advance during synchronous
+execution, so neither a watchdog nor a wall-clock deadline can interrupt a page
+script. Instead, the Worker build of SpiderMonkey (see
+`js/src/vm/WorkerScriptBudget.h` in the mozjs fork) charges a work budget at
+its interrupt checks: one unit per loop back-edge, function or generator entry,
+`finally` block, interrupt-polling builtin loop iteration and
+regular-expression backtrack; one more unit per four bytes of bytecode a
+backward jump crosses, so a long loop body is not free; 16 units per scripted
+call; and 8 per native (builtin or DOM) call.
+`servo_worker_set_script_budget(units)` (a `bigint`; zero is unlimited) sets
+how many units the scripts of one pump turn may use in total. When a turn
+exhausts it, the running script is terminated uncatchably (`catch` and
+`finally` blocks do not run) and every later script entry in the same turn is
+terminated too; the next turn starts with a fresh budget. Work outside pump
+turns is not charged. `servo_worker_script_budget_terminations()` returns the
+cumulative number of terminated scripts. The runtime stays usable: timers,
+events and later evaluations run normally, although a terminated script may
+leave page state half-updated. Deep recursion still raises the ordinary
+catchable `InternalError` from the stack limit.
 
-`beginInvocation()` marks a new serialized host operation after pending fetches,
-settling and screenshot streaming have finished. It replenishes the adapter's
-`maxSubrequests` counter (default 50) for that host invocation. `reset()` does
-not replenish it. `maxSessionSubrequests` (default 10,000) remains a separate
-runtime-lifetime cap, including redirects and WebSocket handshakes; neither
-counter replaces Cloudflare's own per-invocation accounting. Hosts that reuse a
-runtime across MCP calls must call `beginInvocation()` once at each new call
-boundary and serialize those calls. A new runtime starts fresh counters.
+The adapter option `scriptBudget` defaults to 20,000,000 units, and
+`runtime.scriptBudgetTerminations` reports the counter. Measured in Node on the
+development machine, one unit cost 0.25-0.55 us of wall time across plain
+loops, property access, builtin and DOM calls, a loop with a 500-operation body
+and scripted calls (the most expensive per unit), so an exhausted default turn
+took roughly 5-11 s. Size the budget as
+`CPU limit / (worst us per unit x hardware margin)`: the default leaves a 2.7x
+margin under Workers Paid's default 30 s CPU limit. Scale it with the
+configured limit and re-measure on the deployed platform. In local workerd, an
+empty `for (;;) {}` page (the cheapest work per unit) was terminated at the
+default budget and the whole request finished in under one second. With the budget unlimited, charging cost no
+measurable CPU in an A/B benchmark against the ABI 6 artifact.
+
+The budget is a work count, not CPU time. It does not bound memory, and a
+single native call that does not poll for interrupts (for example one very
+large sort or string operation) is charged as one call. A recurring runaway
+timer is terminated in every turn; the host's `pumpUntilSettled` deadline
+bounds the invocation as a whole. Hosts should treat terminations from an
+untrusted page as a signal to retire that session's runtime.
 
 ## Navigation and input
 
@@ -278,8 +302,9 @@ support. Preflighted/credentialed requests and cross-origin script-fetch redirec
 fail closed. Cookie support is partial as described above; general request-body
 streams are not implemented. Full Fetch redirect/manual-redirect behavior,
 response-reader and cloned-response cancellation semantics, service-worker
-support, IndexedDB transaction behavior, Cache request/response operations, and
-hard script deadlines remain unsupported or uncharacterized. WebGL and WebGPU
+support, IndexedDB transaction behavior and Cache request/response operations
+remain unsupported or uncharacterized. Script execution is bounded by the
+operation budget above, not by CPU time. WebGL and WebGPU
 are intentional exclusions. Screenshots
 are implemented with the CPU renderer described above; backdrop filters and
 non-rounded clip paths have rendering gaps, and only the tested mask cases are

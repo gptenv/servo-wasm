@@ -47,16 +47,16 @@ test('host command parser rejects mismatched ABI and malformed bounded DTOs', ()
     headers: [['accept', [116, 101, 120, 116]]], body: null,
     destination: 'None', redirect_mode: 'Follow',
   };
-  const valid = { version: 6, kind: 'fetch', request };
+  const valid = { version: 7, kind: 'fetch', request };
   assert.deepEqual(parseWorkerHostMessage(hostCommand(valid)), valid);
   for (const malformed of [
-    { ...valid, version: 5 },
+    { ...valid, version: 6 },
     { ...valid, request: { ...request, method: 'GET\r\nCookie: x' } },
     { ...valid, request: { ...request, headers: [['cookie\r\nx', [1]]] } },
     { ...valid, request: { ...request, headers: [['x', [256]]] } },
     { ...valid, request: { ...request, body: { worker_bytes: [256] } } },
-    { version: 6, kind: 'cancel', request_ids: [''] },
-    { version: 6, kind: 'unrecognized' },
+    { version: 7, kind: 'cancel', request_ids: [''] },
+    { version: 7, kind: 'unrecognized' },
   ]) {
     assert.throws(() => parseWorkerHostMessage(hostCommand(malformed)));
   }
@@ -180,7 +180,9 @@ test('SpiderMonkey smoke export runs in wasm', () => {
 });
 
 test('Worker lifecycle exports are present and initially idle', () => {
-  assert.equal(instance.exports.servo_worker_abi_version(), 6);
+  assert.equal(instance.exports.servo_worker_abi_version(), 7);
+  assert.equal(typeof instance.exports.servo_worker_set_script_budget, 'function');
+  assert.equal(typeof instance.exports.servo_worker_script_budget_terminations, 'function');
   assert.equal(typeof instance.exports.servo_worker_reset, 'function');
   assert.equal(typeof instance.exports.servo_worker_pump_status, 'function');
   assert.equal(typeof instance.exports.servo_worker_pending_fetch_count, 'function');
@@ -205,6 +207,9 @@ test('adapter validates resource budgets before instantiating WASM', async () =>
   }
   for (const maxSessionSubrequests of [0, -1, Infinity, 0.5]) {
     await assert.rejects(createServoWorkerRuntime(wasm, { maxSessionSubrequests }), RangeError);
+  }
+  for (const scriptBudget of [-1, Infinity, 0.5]) {
+    await assert.rejects(createServoWorkerRuntime(wasm, { scriptBudget }), RangeError);
   }
 });
 
@@ -510,7 +515,8 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       return socket;
     },
   });
-  assert.equal(runtime.capabilities().abiVersion, 6);
+  assert.equal(runtime.capabilities().abiVersion, 7);
+  assert.ok(runtime.capabilities().supported.includes('script-operation-budget'));
   assert.ok(runtime.capabilities().supported.includes('cpu-screenshots'));
   assert.ok(runtime.capabilities().partial.cookies);
   assert.ok(runtime.capabilities().supported.includes('indexeddb'));
@@ -919,7 +925,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   });
 
   await t.test('settling budgets and concurrent calls fail explicitly', async () => {
-    assert.deepEqual(await runtime.pumpUntilSettled({ maxTurns: 0 }), { settled: false, turns: 0 });
+    assert.deepEqual(await runtime.pumpUntilSettled({ maxTurns: 0 }), { settled: false, turns: 0, scriptsTerminated: 0 });
     await assert.rejects(runtime.pumpUntilSettled({ maxDurationMs: Infinity }), RangeError);
     await assert.rejects(runtime.pumpUntilSettled({ maxTurns: -1 }), RangeError);
     await assert.rejects(runtime.pumpUntilSettled({ until: true }), TypeError);
@@ -1719,4 +1725,89 @@ test('storage stays origin-isolated across navigation in one Worker instance', a
     'sessionStorage.getItem("partition") === "alpha" && ' +
     'document.body.dataset.cacheRestored === "true"',
   );
+});
+
+test('runaway scripts exhaust the per-turn operation budget without disabling the runtime', async (t) => {
+  const runtime = await createServoWorkerRuntime(wasm, { log: () => {}, scriptBudget: 5_000_000 });
+  const followUp = async () => {
+    assert.equal(runtime.evaluatePage('document.title'), true);
+    assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+    return runtime.pageResult();
+  };
+  const runaway = [
+    ['inline script loop', 'for (;;) {}'],
+    ['load event handler loop', 'addEventListener("load", () => { for (;;) {} });'],
+    ['timer callback loop', 'setTimeout(() => { for (;;) {} }, 0);'],
+    ['generator loop', 'function* g() { for (;;) yield 1; } for (const _ of g()) {}'],
+    ['async function loop', '(async () => { for (;;) await null; })();'],
+    ['eval loop', 'eval("for (;;) {}");'],
+    ['Function constructor loop', 'new Function("for (;;) {}")();'],
+    ['queueMicrotask storm', 'const f = () => queueMicrotask(f); f();'],
+    ['promise job storm', 'const p = () => Promise.resolve().then(p); p();'],
+    ['catastrophic regexp backtracking', '/(a+)+b/.test("a".repeat(64));'],
+    ['uncatchable by try/catch/finally',
+      'try { for (;;) {} } catch (e) { document.title = "caught"; } ' +
+      'finally { document.title = "finally"; }'],
+  ];
+  for (const [name, script] of runaway) {
+    await t.test(name, async () => {
+      const before = runtime.scriptBudgetTerminations;
+      const startedAt = performance.now();
+      runtime.loadHtml(`<!doctype html><title>start</title><body><script>${script}</script>`,
+        { url: 'https://budget.example/' });
+      const status = await runtime.pumpUntilSettled({ maxDurationMs: 20_000 });
+      assert.equal(status.settled, true);
+      assert.ok(status.scriptsTerminated > 0, 'the runaway script must be terminated');
+      assert.ok(runtime.scriptBudgetTerminations > before);
+      assert.ok(performance.now() - startedAt < 20_000);
+      assert.equal(runtime.trapped, null);
+      assert.deepEqual(await followUp(), { Ok: { String: 'start' } });
+    });
+  }
+
+  await t.test('evaluatePage of a runaway script reports an error result', async () => {
+    runtime.loadHtml('<!doctype html><title>eval</title>', { url: 'https://budget.example/' });
+    assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+    assert.equal(runtime.evaluatePage('for (;;) {}'), true);
+    const status = await runtime.pumpUntilSettled({ maxDurationMs: 20_000 });
+    assert.equal(status.settled, true);
+    assert.ok(status.scriptsTerminated > 0);
+    assert.ok('Err' in runtime.pageResult());
+    assert.deepEqual(await followUp(), { Ok: { String: 'eval' } });
+  });
+
+  await t.test('a recurring runaway timer is bounded by the host settle deadline', async () => {
+    const before = runtime.scriptBudgetTerminations;
+    runtime.loadHtml('<!doctype html><title>start</title><body><script>' +
+      'setInterval(() => { for (;;) {} }, 0);</script>', { url: 'https://budget.example/' });
+    const startedAt = performance.now();
+    const status = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+    assert.equal(status.settled, false);
+    assert.ok(status.scriptsTerminated > 1, 'each turn terminates the interval callback');
+    assert.ok(runtime.scriptBudgetTerminations > before + 1);
+    assert.ok(performance.now() - startedAt < 3_000 + 5_000);
+    runtime.loadHtml('<!doctype html><title>after</title>', { url: 'https://budget.example/' });
+    assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+    assert.deepEqual(await followUp(), { Ok: { String: 'after' } });
+  });
+
+  await t.test('deep recursion still throws a catchable stack-overflow error', async () => {
+    runtime.loadHtml('<!doctype html><title>start</title><body><script>' +
+      'function r() { r(); } try { r(); } catch (e) { document.title = "caught " + e.name; }' +
+      '</script>', { url: 'https://budget.example/' });
+    assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+    assert.deepEqual(await followUp(), { Ok: { String: 'caught InternalError' } });
+  });
+
+  await t.test('bounded work below the budget completes', async () => {
+    const before = runtime.scriptBudgetTerminations;
+    runtime.loadHtml('<!doctype html><title>start</title><body><script>' +
+      'let n = 0; for (let i = 0; i < 100000; i++) n += i; document.title = String(n);' +
+      '</script>', { url: 'https://budget.example/' });
+    const status = await runtime.pumpUntilSettled({ maxDurationMs: 10_000 });
+    assert.equal(status.settled, true);
+    assert.equal(status.scriptsTerminated, 0);
+    assert.equal(runtime.scriptBudgetTerminations, before);
+    assert.deepEqual(await followUp(), { Ok: { String: '4999950000' } });
+  });
 });

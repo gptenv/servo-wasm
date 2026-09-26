@@ -15,7 +15,17 @@ const MAX_PENDING_FETCHES = 50;
 const MAX_HOST_MESSAGE_BYTES = 2 * 1024 * 1024;
 const FREE_TIER_SUBREQUESTS = 50;
 const DEFAULT_SESSION_SUBREQUESTS = 10_000;
-const WORKER_ABI_VERSION = 6;
+const WORKER_ABI_VERSION = 7;
+// Interpreter work units (loop iterations weighted by body size, calls,
+// regexp backtracks) that page scripts may run in one pump turn. About 5-11 s
+// of Node CPU when exhausted; see WORKER-ABI.md for the calibration. It is a
+// work count, not CPU time.
+const DEFAULT_SCRIPT_BUDGET = 20_000_000;
+const REQUIRED_EXPORTS = Object.freeze([
+  'servo_worker_process_redirect_cookies',
+  'servo_worker_set_script_budget',
+  'servo_worker_script_budget_terminations',
+]);
 const encoder = new TextEncoder();
 
 const WORKER_CAPABILITIES = Object.freeze({
@@ -26,7 +36,7 @@ const WORKER_CAPABILITIES = Object.freeze({
     'timers', 'microtasks', 'fetch', 'canvas-2d', 'image-decoding',
     'font-registration', 'cpu-screenshots', 'local-session-storage',
     'request-animation-frame', 'websocket-transport',
-    'indexeddb', 'cache-storage-lifecycle',
+    'indexeddb', 'cache-storage-lifecycle', 'script-operation-budget',
   ]),
   partial: Object.freeze({
     fetch: 'Response bodies stream; request bodies are buffered up to 256 KiB. ' +
@@ -46,8 +56,10 @@ const WORKER_CAPABILITIES = Object.freeze({
       'clip paths are incomplete, and mask coverage is limited to tested cases.',
     lifecycle: 'reset cancels work and navigates to about:blank; it does not ' +
       'destroy Servo or SpiderMonkey. Use a fresh WASM instance for isolation.',
-    pageEvaluation: 'Serialized single-result slot; returned promises are not awaited ' +
-      'and synchronous scripts cannot be interrupted.',
+    pageEvaluation: 'Serialized single-result slot; returned promises are not awaited.',
+    scriptLimits: 'Each pump turn grants page scripts an interpreter work ' +
+      'budget (scriptBudget); exhausting it terminates the remaining scripts in ' +
+      'that turn. It bounds interpreter work, not CPU time or memory.',
   }),
   unsupported: Object.freeze([
     'service-workers',
@@ -178,6 +190,7 @@ export async function createServoWorkerRuntime(wasmModule, {
   maxResponseBytes = MAX_RESPONSE_BYTES,
   maxSubrequests = FREE_TIER_SUBREQUESTS,
   maxSessionSubrequests = DEFAULT_SESSION_SUBREQUESTS,
+  scriptBudget = DEFAULT_SCRIPT_BUDGET,
 } = {}) {
   if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 0 ||
       maxResponseBytes > 64 * 1024 * 1024) {
@@ -188,6 +201,9 @@ export async function createServoWorkerRuntime(wasmModule, {
   }
   if (!Number.isSafeInteger(maxSessionSubrequests) || maxSessionSubrequests < 1) {
     throw new RangeError('maxSessionSubrequests must be a positive integer');
+  }
+  if (!Number.isSafeInteger(scriptBudget) || scriptBudget < 0) {
+    throw new RangeError('scriptBudget must be a non-negative integer (0 is unlimited)');
   }
   let runtime;
   const imports = {
@@ -229,14 +245,16 @@ export async function createServoWorkerRuntime(wasmModule, {
   if (instance.exports.servo_worker_abi_version?.() !== WORKER_ABI_VERSION) {
     throw new Error('Servo Worker ABI mismatch; rebuild the WASM artifact with this adapter');
   }
-  if (typeof instance.exports.servo_worker_process_redirect_cookies !== 'function') {
-    throw new Error('Servo Worker artifact lacks redirect-cookie support required by this adapter');
+  const missing = REQUIRED_EXPORTS.filter((name) => typeof instance.exports[name] !== 'function');
+  if (missing.length) {
+    throw new Error(`Servo Worker artifact lacks exports required by this adapter: ${missing.join(', ')}`);
   }
   runtime = new ServoWorkerRuntime(
     instance, fetchImpl, webSocketFactory, log, maxResponseBytes,
     maxSubrequests, maxSessionSubrequests,
   );
   runtime.instance.exports.__wasm_call_ctors?.();
+  runtime.instance.exports.servo_worker_set_script_budget(BigInt(scriptBudget));
   runtime.instance.exports.servo_worker_install_fetch_adapter();
   // Establish the initial browsing context before callers can queue loads.
   // A native embedder's LoadUrl requires that context to exist; returning
@@ -276,6 +294,7 @@ class ServoWorkerRuntime {
   #evaluationResultReady = false;
   #screenshotStreamActive = false;
   #pressedModifiers = new Set();
+  #scriptBudgetTerminations = 0;
 
   constructor(instance, fetchImpl, webSocketFactory, log, maxResponseBytes,
               maxSubrequests, maxSessionSubrequests) {
@@ -926,7 +945,15 @@ class ServoWorkerRuntime {
 
   pumpStatus() {
     const status = Number(this.instance.exports.servo_worker_pump_status());
-    return { fetches: status >>> 1, progressed: Boolean(status & 1) };
+    const terminations = this.instance.exports.servo_worker_script_budget_terminations() >>> 0;
+    const scriptsTerminated = terminations - this.#scriptBudgetTerminations;
+    this.#scriptBudgetTerminations = terminations;
+    return { fetches: status >>> 1, progressed: Boolean(status & 1), scriptsTerminated };
+  }
+
+  /** Scripts terminated so far because a pump turn exhausted its work budget. */
+  get scriptBudgetTerminations() {
+    return this.instance.exports.servo_worker_script_budget_terminations() >>> 0;
   }
 
   nextTimerDelayMs() {
@@ -982,10 +1009,13 @@ class ServoWorkerRuntime {
     let turns = 0;
     let quietTurns = 0;
     let networkIdleSince = null;
+    let scriptsTerminated = 0;
     while (turns < maxTurns && performance.now() - startedAt < maxDurationMs) {
       turns++;
       const activityVersion = this.#activityVersion;
-      const { progressed } = this.pumpStatus();
+      const status = this.pumpStatus();
+      const { progressed } = status;
+      scriptsTerminated += status.scriptsTerminated;
       await Promise.resolve();
 
       if (progressed || this.#activityVersion !== activityVersion) {
@@ -995,7 +1025,7 @@ class ServoWorkerRuntime {
             this.#inFlightFetches.size === 0 && this.#fetchQueue.length === 0) {
           networkIdleSince ??= performance.now();
           if (performance.now() - networkIdleSince >= networkIdleMs && (!until || until())) {
-            return { settled: true, turns, timersPending: true };
+            return { settled: true, turns, timersPending: true, scriptsTerminated };
           }
         } else {
           networkIdleSince = null;
@@ -1021,7 +1051,7 @@ class ServoWorkerRuntime {
           timerDelay === null) {
         await this.#wait(0);
         if (++quietTurns >= 8 && (!until || until())) {
-          return { settled: true, turns };
+          return { settled: true, turns, scriptsTerminated };
         }
         continue;
       }
@@ -1032,7 +1062,7 @@ class ServoWorkerRuntime {
       if (networkIdleMs !== undefined && this.#inFlightFetches.size === 0 && this.#fetchQueue.length === 0) {
         networkIdleSince ??= now;
         if (now - networkIdleSince >= networkIdleMs && (!until || until())) {
-          return { settled: true, turns, timersPending: true };
+          return { settled: true, turns, timersPending: true, scriptsTerminated };
         }
         idleDeadline = networkIdleSince + networkIdleMs - now;
       } else {
@@ -1059,6 +1089,7 @@ class ServoWorkerRuntime {
       // execute an extra unbudgeted pump or report success after a quiet gap.
       settled: false,
       turns,
+      scriptsTerminated,
     };
   }
 

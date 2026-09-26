@@ -154,6 +154,10 @@ jobs:
             assert.match(screenshot.headers.get("content-type"), /image\/png/);
             assert.deepEqual([...new Uint8Array(await screenshot.arrayBuffer()).slice(0, 8)],
               [137, 80, 78, 71, 13, 10, 26, 10]);
+            const runaway = await fetch("http://127.0.0.1:8799/runaway");
+            const runawayResult = await runaway.json();
+            assert.equal(runaway.status, 200, JSON.stringify(runawayResult));
+            assert.ok(runawayResult.status.scriptsTerminated > 0);
           '
 
       - name: Retain Worker build evidence

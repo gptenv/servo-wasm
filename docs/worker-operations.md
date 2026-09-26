@@ -1,8 +1,9 @@
 # Worker operations and recovery
 
-This runbook applies to the raw WASM engine and `worker-adapter.mjs` at ABI 6.
+This runbook applies to the raw WASM engine and `worker-adapter.mjs` at ABI 7.
 The Worker remains a controlled-evaluation prototype. It does not yet provide
-durable browser state or a safe execution deadline for untrusted scripts.
+durable browser state or aggregate memory limits for untrusted pages; script
+execution is bounded per pump turn by a work budget, not by CPU time.
 
 ## Identify a release
 
@@ -26,9 +27,12 @@ There is no secure erase or persistent-session recovery contract yet.
 If a WASM export traps, retire the instance immediately. The adapter rejects
 later exports because Rust state may contain partial updates. A fresh instance
 can recover only data the host previously committed; the current in-memory
-storage backend has no such committed state. A page evaluation that runs forever
-cannot be interrupted by a JavaScript timer around the synchronous export;
-do not admit arbitrary untrusted pages until the engine interrupt gate is met.
+storage backend has no such committed state. A JavaScript timer around a
+synchronous export cannot interrupt a page script; the engine's per-turn script
+budget does (`scriptBudget`, see WORKER-ABI.md). Record
+`scriptsTerminated` from pump results and retire the runtime of an untrusted
+page that exhausts it. Size the budget against the configured Workers CPU
+limit and re-measure it on the deployed platform.
 
 ## Observe failures
 

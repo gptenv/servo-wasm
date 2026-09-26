@@ -17,6 +17,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === '/cases') return runCases(Number(url.searchParams.get('rounds') ?? 3));
     if (url.pathname === '/screenshot') return screenshot();
+    if (url.pathname === '/runaway') return runaway();
     if (url.pathname !== '/') return new Response('not found', { status: 404 });
 
     let streamCanceled = false;
@@ -109,4 +110,22 @@ async function screenshot() {
   const png = await runtime.screenshotStream();
   return new Response(png, { headers: {
     'content-type': 'image/png', 'x-render-ms': String(Date.now() - started) } });
+}
+
+// A synchronous infinite loop must be terminated by the engine's operation
+// budget: workerd's clock does not advance during synchronous execution, so
+// no host deadline could stop it.
+async function runaway() {
+  const runtime = await createServoWorkerRuntime(servoWasm, {
+    url: 'about:blank', fetchImpl: async () => new Response('{}'),
+  });
+  runtime.loadHtml('<!doctype html><title>survived</title><body><script>for (;;) {}</script>',
+    { url: 'https://workerd.example/' });
+  const status = await runtime.pumpUntilSettled({ maxDurationMs: 30_000 });
+  runtime.evaluatePage('document.title');
+  await runtime.pumpUntilSettled({ maxDurationMs: 5_000 });
+  const title = runtime.pageResult();
+  const passed = status.settled && status.scriptsTerminated > 0 &&
+    title?.Ok?.String === 'survived';
+  return Response.json({ passed, status, title }, { status: passed ? 200 : 500 });
 }
