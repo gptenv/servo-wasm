@@ -49,12 +49,18 @@ test('host command parser rejects mismatched ABI and malformed bounded DTOs', ()
   };
   const valid = { version: 8, kind: 'fetch', request };
   assert.deepEqual(parseWorkerHostMessage(hostCommand(valid)), valid);
+  const preflighted = { ...valid, request: { ...request,
+    cors_preflight: { method: 'PUT', headers: ['x-token'] } } };
+  assert.deepEqual(parseWorkerHostMessage(hostCommand(preflighted)), preflighted);
   for (const malformed of [
     { ...valid, version: 7 },
     { ...valid, request: { ...request, method: 'GET\r\nCookie: x' } },
     { ...valid, request: { ...request, headers: [['cookie\r\nx', [1]]] } },
     { ...valid, request: { ...request, headers: [['x', [256]]] } },
     { ...valid, request: { ...request, body: { worker_bytes: [256] } } },
+    { ...valid, request: { ...request, cors_preflight: { method: 'PUT\r\n', headers: [] } } },
+    { ...valid, request: { ...request, cors_preflight: { method: 'PUT', headers: ['X-Upper'] } } },
+    { ...valid, request: { ...request, cors_preflight: { method: 'PUT', headers: 'x-token' } } },
     { version: 8, kind: 'cancel', request_ids: [''] },
     { version: 8, kind: 'unrecognized' },
   ]) {
@@ -649,8 +655,11 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     'https://example.test');
   assert.equal(requests.find(({ url }) => url.endsWith('/cross-redirect'))?.authorization,
     'Bearer secret', 'serialized request header values must be decoded from bytes');
-  assert.equal(requests.filter(({ url }) => url === 'https://cors.example/ok').length, 1,
-    'credentialed and preflighted requests must fail before reaching the host');
+  const corsOk = requests.filter(({ url }) => url === 'https://cors.example/ok');
+  assert.deepEqual(corsOk.map(({ method }) => method ?? 'GET'), ['GET', 'OPTIONS'],
+    'a credentialed request never reaches the host, and a preflighted one stops at ' +
+    'its preflight when the server does not allow it');
+  assert.equal(corsOk[1].cookie, null, 'a preflight carries no cookies');
 
   assert.equal(runtime.evaluatePage(
     'Promise.all(Array.from({length: 9}, (_, i) => ' +
@@ -1984,5 +1993,136 @@ test('Blob, File and blob: URLs work in memory without trapping the instance', a
     await load('https://blob-b.example');
     assert.deepEqual(await value(`fetch(${JSON.stringify(url)}).then((r) => r.text(), (e) => e.name)`),
       { Ok: { String: 'TypeError' } });
+  });
+});
+
+test('CORS preflight and simple POST follow Fetch and decide in the engine', async (t) => {
+  const APP = 'https://app.example';
+  const API = 'https://api.example';
+  let received = [];
+  let respond = () => new Response('ok');
+  const makeRuntime = (options = {}) => createServoWorkerRuntime(wasm, {
+    log: () => {},
+    ...options,
+    fetchImpl: async (input, init = {}) => {
+      const url = String(typeof input === 'string' ? input : input.url);
+      const headers = Object.fromEntries(new Headers(init.headers));
+      const body = init.body === undefined || init.body === null ? null
+        : new TextDecoder().decode(init.body);
+      const request = { url, method: init.method ?? 'GET', headers, body };
+      received.push(request);
+      return respond(request);
+    },
+  });
+  const runtime = await makeRuntime();
+  runtime.loadHtml('<!doctype html><title>cors</title><script>document.cookie = "sid=1"</script>',
+    { url: `${APP}/` });
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+  const attempt = async (init, rt = runtime) => {
+    received = [];
+    const result = await rt.evaluate(`fetch(${JSON.stringify(`${API}/data`)}, ${init})` +
+      '.then((r) => r.text()).then((t) => "ok:" + t, (e) => "err:" + e.name)',
+    { maxDurationMs: 10_000 });
+    assert.equal(rt.trapped, null);
+    return result.Ok.String;
+  };
+  const allow = (extra = {}) => ({ 'access-control-allow-origin': APP, ...extra });
+  const serve = ({ preflight = { status: 204, headers: allow() }, actual = allow() } = {}) => {
+    respond = ({ method }) => method === 'OPTIONS'
+      ? new Response(null, { status: preflight.status, headers: preflight.headers })
+      : new Response('body', { headers: actual });
+  };
+  const methods = () => received.map(({ method }) => method);
+
+  await t.test('simple POST is sent without a preflight', async () => {
+    serve();
+    assert.equal(await attempt('{ method: "POST", body: "hello" }'), 'ok:body');
+    assert.deepEqual(methods(), ['POST']);
+    assert.equal(received[0].body, 'hello');
+    assert.equal(received[0].headers.origin, APP);
+    assert.equal(received[0].headers.cookie, undefined);
+  });
+
+  await t.test('non-simple method is preflighted, then sent', async () => {
+    serve({ preflight: { status: 204, headers: allow({ 'access-control-allow-methods': 'PUT' }) } });
+    assert.equal(await attempt('{ method: "PUT", body: "x" }'), 'ok:body');
+    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
+    const [preflight] = received;
+    assert.equal(preflight.headers['access-control-request-method'], 'PUT');
+    assert.equal(preflight.headers.origin, APP);
+    assert.equal(preflight.body, null);
+    for (const request of received) {
+      assert.equal(request.headers.cookie, undefined);
+      assert.equal(request.headers.authorization, undefined);
+    }
+  });
+
+  await t.test('custom headers are named in the preflight and matched case-insensitively', async () => {
+    serve({ preflight: { status: 200, headers: allow({ 'access-control-allow-headers': 'X-Token' }) } });
+    assert.equal(await attempt('{ headers: { "X-Token": "1" } }'), 'ok:body');
+    assert.deepEqual(methods(), ['OPTIONS', 'GET']);
+    assert.equal(received[0].headers['access-control-request-headers'], 'x-token');
+    assert.equal(received[1].headers['x-token'], '1');
+  });
+
+  await t.test('a wildcard allows other headers and methods', async () => {
+    serve({ preflight: { status: 204, headers: { 'access-control-allow-origin': '*',
+      'access-control-allow-methods': '*', 'access-control-allow-headers': '*' } }, actual: allow() });
+    assert.equal(await attempt('{ method: "DELETE", headers: { "X-Token": "1" } }'), 'ok:body');
+    assert.deepEqual(methods(), ['OPTIONS', 'DELETE']);
+  });
+
+  await t.test('Authorization must be listed explicitly', async () => {
+    serve({ preflight: { status: 204, headers: allow({ 'access-control-allow-headers': '*' }) } });
+    assert.equal(await attempt('{ headers: { Authorization: "Bearer x" } }'), 'err:TypeError');
+    assert.deepEqual(methods(), ['OPTIONS']);
+    serve({ preflight: { status: 204, headers: allow({ 'access-control-allow-headers': 'authorization' }) } });
+    assert.equal(await attempt('{ headers: { Authorization: "Bearer x" } }'), 'ok:body');
+    assert.deepEqual(methods(), ['OPTIONS', 'GET']);
+  });
+
+  const denied = [
+    ['a non-ok preflight status', { status: 500, headers: allow({ 'access-control-allow-methods': 'PUT' }) }],
+    ['a redirected preflight', { status: 302, headers: allow({ location: '/elsewhere',
+      'access-control-allow-methods': 'PUT' }) }],
+    ['a missing Access-Control-Allow-Origin', { status: 204, headers: { 'access-control-allow-methods': 'PUT' } }],
+    ['another origin', { status: 204, headers: { 'access-control-allow-origin': 'https://evil.example',
+      'access-control-allow-methods': 'PUT' } }],
+    ['a method that is not allowed', { status: 204, headers: allow({ 'access-control-allow-methods': 'GET, POST' }) }],
+    ['a malformed Access-Control-Allow-Methods', { status: 204, headers: allow({ 'access-control-allow-methods': 'PU T' }) }],
+  ];
+  for (const [name, preflight] of denied) {
+    await t.test(`${name} denies the request before it is sent`, async () => {
+      serve({ preflight });
+      assert.equal(await attempt('{ method: "PUT" }'), 'err:TypeError');
+      assert.deepEqual(methods(), ['OPTIONS']);
+    });
+  }
+
+  await t.test('a failed preflight request denies the request', async () => {
+    respond = () => { throw new TypeError('network down'); };
+    assert.equal(await attempt('{ method: "PUT" }'), 'err:TypeError');
+    assert.deepEqual(methods(), ['OPTIONS']);
+  });
+
+  await t.test('the actual response still needs Access-Control-Allow-Origin', async () => {
+    serve({ preflight: { status: 204, headers: allow({ 'access-control-allow-methods': 'PUT' }) }, actual: {} });
+    assert.equal(await attempt('{ method: "PUT" }'), 'err:TypeError');
+    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
+  });
+
+  await t.test('credentialed cross-origin requests still fail closed', async () => {
+    serve({ preflight: { status: 204, headers: allow({ 'access-control-allow-credentials': 'true' }) } });
+    assert.equal(await attempt('{ credentials: "include" }'), 'err:TypeError');
+    assert.deepEqual(methods(), []);
+  });
+
+  await t.test('the preflight counts against the host subrequest budget', async () => {
+    const limited = await makeRuntime({ maxSubrequests: 1 });
+    limited.loadHtml('<!doctype html><title>cors</title>', { url: `${APP}/` });
+    await limited.pumpUntilSettled({ maxDurationMs: 10_000 });
+    serve({ preflight: { status: 204, headers: allow({ 'access-control-allow-methods': 'PUT' }) } });
+    assert.equal(await attempt('{ method: "PUT" }', limited), 'err:TypeError');
+    assert.deepEqual(methods(), ['OPTIONS']);
   });
 });

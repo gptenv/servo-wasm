@@ -28,6 +28,7 @@ const REQUIRED_EXPORTS = Object.freeze([
   'servo_worker_evaluate_page_async',
   'servo_worker_poll_page_evaluation',
   'servo_worker_cancel_page_evaluation',
+  'servo_worker_check_cors_preflight',
 ]);
 const encoder = new TextEncoder();
 
@@ -44,7 +45,9 @@ const WORKER_CAPABILITIES = Object.freeze({
   ]),
   partial: Object.freeze({
     fetch: 'Response bodies stream; request bodies are buffered up to 256 KiB. ' +
-      'CORS is limited to simple non-credentialed cross-origin GET/HEAD.',
+      'Non-credentialed cross-origin requests use CORS, with a preflight (one extra ' +
+      'host subrequest, not cached) when required; preflighted requests do not ' +
+      'follow redirects. Credentialed cross-origin requests fail closed.',
     cookies: 'document.cookie and Worker fetches use Servo’s in-memory RFC 6265 ' +
       'cookie jar. Final and followed same-origin redirect cookies require ' +
       'Headers.getSetCookie() and the request credentials mode; complete ' +
@@ -73,7 +76,7 @@ const WORKER_CAPABILITIES = Object.freeze({
   unsupported: Object.freeze([
     'service-workers',
     'dedicated-shared-workers', 'webgl', 'webgpu',
-    'credentialed-preflight-cors', 'streaming-request-bodies',
+    'credentialed-cross-origin-cors', 'streaming-request-bodies',
   ]),
   unverified: Object.freeze([]),
 });
@@ -116,6 +119,16 @@ export function parseWorkerHostMessage(bytes) {
     }
     if (headerBytes > MAX_RESPONSE_HEADERS_BYTES) {
       throw new RangeError('Servo Worker request headers exceed 64 KiB');
+    }
+    const preflight = request.cors_preflight;
+    if (preflight !== null && preflight !== undefined &&
+        (typeof preflight !== 'object' || Array.isArray(preflight) ||
+         typeof preflight.method !== 'string' ||
+         !/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,32}$/.test(preflight.method) ||
+         !Array.isArray(preflight.headers) || preflight.headers.length > 256 ||
+         !preflight.headers.every((name) => typeof name === 'string' &&
+           /^[!#$%&'*+.^_`|~0-9a-z-]{1,256}$/.test(name)))) {
+      throw new TypeError('Malformed Servo Worker CORS preflight');
     }
     if (request.body !== null && request.body !== undefined) {
       const body = request.body?.worker_bytes;
@@ -444,11 +457,39 @@ class ServoWorkerRuntime {
     });
   }
 
+  /**
+   * Send the CORS preflight Servo asked for and let Servo decide whether the
+   * actual request may follow. The preflight carries no credentials or body.
+   */
+  async #corsPreflight(request, url, headers, signal) {
+    const { method, headers: names } = request.cors_preflight;
+    const preflightHeaders = new Headers({
+      accept: '*/*',
+      'access-control-request-method': method,
+    });
+    const origin = headers.get('origin');
+    if (origin !== null) preflightHeaders.set('origin', origin);
+    if (names.length) preflightHeaders.set('access-control-request-headers', names.join(','));
+    this.#reserveSubrequest();
+    const response = await this.#fetchImpl(url, {
+      method: 'OPTIONS', headers: preflightHeaders, redirect: 'manual', signal,
+    });
+    await response.body?.cancel().catch(() => {});
+    const id = encoder.encode(request.id);
+    const pairs = encoder.encode(JSON.stringify([...response.headers]));
+    const decision = this.#withBytes([id, pairs], ([idBuffer, headerBuffer]) =>
+      this.instance.exports.servo_worker_check_cors_preflight(
+        idBuffer.ptr, idBuffer.len, response.status, headerBuffer.ptr, headerBuffer.len,
+      ));
+    if (decision !== 1) throw new Error('CORS preflight did not allow the request');
+  }
+
   async #fetchRequest(request, body, signal) {
     let url = requestUrl(request);
     let method = requestMethod(request);
     let headers = requestHeaders(request);
     let redirected = false;
+    if (request.cors_preflight) await this.#corsPreflight(request, url, headers, signal);
     const mode = request.redirect_mode || 'Follow';
     if (request.destination === 'Document' && method === 'GET' &&
         this.#inlinePage?.url === url) {
@@ -477,6 +518,9 @@ class ServoWorkerRuntime {
       }
       try {
         if (mode === 'Error') throw new Error('Servo redirect mode forbids redirects');
+        if (request.cors_preflight) {
+          throw new Error('Redirects after a CORS preflight are not supported');
+        }
         if (redirects === MAX_REDIRECTS) throw new Error('Too many Worker redirects');
         const next = new URL(location, url);
         if (next.protocol !== 'http:' && next.protocol !== 'https:') {

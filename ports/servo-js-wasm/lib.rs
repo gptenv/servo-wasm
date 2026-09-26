@@ -14,7 +14,8 @@ use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::http_status::HttpStatus;
 use net_traits::request::{
     CredentialsMode, Destination, Origin, RequestBuilder, RequestId, RequestMode,
-    get_cors_unsafe_header_names,
+    get_cors_unsafe_header_names, is_cors_non_wildcard_request_header_name,
+    is_cors_safelisted_method,
 };
 use net_traits::response::ResponseInit;
 use net_traits::{
@@ -121,6 +122,15 @@ struct WorkerFetchRequest<'a> {
     body: Option<WorkerFetchBody<'a>>,
     destination: &'a Destination,
     redirect_mode: &'a net_traits::request::RedirectMode,
+    /// Present when the host must send a CORS preflight first and pass its
+    /// response to `servo_worker_check_cors_preflight`.
+    cors_preflight: Option<WorkerCorsPreflightRequest<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct WorkerCorsPreflightRequest<'a> {
+    method: &'a str,
+    headers: &'a [String],
 }
 
 #[derive(serde::Serialize)]
@@ -129,7 +139,7 @@ struct WorkerFetchBody<'a> {
 }
 
 impl<'a> WorkerFetchRequest<'a> {
-    fn from_request(request: &'a RequestBuilder) -> Self {
+    fn from_request(request: &'a RequestBuilder, visibility: &'a WorkerResponseVisibility) -> Self {
         Self {
             id: request.id.0.to_string(),
             url: request.url.url().as_str().to_owned(),
@@ -144,6 +154,16 @@ impl<'a> WorkerFetchRequest<'a> {
             }),
             destination: &request.destination,
             redirect_mode: &request.redirect_mode,
+            cors_preflight: match visibility {
+                WorkerResponseVisibility::Cors {
+                    preflight: Some(preflight),
+                    ..
+                } => Some(WorkerCorsPreflightRequest {
+                    method: &preflight.method,
+                    headers: &preflight.unsafe_headers,
+                }),
+                _ => None,
+            },
         }
     }
 }
@@ -189,10 +209,25 @@ pub extern "C" fn servo_worker_abi_version() -> u32 {
     WORKER_ABI_VERSION
 }
 
+/// What a CORS-preflight response must allow before the host may send the
+/// actual request. See `servo_worker_check_cors_preflight`.
+#[derive(Clone)]
+struct WorkerCorsPreflight {
+    method: String,
+    /// CORS-unsafe request-header names, lowercase and sorted.
+    unsafe_headers: Vec<String>,
+    /// Request-header names a `*` in Access-Control-Allow-Headers never covers.
+    non_wildcard_headers: Vec<String>,
+    use_cors_preflight: bool,
+}
+
 enum WorkerResponseVisibility {
     Unfiltered,
     Basic,
-    Cors { origin: String },
+    Cors {
+        origin: String,
+        preflight: Option<WorkerCorsPreflight>,
+    },
     Opaque,
 }
 
@@ -1021,7 +1056,7 @@ fn install_fetch_adapter() {
                     },
                 };
                 let payload = encode_host_command(WorkerHostCommand::Fetch {
-                    request: WorkerFetchRequest::from_request(&request),
+                    request: WorkerFetchRequest::from_request(&request, &visibility),
                 });
                 let accepts_cookies = servo::worker_request_accepts_cookies(&request);
                 FETCH_CALLBACKS.with(|callbacks| {
@@ -1102,9 +1137,12 @@ fn apply_worker_redirect(request: &mut RequestBuilder, redirect: Option<Response
 fn worker_response_visibility(
     request: &mut RequestBuilder,
 ) -> Result<WorkerResponseVisibility, NetworkError> {
-    // This bridge bypasses Servo's native HTTP fetch algorithm. For now only
-    // simple, non-credentialed cross-origin CORS requests are supported; a
-    // preflight or a credentialed fetch must never be sent without its checks.
+    // This bridge bypasses Servo's native HTTP fetch algorithm, so it applies
+    // the CORS request rules itself. Non-credentialed cross-origin requests
+    // are supported, with a preflight when Fetch requires one (checked by
+    // `servo_worker_check_cors_preflight` before the host sends the request).
+    // Credentialed cross-origin requests fail closed until cookies honor the
+    // SameSite site-for-cookies context.
     let script_fetch = request.destination == Destination::None;
     let origin = match &request.origin {
         Origin::Origin(origin) => Some(origin),
@@ -1140,12 +1178,12 @@ fn worker_response_visibility(
     let Some(origin) = origin else {
         return Err(NetworkError::CorsGeneral);
     };
-    if request.method != Method::GET && request.method != Method::HEAD
-        || request.body.is_some()
-        || request.use_cors_preflight
-        || request.use_url_credentials
+    if request.use_url_credentials
         || request.credentials_mode == CredentialsMode::Include
-        || !get_cors_unsafe_header_names(&request.headers).is_empty()
+        || request
+            .body
+            .as_ref()
+            .is_some_and(|body| body.worker_bytes.is_none())
     {
         return Err(NetworkError::CorsGeneral);
     }
@@ -1153,9 +1191,39 @@ fn worker_response_visibility(
     if origin == "null" {
         return Err(NetworkError::CorsGeneral);
     }
+    // Fetch's main fetch: a CORS request needs a preflight if its
+    // use-CORS-preflight flag is set, or if it is an unsafe (script) request
+    // with a method or a header that is not CORS-safelisted.
+    // The CORS-unsafe header list also applies Fetch's 1024-byte limit on the
+    // combined safelisted values, which a per-header check misses.
+    let unsafe_headers: Vec<String> = get_cors_unsafe_header_names(&request.headers)
+        .iter()
+        .map(|name| name.as_str().to_owned())
+        .collect();
+    let preflight = (request.use_cors_preflight
+        || request.unsafe_request
+            && (!is_cors_safelisted_method(&request.method) || !unsafe_headers.is_empty()))
+    .then(|| WorkerCorsPreflight {
+        method: request.method.as_str().to_owned(),
+        unsafe_headers,
+        non_wildcard_headers: request
+            .headers
+            .keys()
+            .filter(|name| is_cors_non_wildcard_request_header_name(name))
+            .map(|name| name.as_str().to_owned())
+            .collect(),
+        use_cors_preflight: request.use_cors_preflight,
+    });
+    if preflight.is_none() &&
+        request.method != Method::GET &&
+        request.method != Method::HEAD &&
+        request.method != Method::POST
+    {
+        return Err(NetworkError::CorsGeneral);
+    }
     let value = HeaderValue::from_str(&origin).map_err(|_| NetworkError::CorsGeneral)?;
     request.headers.insert(header::ORIGIN, value);
-    Ok(WorkerResponseVisibility::Cors { origin })
+    Ok(WorkerResponseVisibility::Cors { origin, preflight })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1191,7 +1259,7 @@ fn queue_worker_fetch(mut request: RequestBuilder, mut callback: net_traits::Box
         },
     };
     let payload = encode_host_command(WorkerHostCommand::Fetch {
-        request: WorkerFetchRequest::from_request(&request),
+        request: WorkerFetchRequest::from_request(&request, &visibility),
     });
     let accepts_cookies = servo::worker_request_accepts_cookies(&request);
     let callback = GenericCallback::new(move |message| {
@@ -1552,6 +1620,151 @@ pub unsafe extern "C" fn servo_worker_begin_http_response(
     })
 }
 
+/// Check the host's CORS-preflight response for a pending request, following
+/// Fetch's CORS-preflight fetch (step 7) and CORS check as implemented by
+/// Servo's native `cors_preflight_fetch` and `cors_check` in
+/// components/net/http_loader.rs, for non-credentialed requests. One
+/// deliberate difference: a `*` in Access-Control-Allow-Headers never covers
+/// `Authorization`, as the Fetch standard requires. `headers` is JSON
+/// `[name, value]` pairs. Returns 1 when the host may send the actual request,
+/// 0 for malformed input or a request that needs no preflight, and -1 when
+/// the preflight denies it: the request has then failed with a network error
+/// and the host must not send it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_check_cors_preflight(
+    request_id_ptr: *const u8,
+    request_id_len: usize,
+    status: u32,
+    headers_ptr: *const u8,
+    headers_len: usize,
+) -> i32 {
+    let Some(request_id) = (unsafe { parse_worker_request_id(request_id_ptr, request_id_len) })
+    else {
+        return 0;
+    };
+    if (headers_ptr.is_null() && headers_len != 0) || headers_len > 64 * 1024 {
+        return 0;
+    }
+    let pairs: Vec<(String, String)> = if headers_len == 0 {
+        Vec::new()
+    } else {
+        let bytes = unsafe { std::slice::from_raw_parts(headers_ptr, headers_len) };
+        let Ok(pairs) = serde_json::from_slice(bytes) else {
+            return 0;
+        };
+        pairs
+    };
+    let mut headers = HeaderMap::new();
+    for (name, value) in pairs {
+        let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_bytes(value.as_bytes()),
+        ) else {
+            return 0;
+        };
+        headers.append(name, value);
+    }
+    let decision = FETCH_CALLBACKS.with(|callbacks| {
+        let callbacks = callbacks.borrow();
+        let entry = callbacks.get(&request_id)?;
+        match &entry.visibility {
+            WorkerResponseVisibility::Cors {
+                origin,
+                preflight: Some(preflight),
+            } => Some(check_cors_preflight(origin, preflight, status, &headers)),
+            _ => None,
+        }
+    });
+    match decision {
+        None => 0,
+        Some(Ok(())) => 1,
+        Some(Err(error)) => {
+            complete_worker_fetch_error(request_id, error);
+            -1
+        },
+    }
+}
+
+fn check_cors_preflight(
+    origin: &str,
+    preflight: &WorkerCorsPreflight,
+    status: u32,
+    headers: &HeaderMap,
+) -> Result<(), NetworkError> {
+    // A preflight passes only with an ok status; a redirect is a failure.
+    if !(200..=299).contains(&status) {
+        return Err(NetworkError::CorsGeneral);
+    }
+    // CORS check for a non-credentialed request: `*` or the exact origin.
+    let allowed = headers
+        .get_all(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        .iter()
+        .map(|value| value.to_str().ok())
+        .collect::<Option<Vec<_>>>()
+        .ok_or(NetworkError::CorsGeneral)?;
+    if allowed.len() != 1 || allowed[0] != "*" && allowed[0] != origin {
+        return Err(NetworkError::CorsGeneral);
+    }
+    let mut methods = header_list_tokens(headers, header::ACCESS_CONTROL_ALLOW_METHODS)
+        .ok_or(NetworkError::CorsAllowMethods)?;
+    let names: Vec<String> = header_list_tokens(headers, header::ACCESS_CONTROL_ALLOW_HEADERS)
+        .ok_or(NetworkError::CorsAllowHeaders)?
+        .into_iter()
+        .map(|name| name.to_ascii_lowercase())
+        .collect();
+    if methods.is_empty() && preflight.use_cors_preflight {
+        methods.push(preflight.method.clone());
+    }
+    let safelisted_method = matches!(preflight.method.as_str(), "GET" | "HEAD" | "POST");
+    if !safelisted_method &&
+        !methods
+            .iter()
+            .any(|method| *method == preflight.method || method == "*")
+    {
+        return Err(NetworkError::CorsMethod);
+    }
+    if preflight
+        .non_wildcard_headers
+        .iter()
+        .any(|name| !names.contains(name))
+    {
+        return Err(NetworkError::CorsAuthorization);
+    }
+    let wildcard = names.iter().any(|name| name == "*");
+    if !wildcard &&
+        preflight
+            .unsafe_headers
+            .iter()
+            .any(|name| !names.contains(name))
+    {
+        return Err(NetworkError::CorsHeaders);
+    }
+    Ok(())
+}
+
+/// Fetch's "extract header list values": the comma-separated items of every
+/// field with this name, each of which must be an HTTP token. `None` is
+/// failure.
+fn header_list_tokens(headers: &HeaderMap, name: HeaderName) -> Option<Vec<String>> {
+    let mut tokens = Vec::new();
+    for value in headers.get_all(name) {
+        for item in value.to_str().ok()?.split(',') {
+            let item = item.trim_matches([' ', '\t']);
+            if item.is_empty() {
+                continue;
+            }
+            let is_token = item.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+            });
+            if !is_token {
+                return None;
+            }
+            tokens.push(item.to_owned());
+        }
+    }
+    Some(tokens)
+}
+
 fn filter_worker_metadata(
     metadata: Metadata,
     visibility: &WorkerResponseVisibility,
@@ -1571,7 +1784,7 @@ fn filter_worker_metadata(
         return Err(NetworkError::CorsGeneral);
     };
     let exposed = match visibility {
-        WorkerResponseVisibility::Cors { origin } => {
+        WorkerResponseVisibility::Cors { origin, .. } => {
             let Some(allowed) = headers
                 .get_all(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                 .iter()

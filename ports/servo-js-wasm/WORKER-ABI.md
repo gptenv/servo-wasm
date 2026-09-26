@@ -28,7 +28,7 @@ adapter reports open, message, close and error events through the
 `servo_worker_websocket_*` exports and forwards page send/close actions to the
 host socket. Binary frames are exposed as `ArrayBuffer` in the page.
 The fetch request DTO contains only `id`, `url`, `method`, `headers`, `body`,
-`destination` and `redirect_mode`. `headers` is an ordered array of
+`destination`, `redirect_mode` and `cors_preflight`. `headers` is an ordered array of
 `[name, byte-array]` entries, preserving repeated fields. `body` is null or
 `{worker_bytes: byte-array|null}`. Only buffered request bodies up to 256 KiB
 are supported; an unbuffered body is rejected. Servo's internal `RequestBuilder`
@@ -335,9 +335,26 @@ session (redirects count). `reset()` does not replenish either counter;
 HTML costs no network fetch. These bounds do not prove Cloudflare CPU or
 total-memory compliance.
 
-Only simple non-credentialed direct cross-origin GET/HEAD requests have CORS
-support. Preflighted/credentialed requests and cross-origin script-fetch redirects
-fail closed. Cookie support is partial as described above; general request-body
+Non-credentialed cross-origin requests use CORS. Servo decides, following
+Fetch, whether a request needs a preflight; if so the fetch DTO carries
+`cors_preflight: {method, headers}` (the request method and its sorted,
+lowercase CORS-unsafe header names). The adapter first sends `OPTIONS` to the
+request URL with `Origin`, `Accept: */*`, `Access-Control-Request-Method` and,
+when there are unsafe headers, `Access-Control-Request-Headers`, with no body,
+no cookies and `redirect: "manual"`. It passes the response status and headers
+to `servo_worker_check_cors_preflight(id, status, headers)`, which applies the
+Fetch preflight checks: an ok (2xx) status, `Access-Control-Allow-Origin` of
+`*` or the exact origin, the method in `Access-Control-Allow-Methods` unless
+safelisted (`*` allowed), and every unsafe header in
+`Access-Control-Allow-Headers` (`*` allowed, except that `Authorization` must
+be named). It returns 1 when the actual request may be sent, and -1 after
+failing the request with a network error when it may not; the host must then
+not send it. The actual response still passes the CORS response check. Each
+preflight is a host subrequest and there is no preflight cache. Credentialed
+cross-origin requests, redirects of preflighted requests and cross-origin
+script-fetch redirects fail closed. The host's destination and SSRF policy
+must therefore cover every method, including preflights and cross-origin
+`POST`, `PUT` and `DELETE` requests; see `worker-operations.md`. Cookie support is partial as described above; general request-body
 streams are not implemented. Full Fetch redirect/manual-redirect behavior,
 response-reader and cloned-response cancellation semantics, service-worker
 support, IndexedDB transaction behavior and Cache request/response operations

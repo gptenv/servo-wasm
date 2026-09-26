@@ -48,7 +48,12 @@ retention, session expiry and deletion. Enforce destination policy in both the
 injected `fetchImpl` and `webSocketFactory`; the adapter calls `fetchImpl` for
 each redirect hop, so check every URL rather than only the initial navigation.
 Reject private or unintended host destinations according to the service's
-declared allowlist, and do not grant a page the host's credentials.
+declared allowlist, and do not grant a page the host's credentials. Since ABI 8
+the adapter also calls `fetchImpl` for CORS preflights (`OPTIONS`), for simple
+cross-origin `POST` bodies and, after a passing preflight, for cross-origin
+requests with any method or custom headers. Apply the destination policy by URL
+for every method, preflights included. A host that allowlists methods and
+rejects `OPTIONS` fails closed, but pages that need a preflight then break.
 
 ## Recover and roll back
 
