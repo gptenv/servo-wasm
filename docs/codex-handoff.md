@@ -13,23 +13,25 @@ checkboxes in the trackers without test evidence.
 
 ## State at handoff
 
-- Branch `main` of `gptenv/servo-wasm`, remote HEAD `cd29215de5e`. Local changes
-  after that revision add basic Web Crypto and repair its no-feature module
-  gating; the CI workflow update is also local. Do not push without asking.
-- `gptenv/mozjs-wasm` `main` is at `f942001b4` (the script work budget),
-  pushed, and locked in `Cargo.lock`.
+- Branch `main` of `gptenv/servo-wasm`, remote HEAD `f94afc64ea0`. The next
+  local commit updates `Cargo.lock` to mozjs-wasm `5ee7b5a98` and records the
+  bindgen sysroot failure diagnosis. The user authorized commits and pushes.
+- `gptenv/mozjs-wasm` `main` is at `5ee7b5a98`, pushed, and locked in
+  `Cargo.lock`. This revision fixes the SDK 29 target include directories for
+  build-time bindgen; the most recent locally tested artifact predates it and
+  the remote production build must verify it.
 - The host ABI is **version 8**. The adapter (`worker-adapter.mjs`) and the WASM
   artifact must come from the same build.
 - Local verification of revision `d765febd97a`: the production-stripped build
   succeeds; `npm test` passes 125/125; local workerd root, 15 fixtures,
   screenshot and `/runaway` routes pass. The artifact has exactly five `env`
   imports; Wrangler 4.136.3 bundles 61,471.79 KiB.
-- **CI is still red at remote HEAD `cd29215de5e`.** The public Actions API
-  identifies the failing step as "Build the production Worker artifact
-  incrementally"; downloading its detailed log returns 403 without GitHub
-  authentication. The local workflow now uses the documented `./mach build`
-  command and checks both `<cstdio>` and `<cstring>` with the pinned target
-  wrapper. It still needs a remote run. Do not sign in on the user's behalf.
+- **CI is still being repaired.** Authenticated GitHub logs for the prior run
+  identify bindgen's missing `<functional>` header: the raw wasm build passed
+  generic WASI include paths to libclang, but SDK 29 stores headers under
+  `include/wasm32-wasi`. The new mozjs-wasm revision and Cargo.lock update fix
+  that path. The local workflow uses `./mach build` and checks `<cstring>`;
+  the rerun after the lockfile push is the release gate.
 - `servo-mcp` (separate repo, separate owner) pins servo-wasm as a submodule at
   an ABI 4-era revision. Don't edit it. Its owner must take the adapter and WASM
   as a pair, size `scriptBudget`, and apply their egress policy to every method
