@@ -1168,10 +1168,9 @@ fn worker_response_visibility(
     if request.mode == RequestMode::NoCors {
         // No-CORS requests still go to the host. Their response is opaque to
         // page script, while parser-owned subresources can consume the
-        // internal response. Credentialed cross-origin requests remain
-        // unsupported until cookies honor the SameSite site-for-cookies
-        // context.
-        if request.use_url_credentials || request.credentials_mode == CredentialsMode::Include {
+        // internal response. Cross-origin requests are dispatched without
+        // cookies until cookies honor the SameSite site-for-cookies context.
+        if request.use_url_credentials {
             return Err(NetworkError::CorsGeneral);
         }
         return Ok(WorkerResponseVisibility::Opaque);

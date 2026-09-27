@@ -126,6 +126,14 @@ pub mod resource_thread {
                 Origin::Client => None,
             }),
         };
+        // A cross-origin no-cors request is opaque to script. Until the Worker
+        // bridge has a top-level site-for-cookies context, dispatch it
+        // anonymously instead of rejecting it or attaching ambient cookies.
+        // Same-origin no-cors requests retain their ordinary credential rules.
+        let same_origin = origin.is_some_and(|origin| *origin == request.url.origin());
+        if request.mode == net_traits::request::RequestMode::NoCors && !same_origin {
+            return false;
+        }
         match request.credentials_mode {
             CredentialsMode::Omit => false,
             CredentialsMode::CredentialsSameOrigin => {

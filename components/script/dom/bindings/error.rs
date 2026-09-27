@@ -88,7 +88,18 @@ pub(crate) fn throw_dom_exception(cx: &mut JSContext, global: &GlobalScope, resu
         },
 
         Err(JsEngineError::JSFailed) => unsafe {
-            assert!(JS_IsExceptionPending(cx));
+            // Most JS APIs that return JSFailed leave an exception pending.
+            // A few engine/embedding failure paths can return failure without
+            // one, though. Preserve the original exception when present, and
+            // synthesize a JS error when it is missing so a recoverable
+            // binding failure does not panic and abort the whole Worker.
+            if !JS_IsExceptionPending(cx) {
+                log::error!("JavaScript binding operation failed without a pending exception");
+                throw_type_error(
+                    cx,
+                    &c"JavaScript operation failed without a pending exception".to_owned(),
+                );
+            }
         },
     }
 }
