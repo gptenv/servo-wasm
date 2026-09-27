@@ -16,6 +16,7 @@ use std::sync::{Arc as StdArc, LazyLock};
 use std::time::Duration;
 
 use bitflags::bitflags;
+#[cfg(not(target_arch = "wasm32"))]
 use chrono::Local;
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use content_security_policy::{CspList, Policy as CspPolicy, PolicyDisposition};
@@ -6146,11 +6147,21 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
     /// <https://html.spec.whatwg.org/multipage/#dom-document-lastmodified>
     fn LastModified(&self) -> DOMString {
         DOMString::from(self.last_modified.as_ref().cloned().unwrap_or_else(|| {
-            // Ideally this would get the local time using `time`, but `time` always fails to get the local
-            // timezone on Unix unless the application is single threaded unless the library is explicitly
-            // set to "unsound" mode. Maybe that's fine, but it needs more investigation. see
-            // https://nvd.nist.gov/vuln/detail/CVE-2020-26235
-            // When `time` supports a thread-safe way of getting the local time zone we could use it here.
+            #[cfg(target_arch = "wasm32")]
+            {
+                // `SystemTime::now()` is unsupported by wasm32-unknown-unknown.
+                // Workers provide the Unix clock through CrossProcessInstant;
+                // their timezone is UTC.
+                let now_ns = CrossProcessInstant::unix_time_now_ns();
+                chrono::DateTime::<chrono::Utc>::from_timestamp(
+                    (now_ns / 1_000_000_000) as i64,
+                    (now_ns % 1_000_000_000) as u32,
+                )
+                .unwrap_or(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH)
+                .format("%m/%d/%Y %H:%M:%S")
+                .to_string()
+            }
+            #[cfg(not(target_arch = "wasm32"))]
             Local::now().format("%m/%d/%Y %H:%M:%S").to_string()
         }))
     }

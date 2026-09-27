@@ -881,7 +881,11 @@ impl HTMLIFrameElement {
             .script_to_constellation_chan()
             .send(msg)
             .unwrap();
-        let _exited_pipeline_ids = receiver.recv().unwrap();
+        // The nested browsing context may already have exited while the
+        // iframe is being removed (for example, after a failed cross-origin
+        // challenge navigation). Its acknowledgement is not needed for the
+        // remaining local document cleanup.
+        let _ = receiver.recv();
         let Some(pipeline_id) = pipeline_id else {
             return;
         };
