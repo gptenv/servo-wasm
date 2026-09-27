@@ -1162,14 +1162,18 @@ fn worker_response_visibility(
             WorkerResponseVisibility::Unfiltered
         });
     }
-    if request.mode == RequestMode::SameOrigin
-        || request.mode == RequestMode::NoCors && script_fetch
-    {
+    if request.mode == RequestMode::SameOrigin {
         return Err(NetworkError::CorsGeneral);
     }
     if request.mode == RequestMode::NoCors {
-        // Parser-owned subresources can consume the internal response, but
-        // CSSOM and classic-script error reporting must see an opaque one.
+        // No-CORS requests still go to the host. Their response is opaque to
+        // page script, while parser-owned subresources can consume the
+        // internal response. Credentialed cross-origin requests remain
+        // unsupported until cookies honor the SameSite site-for-cookies
+        // context.
+        if request.use_url_credentials || request.credentials_mode == CredentialsMode::Include {
+            return Err(NetworkError::CorsGeneral);
+        }
         return Ok(WorkerResponseVisibility::Opaque);
     }
     if request.mode != RequestMode::CorsMode {
