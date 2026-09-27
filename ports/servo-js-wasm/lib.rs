@@ -109,7 +109,7 @@ struct WorkerRedirectCookies {
     set_cookies: Vec<String>,
 }
 
-const WORKER_ABI_VERSION: u32 = 9;
+const WORKER_ABI_VERSION: u32 = 10;
 
 /// The stable host-facing subset of a Servo request. Do not serialize
 /// RequestBuilder here: its internal fields are not an ABI contract.
@@ -209,6 +209,97 @@ fn encode_host_command(command: WorkerHostCommand<'_>) -> serde_json::Result<Vec
 #[unsafe(no_mangle)]
 pub extern "C" fn servo_worker_abi_version() -> u32 {
     WORKER_ABI_VERSION
+}
+
+/// Deliver one BGRA frame decoded asynchronously by the Worker media host.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_media_video_frame(
+    player_id: u32,
+    width: u32,
+    height: u32,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> i32 {
+    if data_ptr.is_null() || data_len > 40 * 1024 * 1024 {
+        return 0;
+    }
+    let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
+    i32::from(servo::worker_media::decoded_video_frame(
+        player_id as usize,
+        width,
+        height,
+        data,
+    ))
+}
+
+/// Deliver one decoded planar float32 audio chunk to Servo's media-element
+/// audio graph when a `<audio>` element is connected to WebAudio.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_media_audio_frame(
+    player_id: u32,
+    channels: u32,
+    sample_rate: u32,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> i32 {
+    if data_ptr.is_null() || data_len > 4 * 1024 * 1024 {
+        return 0;
+    }
+    let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
+    i32::from(servo::worker_media::decoded_audio_frame(
+        player_id as usize,
+        channels,
+        sample_rate,
+        data,
+    ))
+}
+
+/// Forward decoder lifecycle and metadata events into Servo's media player.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_media_event(
+    player_id: u32,
+    event_kind: u32,
+    value0: f64,
+    value1: f64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> i32 {
+    if (data_ptr.is_null() && data_len != 0) || data_len > 64 * 1024 {
+        return 0;
+    }
+    let data = if data_len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(data_ptr, data_len) }
+    };
+    i32::from(servo::worker_media::media_event(
+        player_id as usize,
+        event_kind,
+        value0,
+        value1,
+        data,
+    ))
+}
+
+/// Allocate a bounded buffer for media bytes copied by the browser Worker.
+/// The matching media callback copies the contents before `servo_worker_media_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_media_alloc(data_len: usize) -> *mut u8 {
+    if data_len == 0 || data_len > 40 * 1024 * 1024 {
+        return std::ptr::null_mut();
+    }
+    Box::into_raw(vec![0u8; data_len].into_boxed_slice()) as *mut u8
+}
+
+/// Release a buffer returned by `servo_worker_media_alloc`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_media_free(data_ptr: *mut u8, data_len: usize) {
+    if !data_ptr.is_null() && data_len != 0 && data_len <= 40 * 1024 * 1024 {
+        let slice = std::ptr::slice_from_raw_parts_mut(data_ptr, data_len);
+        // SAFETY: callers must pass the exact pointer and length returned by
+        // servo_worker_media_alloc, exactly once.
+        drop(unsafe { Box::from_raw(slice) });
+    }
 }
 
 /// What a CORS-preflight response must allow before the host may send the

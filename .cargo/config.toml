@@ -37,7 +37,8 @@ linker = "lld-link.exe"
 rustflags = [
   "--cfg", "getrandom_backend=\"custom\"",
   "-C", "link-arg=--stack-first",
-  "-C", "link-arg=--stack-size=4194304",
+  "-C", "link-arg=-z",
+  "-C", "link-arg=stack-size=4194304",
 ]
 
 [env]

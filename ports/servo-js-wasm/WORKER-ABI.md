@@ -1,7 +1,7 @@
-# Raw Worker ABI, version 9
+# Raw Worker ABI, version 10
 
 The JavaScript adapter and WASM artifact are a matched pair. The adapter checks
-`servo_worker_abi_version() === 9` and checks that every export it requires
+`servo_worker_abi_version() === 10` and checks that every export it requires
 (redirect-cookie processing, the script budget and correlated evaluation) is present before
 running constructors or bootstrap. Rebuild
 the artifact whenever the interface or serialized request representation changes.
@@ -9,7 +9,7 @@ This is a project-internal protocol, not an MCP protocol or a stable upstream Se
 
 ## Host imports
 
-Exactly five function imports exist, all in `env`:
+Exactly six function imports exist, all in `env`:
 
 | Import | Contract |
 | --- | --- |
@@ -18,11 +18,12 @@ Exactly five function imports exist, all in `env`:
 | `worker_log_error(ptr, len)` | Consume a UTF-8 diagnostic synchronously. |
 | `worker_monotonic_now_ns()` | Return monotonic nanoseconds as a JavaScript `bigint`. |
 | `worker_unix_time_now_ns()` | Return Unix-epoch nanoseconds as a JavaScript `bigint`. |
+| `worker_media_command(operation, player_id, value, ptr, len)` | Copy a bounded media-player command synchronously; schedule parsing, decoding and callbacks asynchronously after returning to Wasm. |
 
-The fetch import carries `{version:9, kind:"fetch", request:...}`,
-`{version:9, kind:"cancel", request_ids:[...]}`,
-`{version:9, kind:"web_socket_connect", request_id, url, protocols}`, or
-`{version:9, kind:"web_socket_action", request_id, action}`. IDs serialize as
+The fetch import carries `{version:10, kind:"fetch", request:...}`,
+`{version:10, kind:"cancel", request_ids:[...]}`,
+`{version:10, kind:"web_socket_connect", request_id, url, protocols}`, or
+`{version:10, kind:"web_socket_action", request_id, action}`. IDs serialize as
 UUID strings. The WebSocket commands use the Worker's `WebSocket` host API; the
 adapter reports open, message, close and error events through the
 `servo_worker_websocket_*` exports and forwards page send/close actions to the
@@ -77,6 +78,40 @@ The report describes this adapter's support contract; it does not replace
 host-side URL/SSRF policy.
 The broader API inventory and unverified areas are tracked in
 [`worker-compatibility-matrix.md`](../../docs/worker-compatibility-matrix.md).
+
+## Media elements
+
+The WASM backend sends encoded `<audio>` and `<video>` response bytes to the
+embedding Worker. The host uses Mediabunny for container demuxing and the
+browser's WebCodecs decoders. Primary video frames return as BGRA to Servo's
+existing paint path. Ordinary audio PCM is sent to the embedding page for
+device playback; audio connected to a Servo media-element audio source is sent
+through Servo's existing media audio renderer. This host audio sink does not
+implement Servo's general Web Audio API graph.
+
+`worker_media_command` operations are: 0 create player, 1 set MIME type, 2 push
+encoded bytes, 3 end input, 4 play, 5 pause, 6 stop, 7 seek, 8 set muted, 9 set
+volume, 10 set playback rate, 11 destroy, 12 set input size, 13 set seekable,
+and 14 set buffering. `value` carries a number/boolean or the create flags (bit
+0: video renderer; bit 1: Servo media audio source; bit 2: seekable stream).
+Commands return 0 when accepted, 1 when encoded data needs backpressure, and 2
+for unsupported/rejected commands. The command importer copies at most 2 MiB;
+the host bounds pending input and source cache to 8 MiB each per player and
+active players to four across the embedding Worker.
+
+The host calls `servo_worker_media_event` for metadata, playback state, end of
+stream, `EnoughData`/`NeedData`, position, errors and duration. It calls
+`servo_worker_media_video_frame` with tightly packed BGRA pixels, or
+`servo_worker_media_audio_frame` with planar float32 samples. Frame dimensions
+are capped at 8192 per side and 40 MiB per video frame; audio is capped at 8
+channels and 4 MiB per chunk; event data is capped at 64 KiB. The paired
+`servo_worker_media_alloc/free` exports allocate callback input buffers up to
+40 MiB. The host must invoke these callbacks only after the command import
+returns; re-entering Servo while its media code holds locks is invalid.
+
+This is progressive primary-track playback, and codec availability varies with
+the browser. MSE, HLS/DASH, DRM and reliable random-access seeking are not
+provided. No codec implementation is embedded in Servo-WASM.
 
 `document.cookie` and Worker fetch requests use Servo's in-memory RFC 6265 cookie
 jar. Final responses and followed same-origin redirects store `Set-Cookie`

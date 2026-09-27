@@ -158,7 +158,20 @@ mod media_platform {
     }
 }
 
-#[cfg(all(not(feature = "media-gstreamer"), not(target_env = "ohos")))]
+#[cfg(target_arch = "wasm32")]
+mod media_platform {
+    use super::ServoMedia;
+
+    pub fn init() {
+        ServoMedia::init::<super::super::worker_media::WorkerMediaBackend>();
+    }
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(feature = "media-gstreamer"),
+    not(target_env = "ohos")
+))]
 mod media_platform {
     use super::ServoMedia;
     pub fn init() {

@@ -8148,6 +8148,7 @@ dependencies = [
  "servo-media-dummy",
  "servo-media-gstreamer",
  "servo-media-ohos",
+ "servo-media-player",
  "servo-media-thread",
  "servo-net",
  "servo-net-traits",

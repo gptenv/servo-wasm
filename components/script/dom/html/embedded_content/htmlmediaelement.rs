@@ -19,7 +19,7 @@ use euclid::default::Size2D;
 use headers::{ContentLength, ContentRange, HeaderMapExt, Range as RangeHeader};
 use html5ever::{LocalName, Prefix, QualName, local_name, ns};
 use http::StatusCode;
-use http::header::HeaderMap;
+use http::header::{self, HeaderMap};
 use js::context::{JSContext, NoGC};
 use js::realm::CurrentRealm;
 use layout_api::MediaFrame;
@@ -4281,6 +4281,25 @@ impl FetchResponseListener for HTMLMediaElementFetchListener {
         if let Some(ref mut current_fetch_context) = *element.current_fetch_context.borrow_mut() {
             current_fetch_context.set_seekable(is_seekable);
             current_fetch_context.set_origin_clean(origin_clean);
+        }
+
+        let content_type = metadata
+            .as_ref()
+            .and_then(|metadata| metadata.headers.as_ref())
+            .and_then(|headers| headers.get(&header::CONTENT_TYPE))
+            .and_then(|value| value.to_str().ok());
+        if let Some(content_type) = content_type {
+            if let Err(error) = element
+                .player
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .set_content_type(content_type.to_owned())
+            {
+                warn!("Could not set player content type {:?}", error);
+            }
         }
 
         if let Some(metadata) = metadata.as_ref() &&

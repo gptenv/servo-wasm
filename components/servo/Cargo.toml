@@ -172,6 +172,9 @@ webrender = { workspace = true }
 webrender_api = { workspace = true }
 webxr-api = { workspace = true, optional = true }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+servo-media-player = { workspace = true }
+
 # On most platforms we bake in the resources for simplicity. On ohos we load resources via the filesystem.
 # In the future we might want to use this approach also for the other platforms.
 # If the feature is turned off, a resource reader must be injected into the build via `inventory::submit!()`.

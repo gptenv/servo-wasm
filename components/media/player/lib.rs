@@ -113,6 +113,11 @@ pub trait Player: Send + MediaInstance {
     fn set_download_buffering_enabled(&self, enabled: bool) -> Result<(), PlayerError>;
     fn set_playback_rate(&self, playback_rate: f64) -> Result<(), PlayerError>;
     fn playback_rate(&self) -> f64;
+    /// Provide the response content type before the first media bytes are pushed.
+    /// Backends which infer the format from the byte stream may keep the default.
+    fn set_content_type(&self, _content_type: String) -> Result<(), PlayerError> {
+        Ok(())
+    }
     fn push_data(&self, data: Vec<u8>) -> Result<(), PlayerError>;
     fn end_of_stream(&self) -> Result<(), PlayerError>;
     /// Get the list of time ranges in seconds that have been buffered.

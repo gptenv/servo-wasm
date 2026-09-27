@@ -56,6 +56,8 @@ mod site_data_manager;
 mod user_content_manager;
 mod webview;
 mod webview_delegate;
+#[cfg(target_arch = "wasm32")]
+pub mod worker_media;
 
 // These are Servo's public exports. Everything (apart from a couple exceptions below)
 // should be exported at the root. See <https://github.com/servo/servo/issues/18475>.

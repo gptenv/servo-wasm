@@ -15,7 +15,7 @@ const MAX_PENDING_FETCHES = 50;
 const MAX_HOST_MESSAGE_BYTES = 2 * 1024 * 1024;
 const FREE_TIER_SUBREQUESTS = 50;
 const DEFAULT_SESSION_SUBREQUESTS = 10_000;
-const WORKER_ABI_VERSION = 8;
+const WORKER_ABI_VERSION = 10;
 // Interpreter work units (loop iterations weighted by body size, calls,
 // regexp backtracks) that page scripts may run in one pump turn. About 5-11 s
 // of Node CPU when exhausted; see WORKER-ABI.md for the calibration. It is a
@@ -29,6 +29,11 @@ const REQUIRED_EXPORTS = Object.freeze([
   'servo_worker_poll_page_evaluation',
   'servo_worker_cancel_page_evaluation',
   'servo_worker_check_cors_preflight',
+  'servo_worker_media_video_frame',
+  'servo_worker_media_audio_frame',
+  'servo_worker_media_event',
+  'servo_worker_media_alloc',
+  'servo_worker_media_free',
 ]);
 const encoder = new TextEncoder();
 
@@ -72,6 +77,11 @@ const WORKER_CAPABILITIES = Object.freeze({
     scriptLimits: 'Each pump turn grants page scripts an interpreter work ' +
       'budget (scriptBudget); exhausting it terminates the remaining scripts in ' +
       'that turn. It bounds interpreter work, not CPU time or memory.',
+    mediaElements: 'Progressive audio/video demux uses Mediabunny and decoding uses ' +
+      'browser WebCodecs. Audio device output is hosted by the embedding page; ' +
+      'video frames use Servo’s renderer. Playback depends on browser codec support, ' +
+      'uses only primary tracks, and does not include MSE, HLS/DASH, DRM, or ' +
+      'reliable random-access seeking. Servo’s general Web Audio API graph remains unsupported.',
   }),
   unsupported: Object.freeze([
     'service-workers',
@@ -213,6 +223,7 @@ export async function createServoWorkerRuntime(wasmModule, {
   maxSubrequests = FREE_TIER_SUBREQUESTS,
   maxSessionSubrequests = DEFAULT_SESSION_SUBREQUESTS,
   scriptBudget = DEFAULT_SCRIPT_BUDGET,
+  mediaHost = null,
 } = {}) {
   if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 0 ||
       maxResponseBytes > 64 * 1024 * 1024) {
@@ -257,6 +268,11 @@ export async function createServoWorkerRuntime(wasmModule, {
         else if (message.kind === 'web_socket_connect') runtime.connectWebSocket(message);
         else if (message.kind === 'web_socket_action') runtime.webSocketAction(message);
       },
+      worker_media_command: (operation, playerId, value, ptr, len) => {
+        if (len > 2 * 1024 * 1024) return 2;
+        const bytes = len ? new Uint8Array(runtime.instance.exports.memory.buffer, ptr, len).slice() : new Uint8Array();
+        return runtime.dispatchMediaCommand(operation, playerId, value, bytes);
+      },
     },
   };
 
@@ -273,7 +289,7 @@ export async function createServoWorkerRuntime(wasmModule, {
   }
   runtime = new ServoWorkerRuntime(
     instance, fetchImpl, webSocketFactory, log, maxResponseBytes,
-    maxSubrequests, maxSessionSubrequests,
+    maxSubrequests, maxSessionSubrequests, mediaHost,
   );
   runtime.instance.exports.__wasm_call_ctors?.();
   runtime.instance.exports.servo_worker_set_script_budget(BigInt(scriptBudget));
@@ -318,9 +334,10 @@ class ServoWorkerRuntime {
   #pressedModifiers = new Set();
   #scriptBudgetTerminations = 0;
   #pendingEvaluations = new Set();
+  #mediaHost;
 
   constructor(instance, fetchImpl, webSocketFactory, log, maxResponseBytes,
-              maxSubrequests, maxSessionSubrequests) {
+              maxSubrequests, maxSessionSubrequests, mediaHost) {
     // A WASM trap or host-side stack overflow does not unwind Rust state
     // (held RefCell borrows, partial updates), so after the first fatal export
     // failure every later call could fail with a misleading secondary panic.
@@ -349,6 +366,39 @@ class ServoWorkerRuntime {
     this.#maxResponseBytes = maxResponseBytes;
     this.#maxSubrequests = maxSubrequests;
     this.#maxSessionSubrequests = maxSessionSubrequests;
+    this.#mediaHost = mediaHost;
+  }
+
+  /** Dispatch a synchronous, bounded command to the browser-native media host. */
+  dispatchMediaCommand(operation, playerId, value, bytes) {
+    if (!this.#mediaHost || typeof this.#mediaHost.command !== 'function') return 2;
+    const exports = this.instance.exports;
+    const copyToWasm = (input, invoke) => {
+      if (!(input instanceof Uint8Array)) return 0;
+      if (input.byteLength === 0) return invoke(0, 0);
+      const ptr = exports.servo_worker_media_alloc(input.byteLength);
+      if (!ptr) return 0;
+      try {
+        new Uint8Array(exports.memory.buffer, ptr, input.byteLength).set(input);
+        return invoke(ptr, input.byteLength);
+      } finally {
+        exports.servo_worker_media_free(ptr, input.byteLength);
+      }
+    };
+    const callbacks = {
+      event: (id, kind, value0 = 0, value1 = 0, data = new Uint8Array()) =>
+        copyToWasm(data, (ptr, len) => exports.servo_worker_media_event(id, kind, value0, value1, ptr, len)),
+      videoFrame: (id, width, height, data) =>
+        copyToWasm(data, (ptr, len) => exports.servo_worker_media_video_frame(id, width, height, ptr, len)),
+      audioFrame: (id, channels, sampleRate, data) =>
+        copyToWasm(data, (ptr, len) => exports.servo_worker_media_audio_frame(id, channels, sampleRate, ptr, len)),
+    };
+    try {
+      return this.#mediaHost.command({ operation, playerId, value, bytes }, callbacks) | 0;
+    } catch (error) {
+      this.#log(`Servo Worker media host command failed: ${error}`);
+      return 2;
+    }
   }
 
   /** Start a new serialized host invocation after the previous one has settled. */
