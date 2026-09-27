@@ -153,15 +153,6 @@ impl Backend for WorkerMediaBackend {
         };
         if command(MEDIA_CREATE, id, f64::from(flags), &[]) != 0 {
             log::error!("The Worker host rejected media player creation");
-        } else {
-            // HTMLMediaElement's input buffer starts locked. Existing native
-            // backends emit NeedData when their source is ready; without the
-            // initial event Servo never forwards the response bytes to this
-            // Worker-backed player, leaving media metadata and frames empty.
-            let event_sender = callbacks.lock().unwrap().sender.clone();
-            if let Err(error) = event_sender.send(PlayerEvent::NeedData) {
-                log::error!("Could not request initial Worker media data: {error:?}");
-            }
         }
         player
     }
@@ -246,6 +237,7 @@ struct PlayerState {
     volume: f64,
     rate: f64,
     seekable: bool,
+    initial_data_requested: bool,
     duration: Option<f64>,
 }
 
@@ -257,6 +249,7 @@ impl Default for PlayerState {
             volume: 1.0,
             rate: 1.0,
             seekable: false,
+            initial_data_requested: false,
             duration: None,
         }
     }
@@ -277,6 +270,28 @@ impl WorkerMediaPlayer {
                 "Worker media host rejected command".to_owned(),
             )),
         }
+    }
+
+    fn request_initial_data(&self) -> Result<(), PlayerError> {
+        {
+            let mut state = self.state.lock().unwrap();
+            if state.initial_data_requested {
+                return Ok(());
+            }
+            state.initial_data_requested = true;
+        }
+
+        // Wait until HTMLMediaElement has received response headers and made
+        // its fetch context available before unlocking its initially-locked
+        // input queue. Sending this from create_player can race that setup.
+        let event_sender = self.callbacks.lock().unwrap().sender.clone();
+        if let Err(error) = event_sender.send(PlayerEvent::NeedData) {
+            self.state.lock().unwrap().initial_data_requested = false;
+            return Err(PlayerError::Backend(format!(
+                "Could not request initial Worker media data: {error:?}"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -378,7 +393,7 @@ impl Player for WorkerMediaPlayer {
     fn set_seekable(&self, seekable: bool) -> Result<(), PlayerError> {
         self.send(MEDIA_SET_SEEKABLE, f64::from(seekable), &[])?;
         self.state.lock().unwrap().seekable = seekable;
-        Ok(())
+        self.request_initial_data()
     }
 
     fn set_download_buffering_enabled(&self, enabled: bool) -> Result<(), PlayerError> {
