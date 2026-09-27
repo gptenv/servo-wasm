@@ -224,6 +224,7 @@ export async function createServoWorkerRuntime(wasmModule, {
   maxSessionSubrequests = DEFAULT_SESSION_SUBREQUESTS,
   scriptBudget = DEFAULT_SCRIPT_BUDGET,
   mediaHost = null,
+  onActivity = () => {},
 } = {}) {
   if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 0 ||
       maxResponseBytes > 64 * 1024 * 1024) {
@@ -237,6 +238,9 @@ export async function createServoWorkerRuntime(wasmModule, {
   }
   if (!Number.isSafeInteger(scriptBudget) || scriptBudget < 0) {
     throw new RangeError('scriptBudget must be a non-negative integer (0 is unlimited)');
+  }
+  if (typeof onActivity !== 'function') {
+    throw new TypeError('onActivity must be a function');
   }
   let runtime;
   const imports = {
@@ -289,7 +293,7 @@ export async function createServoWorkerRuntime(wasmModule, {
   }
   runtime = new ServoWorkerRuntime(
     instance, fetchImpl, webSocketFactory, log, maxResponseBytes,
-    maxSubrequests, maxSessionSubrequests, mediaHost,
+    maxSubrequests, maxSessionSubrequests, mediaHost, onActivity,
   );
   runtime.instance.exports.__wasm_call_ctors?.();
   runtime.instance.exports.servo_worker_set_script_budget(BigInt(scriptBudget));
@@ -335,9 +339,10 @@ class ServoWorkerRuntime {
   #scriptBudgetTerminations = 0;
   #pendingEvaluations = new Set();
   #mediaHost;
+  #onActivity;
 
   constructor(instance, fetchImpl, webSocketFactory, log, maxResponseBytes,
-              maxSubrequests, maxSessionSubrequests, mediaHost) {
+              maxSubrequests, maxSessionSubrequests, mediaHost, onActivity) {
     // A WASM trap or host-side stack overflow does not unwind Rust state
     // (held RefCell borrows, partial updates), so after the first fatal export
     // failure every later call could fail with a misleading secondary panic.
@@ -367,6 +372,7 @@ class ServoWorkerRuntime {
     this.#maxSubrequests = maxSubrequests;
     this.#maxSessionSubrequests = maxSessionSubrequests;
     this.#mediaHost = mediaHost;
+    this.#onActivity = onActivity;
   }
 
   /** Dispatch a synchronous, bounded command to the browser-native media host. */
@@ -449,6 +455,11 @@ class ServoWorkerRuntime {
     this.#activityVersion++;
     for (const resolve of this.#activityWaiters) resolve();
     this.#activityWaiters.clear();
+    try {
+      this.#onActivity();
+    } catch (error) {
+      this.#log(`Servo Worker activity callback failed: ${error}`);
+    }
   }
 
   #waitForActivity() {

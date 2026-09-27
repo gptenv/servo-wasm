@@ -205,6 +205,11 @@ browser load event or proof that no future page work is possible. Its result
 includes `scriptsTerminated` for the pumps it ran. The host time budget cannot
 stop a synchronous page script; the operation budget below does.
 
+`createServoWorkerRuntime()` accepts an optional `onActivity` host callback. The
+adapter invokes it when fetch or WebSocket work delivers activity. Hosts can use
+it to schedule a later, serialized pump after the current invocation settles;
+the callback must not re-enter the WASM runtime synchronously.
+
 ## Script operation budget
 
 A Worker has one thread and its clock does not advance during synchronous
