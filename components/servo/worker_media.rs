@@ -151,8 +151,17 @@ impl Backend for WorkerMediaBackend {
                 | (u32::from(callbacks.audio_renderer.is_some()) << 1)
                 | (u32::from(stream_type == StreamType::Seekable) << 2)
         };
-        if command(MEDIA_CREATE, id, f64::from(flags), &[]) < 0 {
+        if command(MEDIA_CREATE, id, f64::from(flags), &[]) != 0 {
             log::error!("The Worker host rejected media player creation");
+        } else {
+            // HTMLMediaElement's input buffer starts locked. Existing native
+            // backends emit NeedData when their source is ready; without the
+            // initial event Servo never forwards the response bytes to this
+            // Worker-backed player, leaving media metadata and frames empty.
+            let event_sender = callbacks.lock().unwrap().sender.clone();
+            if let Err(error) = event_sender.send(PlayerEvent::NeedData) {
+                log::error!("Could not request initial Worker media data: {error:?}");
+            }
         }
         player
     }
