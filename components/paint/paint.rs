@@ -15,8 +15,9 @@ use bitflags::bitflags;
 use crossbeam_channel::Sender;
 use dpi::PhysicalSize;
 use embedder_traits::{
-    EventLoopWaker, InputEventAndId, InputEventId, InputEventResult, ScreenshotCaptureError,
-    Scroll, ShutdownState, ViewportDetails, WebViewPoint, WebViewRect,
+    EventLoopWaker, InputEvent, InputEventAndId, InputEventId, InputEventResult,
+    ScreenshotCaptureError, Scroll, ShutdownState, ViewportDetails, WebViewPoint, WebViewRect,
+    WheelEvent,
 };
 use euclid::{Scale, Size2D};
 use image::RgbaImage;
@@ -122,6 +123,10 @@ pub struct Paint {
     /// All of the [`Painters`] for this [`Paint`]. Each [`Painter`] handles painting to
     /// a single [`RenderingContext`].
     painters: Vec<Rc<RefCell<Painter>>>,
+
+    /// Wheel events awaiting their DOM default-action result in Worker mode.
+    #[cfg(target_arch = "wasm32")]
+    pending_worker_wheel_events: RefCell<HashMap<InputEventId, WheelEvent>>,
 
     /// A [`PaintProxy`] which can be used to allow other parts of Servo to communicate
     /// with this [`Paint`].
@@ -230,6 +235,8 @@ impl Paint {
         };
         Rc::new(RefCell::new(Paint {
             painters: Default::default(),
+            #[cfg(target_arch = "wasm32")]
+            pending_worker_wheel_events: Default::default(),
             paint_proxy: state.paint_proxy,
             event_loop_waker: state.event_loop_waker,
             shutdown_state: state.shutdown_state,
@@ -814,11 +821,25 @@ impl Paint {
     }
 
     pub fn show_webview(&self, webview_id: WebViewId) -> Result<(), UnknownWebView> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = webview_id;
+            Ok(())
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         self.painter_mut(webview_id.into())
             .set_webview_hidden(webview_id, false)
     }
 
     pub fn hide_webview(&self, webview_id: WebViewId) -> Result<(), UnknownWebView> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = webview_id;
+            Ok(())
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         self.painter_mut(webview_id.into())
             .set_webview_hidden(webview_id, true)
     }
@@ -828,43 +849,93 @@ impl Paint {
         webview_id: WebViewId,
         new_scale_factor: Scale<f32, DeviceIndependentPixel, DevicePixel>,
     ) {
-        if self.shutdown_state() != ShutdownState::NotShuttingDown {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (webview_id, new_scale_factor);
             return;
         }
-        self.painter_mut(webview_id.into())
-            .set_hidpi_scale_factor(webview_id, new_scale_factor);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.shutdown_state() != ShutdownState::NotShuttingDown {
+                return;
+            }
+            self.painter_mut(webview_id.into())
+                .set_hidpi_scale_factor(webview_id, new_scale_factor);
+        }
     }
 
     pub fn resize_rendering_context(&self, webview_id: WebViewId, new_size: PhysicalSize<u32>) {
-        if self.shutdown_state() != ShutdownState::NotShuttingDown {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (webview_id, new_size);
             return;
         }
-        self.painter_mut(webview_id.into())
-            .resize_rendering_context(new_size);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.shutdown_state() != ShutdownState::NotShuttingDown {
+                return;
+            }
+            self.painter_mut(webview_id.into())
+                .resize_rendering_context(new_size);
+        }
     }
 
     pub fn set_screen_size(&self, webview_id: WebViewId, new_size: Size2D<f32, DevicePixel>) {
-        if self.shutdown_state() != ShutdownState::NotShuttingDown {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (webview_id, new_size);
             return;
         }
-        self.painter_mut(webview_id.into())
-            .set_screen_size(webview_id, new_size);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.shutdown_state() != ShutdownState::NotShuttingDown {
+                return;
+            }
+            self.painter_mut(webview_id.into())
+                .set_screen_size(webview_id, new_size);
+        }
     }
 
     pub fn set_page_zoom(&self, webview_id: WebViewId, new_zoom: f32) {
-        if self.shutdown_state() != ShutdownState::NotShuttingDown {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (webview_id, new_zoom);
             return;
         }
-        self.painter_mut(webview_id.into())
-            .set_page_zoom(webview_id, new_zoom);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.shutdown_state() != ShutdownState::NotShuttingDown {
+                return;
+            }
+            self.painter_mut(webview_id.into())
+                .set_page_zoom(webview_id, new_zoom);
+        }
     }
 
     pub fn page_zoom(&self, webview_id: WebViewId) -> f32 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = webview_id;
+            1.0
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         self.painter(webview_id.into()).page_zoom(webview_id)
     }
 
     /// Render the WebRender scene to the active `RenderingContext`.
     pub fn render(&self, webview_id: WebViewId) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = webview_id;
+            return;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         self.painter_mut(webview_id.into())
             .render(&self.time_profiler_chan);
     }
@@ -964,6 +1035,35 @@ impl Paint {
         if self.shutdown_state() != ShutdownState::NotShuttingDown {
             return false;
         }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let hit_test = event.event.point().and_then(|point| {
+                crate::worker_frame::hit_test_result(point.as_device_point(Scale::new(1.0)))
+            });
+            if event.event.point().is_some() && hit_test.is_none() {
+                return false;
+            }
+
+            if let InputEvent::Wheel(wheel_event) = &event.event {
+                self.pending_worker_wheel_events
+                    .borrow_mut()
+                    .insert(event.id, *wheel_event);
+            }
+
+            if self
+                .embedder_to_constellation_sender
+                .send(EmbedderToConstellationMessage::ForwardInputEvent(
+                    webview_id, event, hit_test,
+                ))
+                .is_err()
+            {
+                return false;
+            }
+            return true;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         self.painter_mut(webview_id.into())
             .notify_input_event(webview_id, event)
     }
@@ -982,14 +1082,33 @@ impl Paint {
         pinch_zoom_delta: f32,
         center: DevicePoint,
     ) {
-        if self.shutdown_state() != ShutdownState::NotShuttingDown {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (webview_id, pinch_zoom_delta, center);
             return;
         }
-        self.painter_mut(webview_id.into())
-            .adjust_pinch_zoom(webview_id, pinch_zoom_delta, center);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.shutdown_state() != ShutdownState::NotShuttingDown {
+                return;
+            }
+            self.painter_mut(webview_id.into()).adjust_pinch_zoom(
+                webview_id,
+                pinch_zoom_delta,
+                center,
+            );
+        }
     }
 
     pub fn pinch_zoom(&self, webview_id: WebViewId) -> f32 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = webview_id;
+            1.0
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         self.painter(webview_id.into()).pinch_zoom(webview_id)
     }
 
@@ -997,6 +1116,13 @@ impl Paint {
         &self,
         webview_id: WebViewId,
     ) -> Scale<f32, CSSPixel, DevicePixel> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = webview_id;
+            Scale::new(1.0)
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         self.painter_mut(webview_id.into())
             .device_pixels_per_page_pixel(webview_id)
     }
@@ -1021,6 +1147,40 @@ impl Paint {
         input_event_id: InputEventId,
         result: InputEventResult,
     ) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = webview_id;
+            let Some(wheel_event) = self
+                .pending_worker_wheel_events
+                .borrow_mut()
+                .remove(&input_event_id)
+            else {
+                return;
+            };
+            if result
+                .intersects(InputEventResult::DefaultPrevented | InputEventResult::DispatchFailed)
+            {
+                return;
+            }
+
+            // Match the native compositor's convention: wheel deltas are
+            // inverted before updating the scroll tree.
+            let delta = webrender_api::units::LayoutVector2D::new(
+                -wheel_event.delta.x as f32,
+                -wheel_event.delta.y as f32,
+            );
+            if let Some((pipeline_id, scroll_states)) =
+                crate::worker_frame::scroll_root_by(delta)
+            {
+                let _ = self.embedder_to_constellation_sender.send(
+                    EmbedderToConstellationMessage::SetScrollStates(pipeline_id, scroll_states),
+                );
+                self.event_loop_waker.wake();
+            }
+            return;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(mut painter) = self.maybe_painter_mut(webview_id.into()) {
             painter.notify_input_event_handled(webview_id, input_event_id, result);
         }

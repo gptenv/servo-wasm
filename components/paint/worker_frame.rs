@@ -8,14 +8,19 @@
 
 use std::cell::RefCell;
 
+use embedder_traits::PaintHitTestResult;
+use euclid::Point2D;
 use paint_api::SerializableDisplayListPayload;
-use paint_api::display_list::PaintDisplayListInfo;
+use paint_api::display_list::{PaintDisplayListInfo, ScrollType};
 use rustc_hash::FxHashMap;
 use servo_base::generic_channel::GenericReceiver;
 use servo_base::id::PipelineId;
+use servo_constellation_traits::ScrollStateUpdate;
+use style_traits::CSSPixel;
+use webrender_api::units::{DevicePoint, LayoutVector2D};
 use webrender_api::{
     BuiltDisplayList, BuiltDisplayListDescriptor, DisplayListPayload,
-    PipelineId as WebRenderPipelineId,
+    PipelineId as WebRenderPipelineId, ScrollLocation,
 };
 
 pub(crate) struct CapturedDisplayList {
@@ -134,6 +139,45 @@ pub(crate) fn root_pipeline(
         .filter(|(pipeline, _)| !children.contains(*pipeline))
         .max_by_key(|(_, captured)| captured.sequence)
         .map(|(pipeline, _)| *pipeline)
+}
+
+/// The Worker renderer does not have WebRender's hit-test API. Its document
+/// layout can still hit-test pointer coordinates, as long as Constellation is
+/// given the active root pipeline and the point in that pipeline's viewport.
+pub(crate) fn hit_test_result(point: DevicePoint) -> Option<PaintHitTestResult> {
+    with_display_lists(|lists| {
+        let pipeline_id = root_pipeline(lists)?;
+        Some(PaintHitTestResult {
+            pipeline_id: pipeline_id.into(),
+            point_in_viewport: Point2D::<f32, CSSPixel>::new(point.x, point.y),
+            // This value is used by compositor-side scrolling. Worker wheel
+            // scrolling selects the root scroll node directly below.
+            external_scroll_id: webrender_api::ExternalScrollId(0, pipeline_id),
+        })
+    })
+}
+
+/// Apply the Worker's default wheel action to the root document's scroll node
+/// and return the full scroll state for Layout, matching the native paint path.
+pub(crate) fn scroll_root_by(delta: LayoutVector2D) -> Option<(PipelineId, ScrollStateUpdate)> {
+    DISPLAY_LISTS.with(|lists| {
+        let mut lists = lists.borrow_mut();
+        let web_render_pipeline_id = root_pipeline(&lists)?;
+        let captured = lists.get_mut(&web_render_pipeline_id)?;
+        let root_scroll_id = webrender_api::ExternalScrollId(0, web_render_pipeline_id);
+        let (scrolled_node, _) = captured.info.scroll_tree.scroll_node_or_ancestor(
+            root_scroll_id,
+            ScrollLocation::Delta(delta),
+            ScrollType::InputEvents,
+        )?;
+        Some((
+            web_render_pipeline_id.into(),
+            ScrollStateUpdate {
+                scrolled_node,
+                offsets: captured.info.scroll_tree.scroll_offsets(),
+            },
+        ))
+    })
 }
 
 /// Run `f` with the captured display lists.
