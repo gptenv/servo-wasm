@@ -235,6 +235,12 @@ impl ServoCookie {
         // set the cookie's secure-only-flag to true. Otherwise, set the cookie's secure-only-flag to false.
         let secure_only = cookie.secure().unwrap_or(false);
 
+        // Modern cookie semantics require SameSite=None cookies to use the
+        // Secure attribute; otherwise browsers ignore them.
+        if cookie.same_site() == Some(cookie::SameSite::None) && !secure_only {
+            return None;
+        }
+
         // Step 13. If the request-uri does not denote a "secure" connection (as defined by the user agent),
         // and the cookie's secure-only-flag is true, then abort these steps and ignore the cookie entirely.
         if secure_only && !request.is_secure_scheme() {

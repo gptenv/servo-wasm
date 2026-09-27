@@ -1,7 +1,7 @@
-# Raw Worker ABI, version 8
+# Raw Worker ABI, version 9
 
 The JavaScript adapter and WASM artifact are a matched pair. The adapter checks
-`servo_worker_abi_version() === 8` and checks that every export it requires
+`servo_worker_abi_version() === 9` and checks that every export it requires
 (redirect-cookie processing, the script budget and correlated evaluation) is present before
 running constructors or bootstrap. Rebuild
 the artifact whenever the interface or serialized request representation changes.
@@ -19,10 +19,10 @@ Exactly five function imports exist, all in `env`:
 | `worker_monotonic_now_ns()` | Return monotonic nanoseconds as a JavaScript `bigint`. |
 | `worker_unix_time_now_ns()` | Return Unix-epoch nanoseconds as a JavaScript `bigint`. |
 
-The fetch import carries `{version:8, kind:"fetch", request:...}`,
-`{version:8, kind:"cancel", request_ids:[...]}`,
-`{version:8, kind:"web_socket_connect", request_id, url, protocols}`, or
-`{version:8, kind:"web_socket_action", request_id, action}`. IDs serialize as
+The fetch import carries `{version:9, kind:"fetch", request:...}`,
+`{version:9, kind:"cancel", request_ids:[...]}`,
+`{version:9, kind:"web_socket_connect", request_id, url, protocols}`, or
+`{version:9, kind:"web_socket_action", request_id, action}`. IDs serialize as
 UUID strings. The WebSocket commands use the Worker's `WebSocket` host API; the
 adapter reports open, message, close and error events through the
 `servo_worker_websocket_*` exports and forwards page send/close actions to the
@@ -335,24 +335,24 @@ session (redirects count). `reset()` does not replenish either counter;
 HTML costs no network fetch. These bounds do not prove Cloudflare CPU or
 total-memory compliance.
 
-Non-credentialed cross-origin requests use CORS. Servo decides, following
-Fetch, whether a request needs a preflight; if so the fetch DTO carries
-`cors_preflight: {method, headers}` (the request method and its sorted,
-lowercase CORS-unsafe header names). The adapter first sends `OPTIONS` to the
-request URL with `Origin`, `Accept: */*`, `Access-Control-Request-Method` and,
-when there are unsafe headers, `Access-Control-Request-Headers`, with no body,
-no cookies and `redirect: "manual"`. It passes the response status and headers
-to `servo_worker_check_cors_preflight(id, status, headers)`, which applies the
-Fetch preflight checks: an ok (2xx) status, `Access-Control-Allow-Origin` of
-`*` or the exact origin, the method in `Access-Control-Allow-Methods` unless
-safelisted (`*` allowed), and every unsafe header in
-`Access-Control-Allow-Headers` (`*` allowed, except that `Authorization` must
-be named). It returns 1 when the actual request may be sent, and -1 after
+Cross-origin requests use CORS. Servo decides, following Fetch, whether a
+request needs a preflight; if so the fetch DTO carries
+`cors_preflight: {method, headers, credentials}` (the request method, its
+sorted lowercase CORS-unsafe header names, and whether the original request
+uses `credentials: include`). The adapter sends `OPTIONS` to the request URL
+with `Origin`, `Accept: */*`, `Access-Control-Request-Method` and, when there
+are unsafe headers, `Access-Control-Request-Headers`, with no body or cookies
+and `redirect: "manual"`. It passes the response status and headers to
+`servo_worker_check_cors_preflight(id, status, headers)`. Credentialed requests
+require the exact `Access-Control-Allow-Origin`,
+`Access-Control-Allow-Credentials: true`, and explicit methods and headers;
+wildcards do not authorize them. The actual response passes the same CORS check
+before cookies are accepted. Cookie sending applies SameSite and Secure rules.
+The preflight returns 1 when the actual request may be sent, and -1 after
 failing the request with a network error when it may not; the host must then
-not send it. The actual response still passes the CORS response check. Each
-preflight is a host subrequest and there is no preflight cache. Credentialed
-cross-origin requests, redirects of preflighted requests and cross-origin
-script-fetch redirects fail closed. The host's destination and SSRF policy
+not send it. Each preflight is a host subrequest and there is no preflight
+cache. Redirects of preflighted requests and cross-origin script-fetch
+redirects fail closed. The host's destination and SSRF policy
 must therefore cover every method, including preflights and cross-origin
 `POST`, `PUT` and `DELETE` requests; see `worker-operations.md`. Cookie support is partial as described above; general request-body
 streams are not implemented. Full Fetch redirect/manual-redirect behavior,

@@ -63,13 +63,16 @@ pub mod resource_thread {
     use std::sync::Arc;
 
     use crossbeam_channel::Sender;
+    use cookie::SameSite;
     use http::{HeaderValue, header};
     use net_traits::request::{CredentialsMode, Origin, RequestBuilder};
     use net_traits::response::ResponseInit;
+    use net_traits::pub_domains::is_same_site;
     use net_traits::{AsyncRuntime, CoreResourceMsg, FetchChannels, ResourceThreads};
     use profile_traits::mem::ProfilerChan;
     use profile_traits::time::ProfilerChan as TimeProfilerChan;
     use servo_base::generic_channel::{GenericReceiver, channel};
+    use servo_url::ImmutableOrigin;
 
     /// Host callback used by the wasm build to implement network loading.
     ///
@@ -118,6 +121,52 @@ pub mod resource_thread {
         })
     }
 
+    fn worker_cookie_header_for_request(request: &RequestBuilder) -> Option<String> {
+        let origin = match &request.origin {
+            Origin::Origin(origin) => Some(origin),
+            Origin::Client => request.client.as_ref().and_then(|client| match &client.origin {
+                Origin::Origin(origin) => Some(origin),
+                Origin::Client => None,
+            }),
+        };
+        let url = request.url.url();
+        let request_origin: ImmutableOrigin = url.origin();
+        // The Worker request model does not expose the complete top-level
+        // site-for-cookies. Fail closed for nested contexts so a cross-site
+        // ancestor cannot cause Strict/Lax cookies to be sent.
+        let same_site = !request
+            .client
+            .as_ref()
+            .is_some_and(|client| client.is_nested_browsing_context)
+            && origin.is_some_and(|origin| is_same_site(origin, &request_origin));
+        let lax_top_level_navigation = request.mode == net_traits::request::RequestMode::Navigate
+            && matches!(request.method.as_str(), "GET" | "HEAD");
+
+        COOKIES.with(|jar| {
+            let mut jar = jar.borrow_mut();
+            jar.remove_expired_cookies_for_url(&url);
+            let cookies = jar.cookies_data_for_url(&url, net_traits::CookieSource::HTTP);
+            let mut header = String::new();
+            for cookie in cookies {
+                let allowed = match cookie.same_site() {
+                    Some(SameSite::Strict) => same_site,
+                    Some(SameSite::Lax) | None => same_site || lax_top_level_navigation,
+                    Some(SameSite::None) => true,
+                };
+                if !allowed {
+                    continue;
+                }
+                if !header.is_empty() {
+                    header.push_str("; ");
+                }
+                header.push_str(cookie.name());
+                header.push('=');
+                header.push_str(cookie.value());
+            }
+            (!header.is_empty()).then_some(header)
+        })
+    }
+
     pub fn worker_request_accepts_cookies(request: &RequestBuilder) -> bool {
         let origin = match &request.origin {
             Origin::Origin(origin) => Some(origin),
@@ -126,9 +175,9 @@ pub mod resource_thread {
                 Origin::Client => None,
             }),
         };
-        // A cross-origin no-cors request is opaque to script. Until the Worker
-        // bridge has a top-level site-for-cookies context, dispatch it
-        // anonymously instead of rejecting it or attaching ambient cookies.
+        // A cross-origin no-cors request is opaque to script and remains
+        // anonymous. CORS requests with `include` may use cookies, with
+        // SameSite policy applied in `worker_cookie_header_for_request`.
         // Same-origin no-cors requests retain their ordinary credential rules.
         let same_origin = origin.is_some_and(|origin| *origin == request.url.origin());
         if request.mode == net_traits::request::RequestMode::NoCors && !same_origin {
@@ -151,8 +200,7 @@ pub mod resource_thread {
             return;
         }
 
-        let url = request.url.url();
-        let cookie_header = worker_cookie_header_for_url(&url);
+        let cookie_header = worker_cookie_header_for_request(request);
         if let Some(cookie_header) = cookie_header
             && let Ok(cookie_header) = HeaderValue::from_bytes(cookie_header.as_bytes())
         {
