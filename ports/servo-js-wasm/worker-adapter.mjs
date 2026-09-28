@@ -41,7 +41,8 @@ const WORKER_CAPABILITIES = Object.freeze({
     fetch: 'Response bodies stream; request bodies are currently buffered. ' +
       'Non-credentialed cross-origin requests use CORS, with a preflight (one extra ' +
       'host subrequest, not cached) when required; preflighted requests do not ' +
-      'follow redirects. Credentialed cross-origin requests fail closed.',
+      'follow redirects. Credentialed cross-origin requests require explicit ' +
+      'Access-Control-Allow-Origin and Access-Control-Allow-Credentials.',
     cookies: 'document.cookie and Worker fetches use Servo’s in-memory RFC 6265 ' +
       'cookie jar. Final and followed same-origin redirect cookies require ' +
       'Headers.getSetCookie() and the request credentials mode; complete ' +
@@ -74,7 +75,7 @@ const WORKER_CAPABILITIES = Object.freeze({
   unsupported: Object.freeze([
     'service-workers',
     'dedicated-shared-workers', 'webgl', 'webgpu', 'web-audio', 'synchronous-xhr',
-    'credentialed-cross-origin-cors', 'streaming-request-bodies',
+    'streaming-request-bodies',
   ]),
   unverified: Object.freeze([]),
 });

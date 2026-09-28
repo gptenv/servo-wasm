@@ -20,7 +20,7 @@ import { webPlatformCases } from './web-platform-cases.mjs';
 // worker_libc_shim.c plus its trimmed copy of wasi-sysroot's libc.a (see
 // that file's build_trimmed_wasi_libc) now physically remove every object
 // that would otherwise bake those WASI imports in, so the module has
-// exactly five `env` imports, all of which a Worker can actually supply.
+// only explicit `env` imports, all of which a Worker can actually supply.
 // Instantiating with exactly this import object (no WASI polyfill, nothing
 // extra) is the actual regression test for that -- see the allowlist test
 // below, which additionally asserts no *other* imports crept in.
@@ -28,6 +28,7 @@ const WORKER_ENV_IMPORT_ALLOWLIST = [
   'worker_fetch_request',
   'worker_getrandom',
   'worker_log_error',
+  'worker_media_command',
   'worker_monotonic_now_ns',
   'worker_unix_time_now_ns',
 ];
@@ -49,13 +50,13 @@ test('host command parser rejects mismatched ABI and malformed bounded DTOs', ()
     headers: [['accept', [116, 101, 120, 116]]], body: null,
     destination: 'None', redirect_mode: 'Follow',
   };
-  const valid = { version: 8, kind: 'fetch', request };
+  const valid = { version: 10, kind: 'fetch', request };
   assert.deepEqual(parseWorkerHostMessage(hostCommand(valid)), valid);
   const preflighted = { ...valid, request: { ...request,
     cors_preflight: { method: 'PUT', headers: ['x-token'] } } };
   assert.deepEqual(parseWorkerHostMessage(hostCommand(preflighted)), preflighted);
   for (const malformed of [
-    { ...valid, version: 7 },
+    { ...valid, version: 9 },
     { ...valid, request: { ...request, method: 'GET\r\nCookie: x' } },
     { ...valid, request: { ...request, headers: [['cookie\r\nx', [1]]] } },
     { ...valid, request: { ...request, headers: [['x', [256]]] } },
@@ -63,8 +64,8 @@ test('host command parser rejects mismatched ABI and malformed bounded DTOs', ()
     { ...valid, request: { ...request, cors_preflight: { method: 'PUT\r\n', headers: [] } } },
     { ...valid, request: { ...request, cors_preflight: { method: 'PUT', headers: ['X-Upper'] } } },
     { ...valid, request: { ...request, cors_preflight: { method: 'PUT', headers: 'x-token' } } },
-    { version: 8, kind: 'cancel', request_ids: [''] },
-    { version: 8, kind: 'unrecognized' },
+    { version: 10, kind: 'cancel', request_ids: [''] },
+    { version: 10, kind: 'unrecognized' },
   ]) {
     assert.throws(() => parseWorkerHostMessage(hostCommand(malformed)));
   }
@@ -88,6 +89,7 @@ instance = new WebAssembly.Instance(wasm, {
     // This low-level instance only runs isolated SpiderMonkey probes. The
     // separate adapter instance below exercises the real fetch protocol.
     worker_fetch_request: (_ptr, _len) => {},
+    worker_media_command: (_operation, _playerId, _value, _ptr, _len) => 0,
     // Real entropy, not a stub: getrandom's custom wasm32 backend
     // (servo-net-traits' __getrandom_v03_custom) is fail-closed on a
     // non-zero return, so a fake "always succeeds without writing bytes"
@@ -192,7 +194,7 @@ test('SpiderMonkey smoke export runs in wasm', () => {
 });
 
 test('Worker lifecycle exports are present and initially idle', () => {
-  assert.equal(instance.exports.servo_worker_abi_version(), 8);
+  assert.equal(instance.exports.servo_worker_abi_version(), 10);
   assert.equal(typeof instance.exports.servo_worker_evaluate_page_async, 'function');
   assert.equal(Number(instance.exports.servo_worker_poll_page_evaluation(1)), -1);
   assert.equal(typeof instance.exports.servo_worker_set_script_budget, 'function');
@@ -298,6 +300,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     // This one runtime deliberately stress-loads many pages in a single test.
     // Exercise an explicit finite request budget; normal adapter defaults are unlimited.
     maxSubrequests: 200,
+    maxResponseBytes: 8 * 1024 * 1024,
     log: (message) => {
       fetchErrors.push(message);
       if (/panicked|fatal/i.test(message)) t.diagnostic(message);
@@ -529,7 +532,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       return socket;
     },
   });
-  assert.equal(runtime.capabilities().abiVersion, 8);
+  assert.equal(runtime.capabilities().abiVersion, 10);
   assert.ok(runtime.capabilities().supported.includes('script-operation-budget'));
   assert.ok(runtime.capabilities().supported.includes('cpu-screenshots'));
   assert.ok(runtime.capabilities().partial.cookies);
@@ -662,10 +665,10 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   assert.equal(requests.find(({ url }) => url.endsWith('/cross-redirect'))?.authorization,
     'Bearer secret', 'serialized request header values must be decoded from bytes');
   const corsOk = requests.filter(({ url }) => url === 'https://cors.example/ok');
-  assert.deepEqual(corsOk.map(({ method }) => method ?? 'GET'), ['GET', 'OPTIONS'],
-    'a credentialed request never reaches the host, and a preflighted one stops at ' +
-    'its preflight when the server does not allow it');
-  assert.equal(corsOk[1].cookie, null, 'a preflight carries no cookies');
+  assert.deepEqual(corsOk.map(({ method }) => method ?? 'GET'), ['GET', 'GET', 'OPTIONS'],
+    'a credentialed request reaches the host but requires response permission, and ' +
+    'a preflighted request stops at its preflight when the server does not allow it');
+  assert.equal(corsOk[2].cookie, null, 'a preflight carries no cookies');
 
   assert.equal(runtime.evaluatePage(
     'Promise.all(Array.from({length: 9}, (_, i) => ' +
@@ -689,8 +692,8 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     assert.fail(JSON.stringify({ queueStatus, result: runtime.pageResult(),
       peakQueuedFetches, fetchErrors, queuedRequests: requests.filter(({ url }) => url.includes('/queued-')) }));
   }
-  assert.equal(peakQueuedFetches, 6,
-    'the host adapter must queue above the six outgoing-connection limit');
+  assert.equal(peakQueuedFetches, 9,
+    'the host adapter has no default outgoing-connection limit');
 
   assert.equal(runtime.evaluatePage(
     'setTimeout(() => { document.body.dataset.timer = "fired" }, 500); 1',
@@ -977,7 +980,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       'document.body.dataset.streamAbort === "AbortError"');
   });
 
-  await t.test('canceling queued requests never starts extra host connections', async () => {
+  await t.test('canceling concurrent requests aborts every host connection', async () => {
     const before = requests.length;
     runtime.evaluatePage('globalThis.queueControllers = Array.from({length:9}, () => new AbortController());' +
       'globalThis.queueAbortCount = 0;' +
@@ -985,8 +988,8 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       '.catch(e => { if (e.name === "AbortError") queueAbortCount++ }));' +
       'queueControllers.forEach(c => c.abort()); 1');
     await settle();
-    assert.equal(requests.slice(before).filter(({ url }) => url.includes('/abort-queued-')).length, 6);
-    assert.equal(queuedAborts, 6);
+    assert.equal(requests.slice(before).filter(({ url }) => url.includes('/abort-queued-')).length, 9);
+    assert.equal(queuedAborts, 9);
     await checkPage('queueAbortCount === 9');
   });
 
@@ -1120,7 +1123,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
         navigator.storage.persisted().then((after) => {
         document.body.dataset.storageEstimate =
           String(Number.isFinite(usage) && usage >= 0 &&
-            Number.isFinite(quota) && quota >= usage && quota <= 128 * 1024 * 1024 &&
+            Number.isFinite(quota) && quota >= usage && quota > 128 * 1024 * 1024 &&
             before === false && requested === false && after === false);
       })).catch(() => document.body.dataset.storageEstimate = 'error');
       return 1;
@@ -1390,7 +1393,7 @@ test('screenshots rasterize backgrounds, borders, text, images and canvas', asyn
     </script></body>`, { url: 'https://shot.example/' });
   await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
 
-  const png = decodePng(await runtime.screenshot());
+  const png = decodePng(await runtime.screenshot({ waitForResources: true }));
   assert.equal(png.width, 400);
   assert.equal(png.height, 300);
   assert.deepEqual(png.pixel(390, 290), [10, 20, 30, 255], 'page background');
@@ -1408,7 +1411,7 @@ test('screenshots rasterize backgrounds, borders, text, images and canvas', asyn
   assert.ok(inked > 50, `text should draw glyphs (inked ${inked} pixels)`);
 });
 
-test('oversized SVG rasterization fails within the Worker pixel budget', async () => {
+test('large SVG rasterization remains available without a default Worker pixel budget', async () => {
   const runtime = await createServoWorkerRuntime(wasm, {
     width: 200,
     height: 200,
@@ -1423,11 +1426,11 @@ test('oversized SVG rasterization fails within the Worker pixel budget', async (
     '<img src="large.svg" width="5000" height="5000"></body>',
   { url: 'https://image.example/' });
   assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 3_000 })).settled, true);
-  const png = decodePng(await runtime.screenshot({ maxDurationMs: 3_000 }));
+  const png = decodePng(await runtime.screenshot({ maxDurationMs: 3_000, waitForResources: true }));
   assert.equal(runtime.trapped, null);
   assert.equal(png.width, 200);
   assert.equal(png.height, 200);
-  assert.deepEqual(png.pixel(100, 100), [255, 255, 255, 255]);
+  assert.deepEqual(png.pixel(100, 100), [255, 0, 0, 255]);
 });
 
 test('screenshots draw shadows and filters, follow scrolling, and capture full pages', async () => {
@@ -1445,7 +1448,7 @@ test('screenshots draw shadows and filters, follow scrolling, and capture full p
     </body>`, { url: 'https://shot.example/' });
   await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
 
-  const top = decodePng(await runtime.screenshot());
+  const top = decodePng(await runtime.screenshot({ waitForResources: true }));
   assert.deepEqual(top.pixel(15, 45), [0, 0, 255, 255], 'box-shadow spread');
   const [red, green, blue] = top.pixel(190, 45);
   assert.ok(red === green && green === blue && red > 0 && red < 255, `grayscale filter: ${top.pixel(190, 45)}`);
@@ -1453,7 +1456,7 @@ test('screenshots draw shadows and filters, follow scrolling, and capture full p
   runtime.evaluatePage('window.scrollTo(0, 1000); window.scrollY');
   await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
   assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1000 } });
-  const scrolled = decodePng(await runtime.screenshot());
+  const scrolled = decodePng(await runtime.screenshot({ waitForResources: true }));
   assert.deepEqual(scrolled.pixel(150, 100), [0, 128, 0, 255], 'viewport follows the scroll position');
 
   const full = decodePng(await runtime.screenshot({ fullPage: true }));
@@ -1510,7 +1513,7 @@ test('screenshots apply mask-image (icons drawn as masked colored boxes)', async
     </body>`, { url: 'https://shot.example/' });
   await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
 
-  const png = decodePng(await runtime.screenshot());
+  const png = decodePng(await runtime.screenshot({ waitForResources: true }));
   assert.deepEqual(png.pixel(15, 30), [255, 0, 0, 255], 'masked-in half is drawn');
   assert.deepEqual(png.pixel(45, 30), [255, 255, 255, 255], 'masked-out half is not');
   // Centered 20px mask: x 120..130 visible, the rest of the box masked out.
@@ -1552,7 +1555,7 @@ test('screenshots tile a repeating mask-image and blend luminance and multiple m
     </body>`, { url: 'https://shot.example/' });
   await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
 
-  const png = decodePng(await runtime.screenshot());
+  const png = decodePng(await runtime.screenshot({ waitForResources: true }));
   // mask-repeat: repeat, three tiles across a 40px-wide box.
   assert.deepEqual(png.pixel(2, 10), [255, 0, 0, 255], 'first tile, visible half');
   assert.deepEqual(png.pixel(7, 10), [255, 255, 255, 255], 'first tile, masked half');
@@ -1607,7 +1610,7 @@ test('screenshots apply gradient mask-image layers and mask-composite', async ()
     </body>`, { url: 'https://shot.example/' });
   await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
 
-  const png = decodePng(await runtime.screenshot());
+  const png = decodePng(await runtime.screenshot({ waitForResources: true }));
 
   // Linear gradient fade: nearly opaque at the left edge, nearly
   // transparent at the right (a couple of pixels in from each edge, since
@@ -1677,7 +1680,7 @@ test('screenshots apply a same-document SVG <mask> reference (mask-image: url(#i
     </body>`, { url: 'https://shot.example/' });
   const settled = await runtime.pumpUntilSettled({ maxDurationMs: 5_000 });
 
-  const png = decodePng(await runtime.screenshot({ maxPasses: 8 }));
+  const png = decodePng(await runtime.screenshot({ maxPasses: 8, waitForResources: true }));
   // Masked in by a <mask> inside a `display: none` sprite sheet -- this only
   // works because resolving the reference does not depend on that <svg>
   // ever being laid out as replaced content.
@@ -1832,6 +1835,7 @@ test('runaway scripts exhaust the per-turn operation budget without disabling th
 test('evaluate() correlates results and awaits returned promises', async (t) => {
   const runtime = await createServoWorkerRuntime(wasm, {
     log: () => {},
+    scriptBudget: 5_000_000,
     fetchImpl: async (input) =>
       new Response(`fetched ${new URL(typeof input === 'string' ? input : input.url).pathname}`),
   });
@@ -2133,10 +2137,13 @@ test('CORS preflight and simple POST follow Fetch and decide in the engine', asy
     assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
   });
 
-  await t.test('credentialed cross-origin requests still fail closed', async () => {
-    serve({ preflight: { status: 204, headers: allow({ 'access-control-allow-credentials': 'true' }) } });
+  await t.test('credentialed cross-origin requests require response permission', async () => {
+    serve({ actual: allow({ 'access-control-allow-credentials': 'true' }) });
+    assert.equal(await attempt('{ credentials: "include" }'), 'ok:body');
+    assert.deepEqual(methods(), ['GET']);
+    serve({ actual: allow() });
     assert.equal(await attempt('{ credentials: "include" }'), 'err:TypeError');
-    assert.deepEqual(methods(), []);
+    assert.deepEqual(methods(), ['GET']);
   });
 
   await t.test('the preflight counts against the host subrequest budget', async () => {

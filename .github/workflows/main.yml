@@ -43,6 +43,9 @@ jobs:
   build:
     needs: ["decision"]
     name: ${{ matrix.name }}
+    permissions:
+      contents: read
+      attestations: read
     strategy:
       fail-fast: ${{ fromJson(needs.decision.outputs.configuration).fail_fast }}
       matrix:
