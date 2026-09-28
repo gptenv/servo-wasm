@@ -46,6 +46,7 @@ tracing = { workspace = true, optional = true }
 webrender_api = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+glow = { workspace = true }
 surfman = { workspace = true, features = ["sm-x11"] }
 
 [lints]

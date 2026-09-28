@@ -9253,6 +9253,7 @@ dependencies = [
  "dpi",
  "euclid",
  "gleam",
+ "glow",
  "image",
  "log",
  "malloc_size_of_derive",
