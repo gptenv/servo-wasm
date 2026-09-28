@@ -53,6 +53,7 @@ impl FontTable {
 }
 
 impl FontTableMethods for FontTable {
+    #[expect(unsafe_code)]
     fn buffer(&self) -> &[u8] {
         unsafe { self.data.as_bytes_unchecked() }
     }
@@ -74,7 +75,9 @@ pub struct PlatformFont {
 // > single operation, work queue, or thread.
 //
 // The other element is a read-only CachedKernTable which is stored in a CFData.
+#[expect(unsafe_code)]
 unsafe impl Sync for PlatformFont {}
+#[expect(unsafe_code)]
 unsafe impl Send for PlatformFont {}
 
 impl PlatformFont {
@@ -281,10 +284,12 @@ impl PlatformFontMethods for PlatformFont {
         Ok(platform_font)
     }
 
+    #[expect(unsafe_code)]
     fn descriptor(&self) -> FontTemplateDescriptor {
         font_template_descriptor_from_ctfont_attributes(unsafe { self.ctfont.traits() })
     }
 
+    #[expect(unsafe_code)]
     fn glyph_index(&self, codepoint: char) -> Option<GlyphId> {
         // CTFontGetGlyphsForCharacters takes UniChar, which are UTF-16 encoded characters. We are taking
         // a char here which is a 32bit Unicode character. This will encode into a maximum of two
@@ -322,6 +327,7 @@ impl PlatformFontMethods for PlatformFont {
         0.0
     }
 
+    #[expect(unsafe_code)]
     fn glyph_h_advance(&self, glyph: GlyphId) -> Option<FractionalPixel> {
         let mut advance = unsafe {
             self.ctfont.advances_for_glyphs(
@@ -357,6 +363,7 @@ impl PlatformFontMethods for PlatformFont {
         Some(advance as FractionalPixel)
     }
 
+    #[expect(unsafe_code)]
     fn metrics(&self) -> FontMetrics {
         // TODO(mrobinson): Gecko first tries to get metrics from the SFNT tables via
         // HarfBuzz and only afterward falls back to platform APIs. We should do something
@@ -415,6 +422,7 @@ impl PlatformFontMethods for PlatformFont {
         metrics
     }
 
+    #[expect(unsafe_code)]
     fn table_for_tag(&self, tag: Tag) -> Option<FontTable> {
         let tag_u32 = u32::from_be_bytes(tag.to_be_bytes());
         unsafe {
@@ -445,6 +453,7 @@ impl PlatformFontMethods for PlatformFont {
         flags
     }
 
+    #[expect(unsafe_code)]
     fn typographic_bounds(&self, glyph_id: GlyphId) -> Rect<f32> {
         let rect = unsafe {
             self.ctfont.bounding_rects_for_glyphs(
@@ -467,6 +476,7 @@ impl PlatformFontMethods for PlatformFont {
 }
 
 impl Font {
+    #[expect(unsafe_code)]
     pub(crate) fn find_fallback_using_system_font_api(
         &self,
         options: &FallbackFontSelectionOptions,
@@ -497,6 +507,7 @@ impl Font {
     }
 }
 
+#[expect(unsafe_code)]
 pub(crate) fn font_template_descriptor_from_ctfont_attributes(
     traits: CFRetained<CFDictionary>,
 ) -> FontTemplateDescriptor {
