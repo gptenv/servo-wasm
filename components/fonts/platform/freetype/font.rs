@@ -93,6 +93,7 @@ impl PlatformFontMethods for PlatformFont {
         })
     }
 
+    #[expect(unsafe_code)]
     fn new_from_local_font_identifier(
         font_identifier: LocalFontIdentifier,
         requested_size: Option<Au>,
@@ -157,6 +158,7 @@ impl PlatformFontMethods for PlatformFont {
         Self::descriptor_from_os2_table(&os2)
     }
 
+    #[expect(unsafe_code)]
     fn glyph_index(&self, codepoint: char) -> Option<GlyphId> {
         let face = self.face.lock();
 
@@ -174,6 +176,7 @@ impl PlatformFontMethods for PlatformFont {
         }
     }
 
+    #[expect(unsafe_code)]
     fn glyph_h_kerning(&self, first_glyph: GlyphId, second_glyph: GlyphId) -> FractionalPixel {
         let face = self.face.lock();
 
@@ -190,6 +193,7 @@ impl PlatformFontMethods for PlatformFont {
         fixed_26_dot_6_to_float(delta.x) * self.unscalable_font_metrics_scale()
     }
 
+    #[expect(unsafe_code)]
     fn glyph_h_advance(&self, glyph: GlyphId) -> Option<FractionalPixel> {
         let face = self.face.lock();
 
@@ -214,6 +218,7 @@ impl PlatformFontMethods for PlatformFont {
         Some(fixed_26_dot_6_to_float(advance) * self.unscalable_font_metrics_scale())
     }
 
+    #[expect(unsafe_code)]
     fn metrics(&self) -> FontMetrics {
         let face = self.face.lock();
         let font_ref = self.table_provider_data.font_ref();
@@ -359,6 +364,7 @@ impl PlatformFontMethods for PlatformFont {
         })
     }
 
+    #[expect(unsafe_code)]
     fn typographic_bounds(&self, glyph_id: GlyphId) -> Rect<f32> {
         let face = self.face.lock();
 
@@ -449,6 +455,7 @@ impl std::fmt::Debug for FreeTypeFaceTableProviderData {
 //
 // Custom version of FT_GlyphSlot_Embolden to be less aggressive with outline
 // fonts than the default implementation in FreeType.
+#[expect(unsafe_code)]
 fn mozilla_glyphslot_embolden_less(slot: FT_GlyphSlot) {
     use freetype_sys::{
         FT_GLYPH_FORMAT_OUTLINE, FT_GlyphSlot_Embolden, FT_Long, FT_MulFix, FT_Outline_Embolden,

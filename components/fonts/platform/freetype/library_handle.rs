@@ -18,6 +18,7 @@ use servo_allocator::usable_size;
 static FREETYPE_MEMORY_USAGE: AtomicUsize = AtomicUsize::new(0);
 static FREETYPE_LIBRARY_HANDLE: OnceLock<ReentrantMutex<FreeTypeLibraryHandle>> = OnceLock::new();
 
+#[expect(unsafe_code)]
 extern "C" fn ft_alloc(_: FT_Memory, req_size: c_long) -> *mut c_void {
     unsafe {
         let pointer = malloc(req_size as usize);
@@ -26,6 +27,7 @@ extern "C" fn ft_alloc(_: FT_Memory, req_size: c_long) -> *mut c_void {
     }
 }
 
+#[expect(unsafe_code)]
 extern "C" fn ft_free(_: FT_Memory, pointer: *mut c_void) {
     unsafe {
         FREETYPE_MEMORY_USAGE.fetch_sub(usable_size(pointer), Ordering::Relaxed);
@@ -33,6 +35,7 @@ extern "C" fn ft_free(_: FT_Memory, pointer: *mut c_void) {
     }
 }
 
+#[expect(unsafe_code)]
 extern "C" fn ft_realloc(
     _: FT_Memory,
     _old_size: c_long,
@@ -57,9 +60,12 @@ pub(crate) struct FreeTypeLibraryHandle {
     freetype_memory: FT_Memory,
 }
 
+#[expect(unsafe_code)]
 unsafe impl Sync for FreeTypeLibraryHandle {}
+#[expect(unsafe_code)]
 unsafe impl Send for FreeTypeLibraryHandle {}
 
+#[expect(unsafe_code)]
 impl Drop for FreeTypeLibraryHandle {
     #[expect(unused)]
     fn drop(&mut self) {
@@ -71,6 +77,7 @@ impl Drop for FreeTypeLibraryHandle {
     }
 }
 
+#[expect(unsafe_code)]
 impl MallocSizeOf for FreeTypeLibraryHandle {
     fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
         unsafe {
@@ -90,6 +97,7 @@ impl FreeTypeLibraryHandle {
     /// > also, as long as a mutex lock is used around FT_New_Face and FT_Done_Face.
     ///
     /// See <https://freetype.org/freetype2/docs/reference/ft2-library_setup.html>.
+    #[expect(unsafe_code)]
     pub(crate) fn get() -> &'static ReentrantMutex<FreeTypeLibraryHandle> {
         FREETYPE_LIBRARY_HANDLE.get_or_init(|| {
             let freetype_memory = Box::into_raw(Box::new(FT_MemoryRec {

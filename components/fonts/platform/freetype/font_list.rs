@@ -35,6 +35,7 @@ use crate::{
     LowercaseFontFamilyName,
 };
 
+#[expect(unsafe_code)]
 pub(crate) fn for_each_available_family<F>(mut callback: F)
 where
     F: FnMut(String),
@@ -78,6 +79,7 @@ where
     }
 }
 
+#[expect(unsafe_code)]
 pub(crate) fn for_each_variation<F>(family_name: &str, mut callback: F)
 where
     F: FnMut(FontTemplate),
@@ -220,6 +222,7 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
     families
 }
 
+#[expect(unsafe_code)]
 pub(crate) fn default_system_generic_font_family(
     generic: GenericFontFamily,
 ) -> LowercaseFontFamilyName {
@@ -275,6 +278,7 @@ pub(crate) fn default_system_generic_font_family(
     .into()
 }
 
+#[expect(unsafe_code)]
 fn font_style_from_fontconfig_pattern(pattern: *mut FcPattern) -> Option<FontStyle> {
     let mut slant: c_int = 0;
     unsafe {
@@ -289,6 +293,7 @@ fn font_style_from_fontconfig_pattern(pattern: *mut FcPattern) -> Option<FontSty
     })
 }
 
+#[expect(unsafe_code)]
 fn font_width_from_fontconfig_pattern(pattern: *mut FcPattern) -> Option<FontWidth> {
     let mut width: c_int = 0;
     unsafe {
@@ -312,6 +317,7 @@ fn font_width_from_fontconfig_pattern(pattern: *mut FcPattern) -> Option<FontWid
     Some(FontWidth::from_percentage(mapped_width as f32))
 }
 
+#[expect(unsafe_code)]
 fn font_weight_from_fontconfig_pattern(pattern: *mut FcPattern) -> Option<FontWeight> {
     let mut weight: c_int = 0;
     unsafe {

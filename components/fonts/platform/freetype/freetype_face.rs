@@ -54,6 +54,7 @@ impl Debug for FontBackingStore {
     }
 }
 
+#[expect(unsafe_code)]
 impl FreeTypeFace {
     pub(crate) fn new_from_memory(
         library: &FreeTypeLibraryHandle,
@@ -254,8 +255,10 @@ impl FreeTypeFace {
 
 /// FT_Face can be used in multiple threads, but from only one thread at a time.
 /// See <https://freetype.org/freetype2/docs/reference/ft2-face_creation.html#ft_face>.
+#[expect(unsafe_code)]
 unsafe impl Send for FreeTypeFace {}
 
+#[expect(unsafe_code)]
 impl Drop for FreeTypeFace {
     fn drop(&mut self) {
         // The FreeType documentation says that both `FT_New_Face` and `FT_Done_Face`
