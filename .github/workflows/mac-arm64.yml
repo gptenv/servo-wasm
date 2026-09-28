@@ -80,6 +80,8 @@ on:
 env:
   RUST_BACKTRACE: 1
   SHELL: /bin/bash
+  # Upstream prebuilt archives omit the fork's Servo_JS_* wrapper symbols.
+  MOZJS_FROM_SOURCE: "1"
   # Increment this to purge the cache (https://github.com/mozilla/sccache/blob/main/docs/GHA.md)
   SCCACHE_GHA_VERSION: 1
   SCCACHE_GHA_ENABLED: "true"

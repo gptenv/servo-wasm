@@ -71,6 +71,8 @@ on:
 env:
   RUST_BACKTRACE: 1
   SHELL: /bin/bash
+  # Upstream prebuilt archives omit the fork's Servo_JS_* wrapper symbols.
+  MOZJS_FROM_SOURCE: "1"
   CARGO_TARGET_DIR: C:\\a\\servo\\servo\\target
   RUSTUP_WINDOWS_PATH_ADD_BIN: 1
 

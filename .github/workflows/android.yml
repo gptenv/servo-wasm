@@ -32,6 +32,8 @@ env:
   RUST_BACKTRACE: 1
   SHELL: /bin/bash
   CARGO_INCREMENTAL: 0
+  # Upstream prebuilt archives omit the fork's Servo_JS_* wrapper symbols.
+  MOZJS_FROM_SOURCE: "1"
 
 jobs:
   build:
