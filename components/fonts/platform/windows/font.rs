@@ -69,7 +69,9 @@ pub struct PlatformFont {
 // Windows 10 and beyond are thread safe.  If problems arise from this, we can protect the
 // platform font with a Mutex.
 // See https://source.chromium.org/chromium/chromium/src/+/main:third_party/skia/src/ports/SkScalerContext_win_dw.cpp;l=56;bpv=0;bpt=1.
+#[expect(unsafe_code)]
 unsafe impl Sync for PlatformFont {}
+#[expect(unsafe_code)]
 unsafe impl Send for PlatformFont {}
 
 struct Nondebug<T>(T);
@@ -401,6 +403,7 @@ impl<'platform_font> From<&'platform_font FontFace> for DirectWriteTableProvider
 }
 
 impl Drop for DirectWriteTableProvider<'_> {
+    #[expect(unsafe_code)]
     fn drop(&mut self) {
         let direct_write_face = unsafe { self.platform_font.as_ptr() };
         assert!(!direct_write_face.is_null());
@@ -413,6 +416,7 @@ impl Drop for DirectWriteTableProvider<'_> {
 }
 
 impl<'platform_font> TableProvider<'platform_font> for DirectWriteTableProvider<'platform_font> {
+    #[expect(unsafe_code)]
     fn data_for_tag(&self, tag: Tag) -> Option<read_fonts::FontData<'platform_font>> {
         let direct_write_face = unsafe { self.platform_font.as_ptr() };
         if direct_write_face.is_null() {
