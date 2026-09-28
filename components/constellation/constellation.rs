@@ -812,6 +812,7 @@ where
     }
 
     /// Return the next Worker timer deadline across all live script event loops.
+    #[cfg(target_arch = "wasm32")]
     pub fn worker_next_timer_deadline_ns(&self) -> Option<u64> {
         self.script_thread_handles
             .iter()

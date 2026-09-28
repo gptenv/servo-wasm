@@ -24,6 +24,7 @@ pub(crate) mod base {
     pub(crate) use js::rust::{
         HandleObject, HandleValue, MutableHandle, MutableHandleObject, MutableHandleValue,
     };
+    pub(crate) use js::typedarray;
     pub(crate) use js::typedarray::{
         HeapArrayBuffer, HeapArrayBufferView, HeapFloat32Array, HeapFloat64Array, HeapUint8Array,
         HeapUint8ClampedArray,
@@ -83,7 +84,6 @@ pub(crate) mod module {
     pub(crate) use js::rust::{CustomAutoRooterGuard, GCMethods, Handle, MutableHandle};
     pub(crate) use js::{
         JS_CALLEE, JSCLASS_GLOBAL_SLOT_COUNT, JSCLASS_IS_GLOBAL, JSCLASS_RESERVED_SLOTS_MASK,
-        typedarray,
     };
     pub(crate) use servo_config::pref;
 
