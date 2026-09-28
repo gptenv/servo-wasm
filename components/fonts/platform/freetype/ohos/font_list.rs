@@ -155,6 +155,7 @@ fn detect_hos_font_width(font: &FontRef) -> FontWidth {
 
 /// This function generates list of `FontFamily` based on font files with the extension `.otf`, `.ttc`, or `.otf`.
 /// If a font file's extension is .ttc, then all the font within it will be processed one by one.
+#[expect(unsafe_code)]
 #[servo_tracing::instrument(skip_all)]
 fn get_system_font_families(font_files: Vec<PathBuf>) -> Vec<FontFamily> {
     let mut families: HashMap<String, Vec<Font>> = HashMap::new();
