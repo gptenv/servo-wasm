@@ -235,7 +235,7 @@ pub(crate) struct XMLHttpRequest {
     send_flag: Cell<bool>,
 
     timeout_cancel: DomRefCell<Option<OneshotTimerHandle>>,
-    #[no_trace]
+    #[no_trace = "Instant contains no JS-managed values"]
     fetch_time: Cell<Instant>,
     generation_id: Cell<GenerationId>,
     response_status: Cell<Result<(), ()>>,

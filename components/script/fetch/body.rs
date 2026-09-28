@@ -453,10 +453,11 @@ impl ExtractedBody {
             // router and its networking task source.
             let (chunk_request_sender, chunk_request_receiver) = ipc::channel().unwrap();
             let trusted_stream = Trusted::new(&*stream);
-            let task_source = stream.global().task_manager().networking_task_source();
+            let networking_task_source = stream.global().task_manager().networking_task_source();
+            let task_source = networking_task_source.into();
             let mut body_handler = TransmitBodyConnectHandler::new(
                 trusted_stream,
-                task_source.into(),
+                task_source,
                 chunk_request_sender.clone(),
                 in_memory,
                 source,

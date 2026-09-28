@@ -83,7 +83,7 @@ pub(crate) struct OneshotTimers {
     js_timers: JsTimers,
     next_timer_handle: Cell<OneshotTimerHandle>,
     timers: DomRefCell<VecDeque<OneshotTimer>>,
-    #[no_trace]
+    #[no_trace = "Instant contains no JS-managed values"]
     suspended_since: Cell<Option<Instant>>,
     /// Initially 0, increased whenever the associated document is reactivated
     /// by the amount of ms the document was inactive. The current time can be
@@ -101,7 +101,7 @@ pub(crate) struct OneshotTimers {
     /// <https://html.spec.whatwg.org/multipage/#map-of-active-timers>
     /// TODO this should also be used for the other timers
     /// as per <html.spec.whatwg.org/multipage/#map-of-settimeout-and-setinterval-ids>Z.
-    #[no_trace]
+    #[no_trace = "RunStepsActiveMap contains only integer keys and Instants"]
     map_of_active_timers: DomRefCell<RunStepsActiveMap>,
 
     /// <https://html.spec.whatwg.org/multipage/#run-steps-after-a-timeout>
@@ -123,7 +123,7 @@ struct OneshotTimer {
     #[no_trace]
     source: TimerSource,
     callback: OneshotTimerCallback,
-    #[no_trace]
+    #[no_trace = "Instant contains no JS-managed values"]
     scheduled_for: Instant,
 }
 

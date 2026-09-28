@@ -606,7 +606,7 @@ pub(crate) struct HTMLMediaElement {
     text_tracks_list: MutNullableDom<TextTrackList>,
     /// Time of last timeupdate notification.
     #[ignore_malloc_size_of = "Defined in std::time"]
-    #[no_trace]
+    #[no_trace = "Instant contains no JS-managed values"]
     next_timeupdate_event: Cell<Instant>,
     /// Latest fetch request context.
     current_fetch_context: RefCell<Option<HTMLMediaElementFetchContext>>,
