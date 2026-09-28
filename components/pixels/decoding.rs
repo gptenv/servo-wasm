@@ -20,9 +20,6 @@ use crate::{
     rgba8_premultiply_inplace,
 };
 
-/// Bound decoded image memory independently of compressed response size.
-const MAX_DECODED_IMAGE_PIXELS: u64 = 8 * 1024 * 1024;
-
 enum GenericImageDecoder<'a> {
     Apng(Box<png::ApngDecoder<Cursor<&'a [u8]>>>),
     Png(Box<png::PngDecoder<Cursor<&'a [u8]>>>),
@@ -260,11 +257,6 @@ pub(crate) fn decode_static_image(
     cors_status: CorsStatus,
     mut image_decoder: impl ImageDecoder,
 ) -> Option<RasterImage> {
-    let (width, height) = image_decoder.dimensions();
-    if u64::from(width) * u64::from(height) > MAX_DECODED_IMAGE_PIXELS {
-        debug!("Image exceeds the decoded pixel limit");
-        return None;
-    }
     let orientation = image_decoder.orientation();
 
     let Ok(mut dynamic_image) = DynamicImage::from_decoder(image_decoder) else {
@@ -318,9 +310,8 @@ where
     // send the frame iterator into an infinite loop. See
     // <https://github.com/image-rs/image/issues/2442>.
     let mut frame_data = vec![];
-    let mut total_number_of_bytes = 0;
+    let mut total_number_of_bytes = 0usize;
     let mut is_opaque = true;
-    let mut exceeded_pixel_limit = false;
     let loop_count = match animated_image_decoder.loop_count() {
         LoopCount::Finite(repeat_time) => Repeat::Finite(repeat_time),
         LoopCount::Infinite => Repeat::Infinite,
@@ -338,29 +329,25 @@ where
 
             let frame_width = animated_frame.buffer().width();
             let frame_height = animated_frame.buffer().height();
-            let frame_bytes = u64::from(frame_width) * u64::from(frame_height) * 4;
-            if frame_bytes > MAX_DECODED_IMAGE_PIXELS * 4
-                || total_number_of_bytes as u64 + frame_bytes > MAX_DECODED_IMAGE_PIXELS * 4
-            {
-                debug!("Animated image exceeds the decoded pixel limit");
-                exceeded_pixel_limit = true;
-                return None;
-            }
-
             // Store pre-multiplied data as that prevents having to do conversions of the data at later
             // times. This does cause an issue with some canvas APIs. See:
             // https://github.com/servo/servo/issues/40257
             is_opaque = rgba8_premultiply_inplace(animated_frame.buffer_mut()) && is_opaque;
 
             let frame_start = total_number_of_bytes;
-            total_number_of_bytes += animated_frame.buffer().len();
+            let Some(frame_end) = total_number_of_bytes.checked_add(animated_frame.buffer().len())
+            else {
+                debug!("Animated image byte length exceeds addressable memory");
+                return None;
+            };
+            total_number_of_bytes = frame_end;
 
             // The image size should be at least as large as the largest frame.
             width = cmp::max(width, frame_width);
             height = cmp::max(height, frame_height);
 
             let frame = ImageFrame {
-                byte_range: frame_start..total_number_of_bytes,
+                byte_range: frame_start..frame_end,
                 delay: Some(Duration::from(animated_frame.delay())),
                 width: frame_width,
                 height: frame_height,
@@ -372,7 +359,7 @@ where
         })
         .collect();
 
-    if frames.is_empty() || exceeded_pixel_limit {
+    if frames.is_empty() {
         debug!("Animated Image decoding error");
         return None;
     }

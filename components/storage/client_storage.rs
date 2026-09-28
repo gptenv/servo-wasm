@@ -23,11 +23,10 @@ use uuid::Uuid;
 /// limit (<https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria>).
 #[cfg(not(target_arch = "wasm32"))]
 const STORAGE_SHELF_QUOTA_BYTES: u64 = 10 * 1024 * 1024 * 1024;
-/// The Worker keeps storage in its limited isolate memory. This is an
-/// estimate, not an allocation guarantee; endpoint writes need separate
-/// quota enforcement.
+/// Worker storage has no application quota. Actual usage remains subject to
+/// the WebAssembly and embedding runtime's available memory.
 #[cfg(target_arch = "wasm32")]
-const STORAGE_SHELF_QUOTA_BYTES: u64 = 32 * 1024 * 1024;
+const STORAGE_SHELF_QUOTA_BYTES: u64 = u64::MAX;
 
 trait RegistryEngine {
     type Error: Debug;

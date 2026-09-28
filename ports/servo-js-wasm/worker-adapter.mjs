@@ -6,21 +6,10 @@
  * are fulfilled by the Worker's standard fetch() implementation.
  */
 
-const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
-const MAX_RESPONSE_HEADERS_BYTES = 64 * 1024;
 const RESPONSE_CHUNK_BYTES = 64 * 1024;
-const MAX_REDIRECTS = 10;
-const MAX_OUTGOING_CONNECTIONS = 6;
-const MAX_PENDING_FETCHES = 50;
-const MAX_HOST_MESSAGE_BYTES = 2 * 1024 * 1024;
-const FREE_TIER_SUBREQUESTS = 50;
-const DEFAULT_SESSION_SUBREQUESTS = 10_000;
+// Fetch follows at most 20 redirects by specification.
+const MAX_REDIRECTS = 20;
 const WORKER_ABI_VERSION = 10;
-// Interpreter work units (loop iterations weighted by body size, calls,
-// regexp backtracks) that page scripts may run in one pump turn. About 5-11 s
-// of Node CPU when exhausted; see WORKER-ABI.md for the calibration. It is a
-// work count, not CPU time.
-const DEFAULT_SCRIPT_BUDGET = 20_000_000;
 const REQUIRED_EXPORTS = Object.freeze([
   'servo_worker_process_redirect_cookies',
   'servo_worker_set_script_budget',
@@ -49,7 +38,7 @@ const WORKER_CAPABILITIES = Object.freeze({
     'history-traversal',
   ]),
   partial: Object.freeze({
-    fetch: 'Response bodies stream; request bodies are buffered up to 256 KiB. ' +
+    fetch: 'Response bodies stream; request bodies are currently buffered. ' +
       'Non-credentialed cross-origin requests use CORS, with a preflight (one extra ' +
       'host subrequest, not cached) when required; preflighted requests do not ' +
       'follow redirects. Credentialed cross-origin requests fail closed.',
@@ -61,7 +50,7 @@ const WORKER_CAPABILITIES = Object.freeze({
     storage: 'localStorage, sessionStorage, IndexedDB and Cache Storage are ' +
       'instance-local and do not persist across WASM instances. ' +
       'navigator.storage.estimate() has a metadata-only usage lower bound and ' +
-      'an unenforced 32 MiB quota estimate; persist() reports false. ' +
+      'reports an unbounded application quota; persist() reports false. ' +
       'Cache request/response operations ' +
       'are not implemented.',
     screenshots: 'CPU display-list renderer; backdrop filters and non-rounded ' +
@@ -74,9 +63,8 @@ const WORKER_CAPABILITIES = Object.freeze({
     pageEvaluation: 'evaluate() correlates concurrent evaluations and awaits returned ' +
       'promises; results are WebDriver-style JSON clones. The legacy evaluatePage() ' +
       'single-result slot does not await promises.',
-    scriptLimits: 'Each pump turn grants page scripts an interpreter work ' +
-      'budget (scriptBudget); exhausting it terminates the remaining scripts in ' +
-      'that turn. It bounds interpreter work, not CPU time or memory.',
+    scriptLimits: 'Page scripts have no interpreter work budget by default. ' +
+      'A host may opt in to a finite scriptBudget when creating the runtime.',
     mediaElements: 'Progressive audio/video demux uses Mediabunny and decoding uses ' +
       'browser WebCodecs. Audio device output is hosted by the embedding page; ' +
       'video frames use Servo’s renderer. Playback depends on browser codec support, ' +
@@ -95,29 +83,24 @@ function bytesToString(bytes) {
   return new TextDecoder().decode(bytes);
 }
 
-/** Decode the versioned, bounded command sent by the trusted WASM module. */
+/** Decode a versioned command sent by the trusted WASM module. */
 export function parseWorkerHostMessage(bytes) {
-  if (bytes.byteLength > MAX_HOST_MESSAGE_BYTES) {
-    throw new RangeError('Servo Worker host command exceeds 2 MiB');
-  }
   const message = JSON.parse(bytesToString(bytes));
   if (!message || typeof message !== 'object' || Array.isArray(message) ||
       message.version !== WORKER_ABI_VERSION) {
     throw new TypeError('Servo Worker host protocol version mismatch');
   }
-  const identifier = (id) => typeof id === 'string' && id.length > 0 && id.length <= 64;
+  const identifier = (id) => typeof id === 'string' && id.length > 0;
   if (message.kind === 'fetch') {
     const request = message.request;
     if (!request || typeof request !== 'object' || Array.isArray(request) ||
         !identifier(request.id) || typeof request.url !== 'string' ||
-        request.url.length > 16 * 1024 ||
-        typeof request.method !== 'string' || !/^[A-Z]{1,32}$/.test(request.method) ||
-        !Array.isArray(request.headers) || request.headers.length > 256 ||
+        typeof request.method !== 'string' || !/^[A-Z]+$/.test(request.method) ||
+        !Array.isArray(request.headers) ||
         typeof request.destination !== 'string' ||
         typeof request.redirect_mode !== 'string') {
       throw new TypeError('Malformed Servo Worker fetch command');
     }
-    let headerBytes = 0;
     for (const entry of request.headers) {
       if (!Array.isArray(entry) || entry.length !== 2 ||
           typeof entry[0] !== 'string' || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(entry[0]) ||
@@ -125,31 +108,27 @@ export function parseWorkerHostMessage(bytes) {
           !entry[1].every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
         throw new TypeError('Malformed Servo Worker fetch header');
       }
-      headerBytes += entry[0].length + entry[1].length;
-    }
-    if (headerBytes > MAX_RESPONSE_HEADERS_BYTES) {
-      throw new RangeError('Servo Worker request headers exceed 64 KiB');
     }
     const preflight = request.cors_preflight;
     if (preflight !== null && preflight !== undefined &&
         (typeof preflight !== 'object' || Array.isArray(preflight) ||
          typeof preflight.method !== 'string' ||
-         !/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,32}$/.test(preflight.method) ||
-         !Array.isArray(preflight.headers) || preflight.headers.length > 256 ||
+         !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(preflight.method) ||
+         !Array.isArray(preflight.headers) ||
          !preflight.headers.every((name) => typeof name === 'string' &&
-           /^[!#$%&'*+.^_`|~0-9a-z-]{1,256}$/.test(name)))) {
+           /^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(name)))) {
       throw new TypeError('Malformed Servo Worker CORS preflight');
     }
     if (request.body !== null && request.body !== undefined) {
       const body = request.body?.worker_bytes;
       if (body !== null && body !== undefined &&
-          (!Array.isArray(body) || body.length > 256 * 1024 ||
+          (!Array.isArray(body) ||
            !body.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255))) {
         throw new TypeError('Malformed Servo Worker request body');
       }
     }
   } else if (message.kind === 'cancel') {
-    if (!Array.isArray(message.request_ids) || message.request_ids.length > MAX_PENDING_FETCHES ||
+    if (!Array.isArray(message.request_ids) ||
         !message.request_ids.every(identifier)) {
       throw new TypeError('Malformed Servo Worker cancel command');
     }
@@ -219,22 +198,24 @@ export async function createServoWorkerRuntime(wasmModule, {
   height = 720,
   url = "about:blank",
   log = console.error,
-  maxResponseBytes = MAX_RESPONSE_BYTES,
-  maxSubrequests = FREE_TIER_SUBREQUESTS,
-  maxSessionSubrequests = DEFAULT_SESSION_SUBREQUESTS,
-  scriptBudget = DEFAULT_SCRIPT_BUDGET,
+  maxResponseBytes = Infinity,
+  maxSubrequests = Infinity,
+  maxSessionSubrequests = Infinity,
+  scriptBudget = 0,
   mediaHost = null,
   onActivity = () => {},
 } = {}) {
-  if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 0 ||
-      maxResponseBytes > 64 * 1024 * 1024) {
-    throw new RangeError('maxResponseBytes must be between 0 and 64 MiB');
+  if (!(maxResponseBytes === Infinity ||
+      (Number.isSafeInteger(maxResponseBytes) && maxResponseBytes >= 0))) {
+    throw new RangeError('maxResponseBytes must be a non-negative safe integer or Infinity');
   }
-  if (!Number.isSafeInteger(maxSubrequests) || maxSubrequests < 1) {
-    throw new RangeError('maxSubrequests must be a positive integer');
+  if (!(maxSubrequests === Infinity ||
+      (Number.isSafeInteger(maxSubrequests) && maxSubrequests >= 0))) {
+    throw new RangeError('maxSubrequests must be a non-negative safe integer or Infinity');
   }
-  if (!Number.isSafeInteger(maxSessionSubrequests) || maxSessionSubrequests < 1) {
-    throw new RangeError('maxSessionSubrequests must be a positive integer');
+  if (!(maxSessionSubrequests === Infinity ||
+      (Number.isSafeInteger(maxSessionSubrequests) && maxSessionSubrequests >= 0))) {
+    throw new RangeError('maxSessionSubrequests must be a non-negative safe integer or Infinity');
   }
   if (!Number.isSafeInteger(scriptBudget) || scriptBudget < 0) {
     throw new RangeError('scriptBudget must be a non-negative integer (0 is unlimited)');
@@ -273,7 +254,6 @@ export async function createServoWorkerRuntime(wasmModule, {
         else if (message.kind === 'web_socket_action') runtime.webSocketAction(message);
       },
       worker_media_command: (operation, playerId, value, ptr, len) => {
-        if (len > 2 * 1024 * 1024) return 2;
         const bytes = len ? new Uint8Array(runtime.instance.exports.memory.buffer, ptr, len).slice() : new Uint8Array();
         return runtime.dispatchMediaCommand(operation, playerId, value, bytes);
       },
@@ -375,7 +355,7 @@ class ServoWorkerRuntime {
     this.#onActivity = onActivity;
   }
 
-  /** Dispatch a synchronous, bounded command to the browser-native media host. */
+  /** Dispatch a synchronous command to the browser-native media host. */
   dispatchMediaCommand(operation, playerId, value, bytes) {
     if (!this.#mediaHost || typeof this.#mediaHost.command !== 'function') return 2;
     const exports = this.instance.exports;
@@ -440,7 +420,6 @@ class ServoWorkerRuntime {
 
   #write(value) {
     const bytes = encoder.encode(value);
-    if (bytes.length > 1024 * 1024) throw new RangeError('Servo input exceeds 1 MiB');
     const ptr = this.instance.exports.servo_js_alloc(bytes.length);
     if (!ptr) throw new Error("Servo wasm allocation failed");
     new Uint8Array(this.instance.exports.memory.buffer, ptr, bytes.length).set(bytes);
@@ -488,7 +467,7 @@ class ServoWorkerRuntime {
 
   #deliverError(requestId, message, responseStarted) {
     const id = encoder.encode(requestId);
-    const detail = encoder.encode(String(message).slice(0, 2048)).subarray(0, 4096);
+    const detail = encoder.encode(String(message));
     return this.#withBytes([id, detail], ([idBuffer, detailBuffer]) => {
       const method = responseStarted
         ? this.instance.exports.servo_worker_finish_http_error
@@ -503,20 +482,23 @@ class ServoWorkerRuntime {
       next_url: nextUrl, set_cookies: setCookies,
     }));
     return this.#withBytes([payload], ([input]) => {
-      const capacity = 16 * 1024;
-      const output = this.instance.exports.servo_js_alloc(capacity);
+      const length = this.instance.exports.servo_worker_process_redirect_cookies(
+        input.ptr, input.len, 0, 0,
+      );
+      if (length < 0) throw new Error('Servo rejected redirect cookies');
+      if (length === 0) return null;
+      const output = this.instance.exports.servo_js_alloc(length);
       if (!output) throw new Error('Servo wasm allocation failed');
       try {
-        const length = this.instance.exports.servo_worker_process_redirect_cookies(
-          input.ptr, input.len, output, capacity,
+        const written = this.instance.exports.servo_worker_process_redirect_cookies(
+          input.ptr, input.len, output, length,
         );
-        if (length < 0 || length > capacity) {
+        if (written !== length) {
           throw new Error('Servo rejected redirect cookies');
         }
-        if (length === 0) return null;
         return bytesToString(new Uint8Array(this.instance.exports.memory.buffer, output, length));
       } finally {
-        this.#free(output, capacity);
+        this.#free(output, length);
       }
     });
   }
@@ -637,9 +619,6 @@ class ServoWorkerRuntime {
       if (request.body != null && !Array.isArray(body)) {
         throw new Error('Worker request-body streaming is not implemented');
       }
-      if (body?.length > 256 * 1024) {
-        throw new Error('Worker request body exceeds 256 KiB');
-      }
       const fetched = await this.#fetchRequest(
         request, body == null ? undefined : new Uint8Array(body), signal,
       );
@@ -660,9 +639,6 @@ class ServoWorkerRuntime {
       const setCookies = response.headers.getSetCookie?.() ?? [];
       for (const cookie of setCookies) headers.push(['set-cookie', cookie]);
       const headersBytes = encoder.encode(JSON.stringify(headers));
-      if (headersBytes.length > MAX_RESPONSE_HEADERS_BYTES) {
-        throw new Error('Servo response headers exceed 64 KiB');
-      }
       const beginResult = this.#withBytes(
         [idBytes, urlBytes, headersBytes],
         ([id, url, headers]) => this.instance.exports.servo_worker_begin_http_response(
@@ -728,10 +704,6 @@ class ServoWorkerRuntime {
   }
 
   dispatchFetch(request) {
-    if (this.#fetchQueue.length + this.#inFlightFetches.size >= MAX_PENDING_FETCHES) {
-      this.#deliverError(request.id, 'Too many pending Worker fetches', false);
-      return;
-    }
     this.#fetchQueue.push(request);
     this.#drainFetchQueue();
   }
@@ -743,10 +715,6 @@ class ServoWorkerRuntime {
   }
 
   connectWebSocket({ request_id: id, url, protocols = [] }) {
-    if (this.#webSockets.size >= MAX_PENDING_FETCHES) {
-      this.#deliverWebSocketClose(id, 0xffffffff, '', true);
-      return;
-    }
     try {
       this.#reserveSubrequest();
     } catch {
@@ -847,7 +815,7 @@ class ServoWorkerRuntime {
   }
 
   #drainFetchQueue() {
-    while (this.#inFlightFetches.size < MAX_OUTGOING_CONNECTIONS && this.#fetchQueue.length) {
+    while (this.#fetchQueue.length) {
       this.#startFetch(this.#fetchQueue.shift());
     }
   }
@@ -990,8 +958,8 @@ class ServoWorkerRuntime {
   }
 
   #key(key, state) {
-    if (typeof key !== 'string' || !key || encoder.encode(key).length > 64) {
-      throw new TypeError('key must be a non-empty string of at most 64 UTF-8 bytes');
+    if (typeof key !== 'string' || !key) {
+      throw new TypeError('key must be a non-empty string');
     }
     const modifier = key === 'Shift' ? 'shift'
       : key === 'Control' ? 'control'
@@ -1018,8 +986,8 @@ class ServoWorkerRuntime {
 
   /** Type text by dispatching native character key events. */
   typeText(text) {
-    if (typeof text !== 'string' || [...text].length > 4096) {
-      throw new TypeError('text must be a string of at most 4096 characters');
+    if (typeof text !== 'string') {
+      throw new TypeError('text must be a string');
     }
     for (const character of text) {
       this.pressKey(character === '\n' || character === '\r'
@@ -1061,14 +1029,13 @@ class ServoWorkerRuntime {
   /**
    * Evaluate `source` in the page's main realm and await a returned promise.
    * Resolves with `{Ok: value}` or `{Err: error}` using the same JSON form as
-   * pageResult(). If the result does not arrive within the pump budget, or
-   * the page goes idle with the promise still pending, the evaluation is
+   * pageResult(). If a finite pump budget is supplied and the result does not arrive, the evaluation is
    * canceled and the result is `{Err: "Timeout"}`; a reset yields
    * `{Err: "Canceled"}`. Like pumpUntilSettled(), it drives the pump, so only
    * one of them may run at a time; the ID keeps a late or stale result from
    * being mistaken for this one.
    */
-  async evaluate(source, { maxDurationMs = 10_000, maxTurns = 10_000 } = {}) {
+  async evaluate(source, { maxDurationMs = Infinity, maxTurns = Infinity } = {}) {
     if (typeof source !== 'string') throw new TypeError('source must be a string');
     const [ptr, len] = this.#write(source);
     let id;
@@ -1153,7 +1120,7 @@ class ServoWorkerRuntime {
    * settled (`{ settled: true, timersPending: true }`). Pages with recurring
    * timers (carousels, analytics, polling) otherwise never settle.
    */
-  async pumpUntilSettled({ maxDurationMs = 10_000, maxTurns = 1_000, until, networkIdleMs } = {}) {
+  async pumpUntilSettled({ maxDurationMs = Infinity, maxTurns = Infinity, until, networkIdleMs } = {}) {
     if (networkIdleMs !== undefined && (!Number.isFinite(networkIdleMs) || networkIdleMs < 0)) {
       throw new RangeError('networkIdleMs must be finite and non-negative');
     }
@@ -1164,9 +1131,9 @@ class ServoWorkerRuntime {
   }
 
   async #settle(maxDurationMs, maxTurns, until, networkIdleMs, done) {
-    if (!Number.isFinite(maxDurationMs) || maxDurationMs < 0 ||
-        !Number.isSafeInteger(maxTurns) || maxTurns < 0) {
-      throw new RangeError('Pump budgets must be finite and non-negative; maxTurns must be an integer');
+    if (!(maxDurationMs === Infinity || (Number.isFinite(maxDurationMs) && maxDurationMs >= 0)) ||
+        !(maxTurns === Infinity || (Number.isSafeInteger(maxTurns) && maxTurns >= 0))) {
+      throw new RangeError('Pump budgets must be non-negative numbers or Infinity');
     }
     if (this.#settling) throw new Error('A Servo settling operation is already running');
     this.#settling = true;
@@ -1199,7 +1166,7 @@ class ServoWorkerRuntime {
         if (networkIdleMs !== undefined && !this.#evaluationPending &&
             this.#inFlightFetches.size === 0 && this.#fetchQueue.length === 0) {
           networkIdleSince ??= performance.now();
-          if (performance.now() - networkIdleSince >= networkIdleMs && (!until || until())) {
+          if (!done && performance.now() - networkIdleSince >= networkIdleMs && (!until || until())) {
             return { settled: true, turns, timersPending: true, scriptsTerminated };
           }
         } else {
@@ -1225,7 +1192,7 @@ class ServoWorkerRuntime {
       if (this.#inFlightFetches.size === 0 && this.#fetchQueue.length === 0 &&
           timerDelay === null) {
         await this.#wait(0);
-        if (++quietTurns >= 8 && (!until || until())) {
+        if (++quietTurns >= 8 && !done && (!until || until())) {
           return { settled: true, turns, scriptsTerminated };
         }
         continue;
@@ -1236,7 +1203,7 @@ class ServoWorkerRuntime {
       let idleDeadline = null;
       if (networkIdleMs !== undefined && this.#inFlightFetches.size === 0 && this.#fetchQueue.length === 0) {
         networkIdleSince ??= now;
-        if (now - networkIdleSince >= networkIdleMs && (!until || until())) {
+        if (!done && now - networkIdleSince >= networkIdleMs && (!until || until())) {
           return { settled: true, turns, timersPending: true, scriptsTerminated };
         }
         idleDeadline = networkIdleSince + networkIdleMs - now;
@@ -1251,7 +1218,7 @@ class ServoWorkerRuntime {
       const waits = [...this.#inFlightFetches, activity.promise];
       if (timerDelay !== null) waits.push(this.#wait(Math.min(timerDelay, remaining), controller.signal));
       if (idleDeadline !== null) waits.push(this.#wait(Math.min(idleDeadline, remaining), controller.signal));
-      waits.push(this.#wait(remaining, controller.signal));
+      if (Number.isFinite(remaining)) waits.push(this.#wait(remaining, controller.signal));
       try {
         await Promise.race(waits);
       } finally {
@@ -1283,14 +1250,14 @@ class ServoWorkerRuntime {
   }
 
   /**
-   * Register a font file (TTF/OTF/TTC/OTC bytes, up to 32 MiB) for this
+   * Register a font file (TTF/OTF/TTC/OTC bytes) for this
    * runtime, e.g. CJK or emoji fonts. Returns the number of faces added.
    * Register fonts before loading pages that need them.
    */
   registerFont(bytes) {
     const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-    if (data.length === 0 || data.length > 32 * 1024 * 1024) {
-      throw new RangeError('Font data must be between 1 byte and 32 MiB');
+    if (data.length === 0) {
+      throw new RangeError('Font data must not be empty');
     }
     const ptr = this.instance.exports.servo_js_alloc(data.length);
     if (!ptr) throw new Error('Servo wasm allocation failed');
@@ -1307,7 +1274,7 @@ class ServoWorkerRuntime {
   /**
    * Render the page as it currently is to PNG bytes (Uint8Array): the viewport
    * at its current scroll position, or with `fullPage` the whole document
-   * from the top (height capped to keep memory within Worker limits). Runs "update the rendering" once, pumps until settled, then
+   * from the top. Runs "update the rendering" once, pumps until settled, then
    * rasterizes on the CPU. Throws if the page has not produced a rendering.
    */
   async screenshot(options = {}) {
@@ -1320,7 +1287,7 @@ class ServoWorkerRuntime {
    * 1024-pixel strip is rendered and compressed per pull, so callers can pass
    * this directly as a Worker Response body without retaining the full PNG.
    */
-  async screenshotStream({ maxDurationMs = 5_000, maxPasses = 4, fullPage = false, networkIdleMs = 500 } = {}) {
+  async screenshotStream({ maxDurationMs = Infinity, maxPasses = Infinity, fullPage = false, networkIdleMs = 500 } = {}) {
     // A frame can start loads (CSS background images, web fonts, canvas
     // frames) that only a later frame shows; repeat until a frame adds none.
     const exports = this.instance.exports;

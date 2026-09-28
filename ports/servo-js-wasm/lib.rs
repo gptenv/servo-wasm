@@ -30,10 +30,10 @@ use servo::{
     SoftwareRenderingContext, WebView, WebViewBuilder, WebViewPoint, WheelDelta, WheelEvent,
     WheelMode, attach_worker_cookies, pump_worker_services,
 };
-use servo::{WorkerFetchHandler, pump_worker_fetches, set_worker_fetch_handler};
 use servo::{
     JavaScriptEvaluationError, WebDriverCommandMsg, WebDriverJSResult, WebDriverScriptCommand,
 };
+use servo::{WorkerFetchHandler, pump_worker_fetches, set_worker_fetch_handler};
 use servo_url::{ImmutableOrigin, ServoUrl};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -66,8 +66,6 @@ thread_local! {
     static NEXT_PAGE_EVALUATION: Cell<u32> = const { Cell::new(0) };
     static PAGE_EVALUATION_RESULT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
-
-const MAX_PENDING_PAGE_EVALUATIONS: usize = 64;
 
 // Defined by the Worker build of mozjs_sys (js/src/vm/WorkerScriptBudget.h).
 unsafe extern "C" {
@@ -220,7 +218,7 @@ pub unsafe extern "C" fn servo_worker_media_video_frame(
     data_ptr: *const u8,
     data_len: usize,
 ) -> i32 {
-    if data_ptr.is_null() || data_len > 40 * 1024 * 1024 {
+    if data_ptr.is_null() {
         return 0;
     }
     let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
@@ -242,7 +240,7 @@ pub unsafe extern "C" fn servo_worker_media_audio_frame(
     data_ptr: *const u8,
     data_len: usize,
 ) -> i32 {
-    if data_ptr.is_null() || data_len > 4 * 1024 * 1024 {
+    if data_ptr.is_null() {
         return 0;
     }
     let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
@@ -264,7 +262,7 @@ pub unsafe extern "C" fn servo_worker_media_event(
     data_ptr: *const u8,
     data_len: usize,
 ) -> i32 {
-    if (data_ptr.is_null() && data_len != 0) || data_len > 64 * 1024 {
+    if data_ptr.is_null() && data_len != 0 {
         return 0;
     }
     let data = if data_len == 0 {
@@ -281,11 +279,11 @@ pub unsafe extern "C" fn servo_worker_media_event(
     ))
 }
 
-/// Allocate a bounded buffer for media bytes copied by the browser Worker.
+/// Allocate a buffer for media bytes copied by the browser Worker.
 /// The matching media callback copies the contents before `servo_worker_media_free`.
 #[unsafe(no_mangle)]
 pub extern "C" fn servo_worker_media_alloc(data_len: usize) -> *mut u8 {
-    if data_len == 0 || data_len > 40 * 1024 * 1024 {
+    if data_len == 0 {
         return std::ptr::null_mut();
     }
     Box::into_raw(vec![0u8; data_len].into_boxed_slice()) as *mut u8
@@ -294,7 +292,7 @@ pub extern "C" fn servo_worker_media_alloc(data_len: usize) -> *mut u8 {
 /// Release a buffer returned by `servo_worker_media_alloc`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn servo_worker_media_free(data_ptr: *mut u8, data_len: usize) {
-    if !data_ptr.is_null() && data_len != 0 && data_len <= 40 * 1024 * 1024 {
+    if !data_ptr.is_null() && data_len != 0 {
         let slice = std::ptr::slice_from_raw_parts_mut(data_ptr, data_len);
         // SAFETY: callers must pass the exact pointer and length returned by
         // servo_worker_media_alloc, exactly once.
@@ -344,7 +342,7 @@ pub unsafe extern "C" fn servo_worker_bootstrap(
     if BROWSER.with(|browser| browser.borrow().is_some()) {
         return 0;
     }
-    if width == 0 || height == 0 || url_ptr.is_null() || url_len == 0 || url_len > 16 * 1024 {
+    if width == 0 || height == 0 || url_ptr.is_null() || url_len == 0 {
         return 0;
     }
     let bytes = unsafe { std::slice::from_raw_parts(url_ptr, url_len) };
@@ -534,9 +532,6 @@ const BUNDLED_FONTS: [&[u8]; 4] = [
     include_bytes!("fonts/NotoSansMono-Regular.ttf"),
 ];
 
-/// Largest font file a host may register (large enough for a full CJK font).
-const MAX_HOST_FONT_BYTES: usize = 32 * 1024 * 1024;
-
 fn register_bundled_fonts() {
     for font in BUNDLED_FONTS {
         if let Err(error) = fonts_traits::worker_fonts::register(font.to_vec()) {
@@ -552,7 +547,7 @@ fn register_bundled_fonts() {
 /// apply to later font lookups.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn servo_worker_register_font(ptr: *const u8, len: usize) -> u32 {
-    if ptr.is_null() || len == 0 || len > MAX_HOST_FONT_BYTES {
+    if ptr.is_null() || len == 0 {
         return 0;
     }
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
@@ -562,7 +557,7 @@ pub unsafe extern "C" fn servo_worker_register_font(ptr: *const u8, len: usize) 
 /// Load another page in the existing Worker webview.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn servo_worker_load_page(url_ptr: *const u8, url_len: usize) -> i32 {
-    if url_ptr.is_null() || url_len == 0 || url_len > 16 * 1024 {
+    if url_ptr.is_null() || url_len == 0 {
         return 0;
     }
     let bytes = unsafe { std::slice::from_raw_parts(url_ptr, url_len) };
@@ -693,12 +688,7 @@ pub unsafe extern "C" fn servo_worker_key(
     modifiers: u32,
 ) -> i32 {
     const ALLOWED_MODIFIERS: u32 = 0x249;
-    if key_ptr.is_null()
-        || key_len == 0
-        || key_len > 64
-        || state > 1
-        || modifiers & !ALLOWED_MODIFIERS != 0
-    {
+    if key_ptr.is_null() || key_len == 0 || state > 1 || modifiers & !ALLOWED_MODIFIERS != 0 {
         return 0;
     }
     let bytes = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
@@ -728,7 +718,7 @@ pub unsafe extern "C" fn servo_worker_key(
 }
 
 fn valid_input_point(x: f32, y: f32) -> bool {
-    x.is_finite() && y.is_finite() && x.abs() <= 1_000_000.0 && y.abs() <= 1_000_000.0
+    x.is_finite() && y.is_finite()
 }
 
 fn with_worker_webview(action: impl FnOnce(&WebView)) -> i32 {
@@ -745,7 +735,7 @@ fn with_worker_webview(action: impl FnOnce(&WebView)) -> i32 {
 /// Queue JavaScript for evaluation in the current Servo document.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn servo_worker_evaluate_page(ptr: *const u8, len: usize) -> i32 {
-    if ptr.is_null() || len == 0 || len > 4 * 1024 * 1024 {
+    if ptr.is_null() || len == 0 {
         return 0;
     }
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
@@ -774,18 +764,13 @@ pub unsafe extern "C" fn servo_worker_evaluate_page(ptr: *const u8, len: usize) 
 /// many evaluations are pending.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn servo_worker_evaluate_page_async(ptr: *const u8, len: usize) -> u32 {
-    if ptr.is_null() || len == 0 || len > 4 * 1024 * 1024 {
+    if ptr.is_null() || len == 0 {
         return 0;
     }
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let Ok(script) = std::str::from_utf8(bytes) else {
         return 0;
     };
-    if PAGE_EVALUATIONS.with(|evaluations| evaluations.borrow().len()) >=
-        MAX_PENDING_PAGE_EVALUATIONS
-    {
-        return 0;
-    }
     let Some((sender, receiver)) = generic_channel::channel() else {
         return 0;
     };
@@ -838,9 +823,8 @@ pub extern "C" fn servo_worker_poll_page_evaluation(id: u32) -> i32 {
         Some(None) => 0,
         Some(Some(result)) => {
             PAGE_EVALUATIONS.with(|evaluations| evaluations.borrow_mut().remove(&id));
-            let json = serde_json::to_vec(&result).unwrap_or_else(|_| {
-                br#"{"Err":"InternalError"}"#.to_vec()
-            });
+            let json = serde_json::to_vec(&result)
+                .unwrap_or_else(|_| br#"{"Err":"InternalError"}"#.to_vec());
             PAGE_EVALUATION_RESULT.with(|slot| *slot.borrow_mut() = json);
             1
         },
@@ -1316,10 +1300,10 @@ fn worker_response_visibility(
             .collect(),
         credentials: request.credentials_mode == CredentialsMode::Include,
     });
-    if preflight.is_none() &&
-        request.method != Method::GET &&
-        request.method != Method::HEAD &&
-        request.method != Method::POST
+    if preflight.is_none()
+        && request.method != Method::GET
+        && request.method != Method::HEAD
+        && request.method != Method::POST
     {
         return Err(NetworkError::CorsGeneral);
     }
@@ -1537,8 +1521,8 @@ pub extern "C" fn servo_worker_pending_fetch_count() -> usize {
 }
 
 /// Incorporate redirect cookies before the Worker issues the next hop and
-/// return the Cookie header for that hop. The host must pass one bounded JSON
-/// object and a writable output buffer; response headers are not page-visible.
+/// return the Cookie header for that hop. A null output pointer and zero
+/// capacity queries the output length; response headers are not page-visible.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn servo_worker_process_redirect_cookies(
     payload_ptr: *const u8,
@@ -1546,13 +1530,7 @@ pub unsafe extern "C" fn servo_worker_process_redirect_cookies(
     output_ptr: *mut u8,
     output_cap: usize,
 ) -> i32 {
-    if payload_ptr.is_null()
-        || payload_len == 0
-        || payload_len > 64 * 1024
-        || output_ptr.is_null()
-        || output_cap == 0
-        || output_cap > 64 * 1024
-    {
+    if payload_ptr.is_null() || payload_len == 0 || output_ptr.is_null() != (output_cap == 0) {
         return -1;
     }
     let payload = unsafe { std::slice::from_raw_parts(payload_ptr, payload_len) };
@@ -1586,15 +1564,18 @@ pub unsafe extern "C" fn servo_worker_process_redirect_cookies(
             return 0;
         };
         let bytes = header.as_bytes();
+        if output_ptr.is_null() {
+            return i32::try_from(bytes.len()).unwrap_or(-1);
+        }
         if bytes.len() > output_cap {
             return -1;
         }
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), output_ptr, bytes.len()) };
-        bytes.len() as i32
+        i32::try_from(bytes.len()).unwrap_or(-1)
     })
 }
 
-/// Start a bounded, chunked Worker response. Headers are a JSON array of
+/// Start a chunked Worker response. Headers are a JSON array of
 /// `[name, value]` pairs so duplicate fields survive the JS/WASM boundary.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn servo_worker_begin_http_response(
@@ -1611,10 +1592,7 @@ pub unsafe extern "C" fn servo_worker_begin_http_response(
         || url_ptr.is_null()
         || (headers_ptr.is_null() && headers_len != 0)
         || request_id_len == 0
-        || request_id_len > 64
         || url_len == 0
-        || url_len > 16 * 1024
-        || headers_len > 64 * 1024
         || !(100..=599).contains(&status)
     {
         return 0;
@@ -1751,7 +1729,7 @@ pub unsafe extern "C" fn servo_worker_check_cors_preflight(
     else {
         return 0;
     };
-    if (headers_ptr.is_null() && headers_len != 0) || headers_len > 64 * 1024 {
+    if headers_ptr.is_null() && headers_len != 0 {
         return 0;
     }
     let pairs: Vec<(String, String)> = if headers_len == 0 {
@@ -1817,8 +1795,8 @@ fn check_cors_preflight(
         .map(|name| name.to_ascii_lowercase())
         .collect();
     let safelisted_method = matches!(preflight.method.as_str(), "GET" | "HEAD" | "POST");
-    if !safelisted_method &&
-        !methods
+    if !safelisted_method
+        && !methods
             .iter()
             .any(|method| *method == preflight.method || !credentialed && method == "*")
     {
@@ -1832,8 +1810,8 @@ fn check_cors_preflight(
         return Err(NetworkError::CorsAuthorization);
     }
     let wildcard = !credentialed && names.iter().any(|name| name == "*");
-    if !wildcard &&
-        preflight
+    if !wildcard
+        && preflight
             .unsafe_headers
             .iter()
             .any(|name| !names.contains(name))
@@ -1880,9 +1858,9 @@ fn header_list_tokens(headers: &HeaderMap, name: HeaderName) -> Option<Vec<Strin
             if item.is_empty() {
                 continue;
             }
-            let is_token = item.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
-            });
+            let is_token = item
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte));
             if !is_token {
                 return None;
             }
@@ -1919,8 +1897,7 @@ fn filter_worker_metadata(
             if !worker_cors_check(headers, origin, *credentials) {
                 return Err(NetworkError::CorsGeneral);
             }
-            header_list_tokens(headers, header::ACCESS_CONTROL_EXPOSE_HEADERS)
-                .unwrap_or_default()
+            header_list_tokens(headers, header::ACCESS_CONTROL_EXPOSE_HEADERS).unwrap_or_default()
         },
         _ => Vec::new(),
     };
@@ -1970,7 +1947,7 @@ fn filter_worker_metadata(
     })
 }
 
-/// Send at most 256 KiB of response data per call. The host owns the buffer.
+/// Send one response chunk. The host owns the buffer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn servo_worker_deliver_http_chunk(
     request_id_ptr: *const u8,
@@ -1978,12 +1955,7 @@ pub unsafe extern "C" fn servo_worker_deliver_http_chunk(
     body_ptr: *const u8,
     body_len: usize,
 ) -> i32 {
-    if request_id_ptr.is_null()
-        || request_id_len == 0
-        || request_id_len > 64
-        || (body_ptr.is_null() && body_len != 0)
-        || body_len > 256 * 1024
-    {
+    if request_id_ptr.is_null() || request_id_len == 0 || (body_ptr.is_null() && body_len != 0) {
         return 0;
     }
     let request_id_bytes = unsafe { std::slice::from_raw_parts(request_id_ptr, request_id_len) };
@@ -2033,7 +2005,7 @@ pub unsafe extern "C" fn servo_worker_finish_http_error(
     message_ptr: *const u8,
     message_len: usize,
 ) -> i32 {
-    if message_ptr.is_null() || message_len > 4096 {
+    if message_ptr.is_null() {
         return 0;
     }
     let message = unsafe { std::slice::from_raw_parts(message_ptr, message_len) };
@@ -2051,7 +2023,7 @@ fn finish_http_response(
     request_id_len: usize,
     error: Option<NetworkError>,
 ) -> i32 {
-    if request_id_ptr.is_null() || request_id_len == 0 || request_id_len > 64 {
+    if request_id_ptr.is_null() || request_id_len == 0 {
         return 0;
     }
     let request_id_bytes = unsafe { std::slice::from_raw_parts(request_id_ptr, request_id_len) };
@@ -2098,12 +2070,7 @@ pub unsafe extern "C" fn servo_worker_deliver_http_error(
     message_ptr: *const u8,
     message_len: usize,
 ) -> i32 {
-    if request_id_ptr.is_null()
-        || message_ptr.is_null()
-        || request_id_len == 0
-        || request_id_len > 64
-        || message_len > 4096
-    {
+    if request_id_ptr.is_null() || message_ptr.is_null() || request_id_len == 0 {
         return 0;
     }
     let request_id_bytes = unsafe { std::slice::from_raw_parts(request_id_ptr, request_id_len) };
@@ -2237,7 +2204,7 @@ pub extern "C" fn servo_js_smoke_test() -> i32 {
 /// Allocate input bytes in wasm linear memory for the host to fill.
 #[unsafe(no_mangle)]
 pub extern "C" fn servo_js_alloc(len: usize) -> *mut u8 {
-    if len == 0 || len > 1024 * 1024 {
+    if len == 0 {
         return ptr::null_mut();
     }
     let mut bytes = vec![0; len].into_boxed_slice();
@@ -2265,7 +2232,7 @@ pub unsafe extern "C" fn servo_js_free(ptr: *mut u8, len: usize) {
 /// buffer and must keep it alive until this call returns.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn servo_js_evaluate_i32(ptr: *const u8, len: usize) -> u64 {
-    if ptr.is_null() || len == 0 || len > 1024 * 1024 {
+    if ptr.is_null() || len == 0 {
         return 0;
     }
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };

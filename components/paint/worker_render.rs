@@ -40,14 +40,6 @@ use webrender_api::{
 
 use crate::worker_frame::{self, WorkerResources};
 
-/// Largest rendered dimension in pixels (vello_cpu uses 16-bit sizes).
-const MAX_DIMENSION: u32 = 16_384;
-/// Iframes nested deeper than this are not drawn.
-const MAX_IFRAME_DEPTH: usize = 8;
-/// Largest full-page capture in pixels (32 MiB as RGBA); this now bounds only
-/// output size and encoding time, not peak memory (see [`STRIP_HEIGHT`]).
-const MAX_FULL_PAGE_PIXELS: u32 = 8 * 1024 * 1024;
-
 /// Device-pixel height of each render pass. A capture taller than one strip
 /// is rendered and PNG-encoded strip by strip, each with its own fresh
 /// [`Renderer`] (spatial tree, clip tables and, importantly, image cache).
@@ -92,10 +84,10 @@ pub(crate) fn stream_png_begin(full_page: bool) -> Result<Vec<u8>, String> {
             }
         }
         let size = size * scale;
-        let width = (size.width.ceil() as u32).clamp(1, MAX_DIMENSION);
-        let mut height = (size.height.ceil() as u32).clamp(1, MAX_DIMENSION);
-        if full_page {
-            height = height.min((MAX_FULL_PAGE_PIXELS / width).max(1));
+        let width = (size.width.ceil() as u32).max(1);
+        let height = (size.height.ceil() as u32).max(1);
+        if width > u32::from(u16::MAX) {
+            return Err("The Worker renderer supports widths up to 65535 pixels".to_owned());
         }
         Ok::<_, String>((root, width, height, scale))
     })?;
@@ -140,7 +132,7 @@ pub(crate) fn stream_png_next() -> Result<Option<Vec<u8>>, String> {
                 let mut renderer =
                     Renderer::new(width as u16, strip_height as u16, lists, resources);
                 renderer.full_page = full_page;
-                renderer.draw_pipeline(root, base, 0);
+                renderer.draw_pipeline(root, base, true);
                 let mut pixmap = renderer.finish();
                 transform_inplace(
                     pixmap.data_as_u8_slice_mut(),
@@ -214,7 +206,7 @@ fn append_png_chunk(output: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) {
 }
 
 /// Render the latest top-level document to a PNG: the viewport, or with
-/// `full_page` the whole document from its top (height capped for memory).
+/// `full_page` the whole document from its top.
 pub(crate) fn render_png(full_page: bool) -> Result<Vec<u8>, String> {
     worker_frame::with_display_lists(|lists| {
         let root = worker_frame::root_pipeline(lists).ok_or("No page has been rendered yet")?;
@@ -228,10 +220,10 @@ pub(crate) fn render_png(full_page: bool) -> Result<Vec<u8>, String> {
             }
         }
         let size = size * scale;
-        let width = (size.width.ceil() as u32).clamp(1, MAX_DIMENSION);
-        let mut height = (size.height.ceil() as u32).clamp(1, MAX_DIMENSION);
-        if full_page {
-            height = height.min((MAX_FULL_PAGE_PIXELS / width).max(1));
+        let width = (size.width.ceil() as u32).max(1);
+        let height = (size.height.ceil() as u32).max(1);
+        if width > u32::from(u16::MAX) {
+            return Err("The Worker renderer supports widths up to 65535 pixels".to_owned());
         }
 
         let mut png = Vec::new();
@@ -255,7 +247,7 @@ pub(crate) fn render_png(full_page: bool) -> Result<Vec<u8>, String> {
                     let mut renderer =
                         Renderer::new(width as u16, strip_height as u16, lists, resources);
                     renderer.full_page = full_page;
-                    renderer.draw_pipeline(root, base, 0);
+                    renderer.draw_pipeline(root, base, true);
                     renderer.finish()
                 });
                 transform_inplace(
@@ -441,12 +433,18 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    fn draw_pipeline(&mut self, pipeline: PipelineId, base: Affine, depth: usize) {
+    fn draw_pipeline(&mut self, pipeline: PipelineId, base: Affine, is_root_document: bool) {
         let Some(captured) = self.lists.get(&pipeline) else {
             return;
         };
         let list = &captured.display_list;
-        self.build_spatial_tree(pipeline, list, &captured.info.scroll_tree, base, depth == 0);
+        self.build_spatial_tree(
+            pipeline,
+            list,
+            &captured.info.scroll_tree,
+            base,
+            is_root_document,
+        );
 
         let mut stacking: Vec<StackingEntry> = Vec::new();
         let mut iter = list.iter();
@@ -655,9 +653,6 @@ impl<'a> Renderer<'a> {
                     });
                 },
                 DisplayItem::Iframe(iframe) => {
-                    if depth >= MAX_IFRAME_DEPTH {
-                        continue;
-                    }
                     let parent = self.node(pipeline, iframe.space_and_clip.spatial_id.0);
                     let clips = self.clip_layers(
                         pipeline,
@@ -668,7 +663,7 @@ impl<'a> Renderer<'a> {
                     );
                     let origin =
                         Affine::translate((iframe.bounds.min.x as f64, iframe.bounds.min.y as f64));
-                    self.draw_pipeline(iframe.pipeline_id, parent * origin, depth + 1);
+                    self.draw_pipeline(iframe.pipeline_id, parent * origin, false);
                     for _ in 0..clips {
                         self.context.pop_layer();
                     }
@@ -731,17 +726,12 @@ impl<'a> Renderer<'a> {
             });
         }
         let mut next = Some(chain);
-        let mut guard = 0;
         while let Some(chain_id) = next {
-            guard += 1;
             let Some((parent, ids)) = self.clip_chains.get(&chain_id) else {
                 break;
             };
             clips.extend(ids.iter().filter_map(|id| self.clips.get(id).cloned()));
             next = *parent;
-            if guard > 64 {
-                break;
-            }
         }
 
         let mut pushed = 0;
@@ -794,9 +784,7 @@ impl<'a> Renderer<'a> {
     fn image_masks(&mut self, chain: Option<ClipChainId>) -> Option<Mask> {
         let mut shapes = Vec::new();
         let mut next = chain;
-        let mut guard = 0;
         while let Some(chain_id) = next {
-            guard += 1;
             let Some((parent, ids)) = self.clip_chains.get(&chain_id) else {
                 break;
             };
@@ -810,9 +798,6 @@ impl<'a> Renderer<'a> {
                 }
             }
             next = *parent;
-            if guard > 64 {
-                break;
-            }
         }
         if shapes.is_empty() {
             return None;

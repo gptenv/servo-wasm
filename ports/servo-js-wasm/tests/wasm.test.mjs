@@ -68,8 +68,12 @@ test('host command parser rejects mismatched ABI and malformed bounded DTOs', ()
   ]) {
     assert.throws(() => parseWorkerHostMessage(hostCommand(malformed)));
   }
-  assert.throws(() => parseWorkerHostMessage(new Uint8Array(2 * 1024 * 1024 + 1)),
-    /exceeds 2 MiB/);
+  const largeCommand = new TextEncoder().encode(JSON.stringify({
+    version: 10,
+    kind: 'cancel',
+    request_ids: ['x'.repeat(2 * 1024 * 1024)],
+  }));
+  assert.doesNotThrow(() => parseWorkerHostMessage(largeCommand));
 });
 let instance;
 const unixEpochNsAtStartup = BigInt(Date.now()) * 1_000_000n;
@@ -208,14 +212,14 @@ test('adapter rejects an artifact without the matching host ABI', async () => {
   await assert.rejects(createServoWorkerRuntime(oldModule), /ABI mismatch/);
 });
 
-test('adapter validates resource budgets before instantiating WASM', async () => {
-  for (const maxResponseBytes of [-1, Infinity, 64 * 1024 * 1024 + 1]) {
+test('adapter validates optional resource budgets before instantiating WASM', async () => {
+  for (const maxResponseBytes of [-1, 0.5]) {
     await assert.rejects(createServoWorkerRuntime(wasm, { maxResponseBytes }), RangeError);
   }
-  for (const maxSubrequests of [0, -1, Infinity, 0.5]) {
+  for (const maxSubrequests of [-1, 0.5]) {
     await assert.rejects(createServoWorkerRuntime(wasm, { maxSubrequests }), RangeError);
   }
-  for (const maxSessionSubrequests of [0, -1, Infinity, 0.5]) {
+  for (const maxSessionSubrequests of [-1, 0.5]) {
     await assert.rejects(createServoWorkerRuntime(wasm, { maxSessionSubrequests }), RangeError);
   }
   for (const scriptBudget of [-1, Infinity, 0.5]) {
@@ -292,7 +296,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   const runtime = await createServoWorkerRuntime(wasm, {
     url: 'about:blank',
     // This one runtime deliberately stress-loads many pages in a single test.
-    // A production Free-tier invocation keeps the adapter's default of 50.
+    // Exercise an explicit finite request budget; normal adapter defaults are unlimited.
     maxSubrequests: 200,
     log: (message) => {
       fetchErrors.push(message);
@@ -939,7 +943,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
 
   await t.test('settling budgets and concurrent calls fail explicitly', async () => {
     assert.deepEqual(await runtime.pumpUntilSettled({ maxTurns: 0 }), { settled: false, turns: 0, scriptsTerminated: 0 });
-    await assert.rejects(runtime.pumpUntilSettled({ maxDurationMs: Infinity }), RangeError);
+    assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: Infinity })).settled, true);
     await assert.rejects(runtime.pumpUntilSettled({ maxTurns: -1 }), RangeError);
     await assert.rejects(runtime.pumpUntilSettled({ until: true }), TypeError);
     const pending = runtime.pumpUntilSettled();

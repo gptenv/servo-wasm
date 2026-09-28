@@ -57,9 +57,6 @@ const EVENT_NEED_DATA: u32 = 4;
 const EVENT_POSITION: u32 = 5;
 const EVENT_ERROR: u32 = 6;
 const EVENT_DURATION: u32 = 7;
-const MAX_VIDEO_DIMENSION: u32 = 8192;
-const MAX_MEDIA_FRAME_BYTES: usize = 40 * 1024 * 1024;
-const MAX_AUDIO_CHANNELS: u32 = 8;
 
 static NEXT_PLAYER_ID: AtomicUsize = AtomicUsize::new(1);
 static PLAYER_CALLBACKS: OnceLock<Mutex<HashMap<usize, Weak<Mutex<PlayerCallbacks>>>>> =
@@ -457,16 +454,19 @@ impl Buffer for RawFrame {
 /// Deliver an asynchronously decoded BGRA video frame to Servo's normal
 /// paint pipeline. This is called only after the Wasm host import has returned.
 pub fn decoded_video_frame(id: usize, width: u32, height: u32, bytes: &[u8]) -> bool {
-    if width == 0 || height == 0 || width > MAX_VIDEO_DIMENSION || height > MAX_VIDEO_DIMENSION {
+    if width == 0 || height == 0 {
         return false;
     }
+    let (Ok(width_i32), Ok(height_i32)) = (i32::try_from(width), i32::try_from(height)) else {
+        return false;
+    };
     let Some(expected_len) = (width as usize)
         .checked_mul(height as usize)
         .and_then(|pixels| pixels.checked_mul(4))
     else {
         return false;
     };
-    if expected_len != bytes.len() || expected_len > MAX_MEDIA_FRAME_BYTES {
+    if expected_len != bytes.len() {
         return false;
     }
     let Some(callbacks) = callbacks(id) else {
@@ -475,11 +475,8 @@ pub fn decoded_video_frame(id: usize, width: u32, height: u32, bytes: &[u8]) -> 
     let Some(renderer) = callbacks.lock().unwrap().video_renderer.clone() else {
         return false;
     };
-    let Some(frame) = VideoFrame::new(
-        width as i32,
-        height as i32,
-        Arc::new(RawFrame(bytes.to_vec())),
-    ) else {
+    let Some(frame) = VideoFrame::new(width_i32, height_i32, Arc::new(RawFrame(bytes.to_vec())))
+    else {
         return false;
     };
     renderer.lock().unwrap().render(frame);
@@ -492,8 +489,10 @@ pub fn decoded_video_frame(id: usize, width: u32, height: u32, bytes: &[u8]) -> 
 /// MediaElementAudioSourceNode is returned to Servo's graph; ordinary media
 /// output is transferred by the host to its device AudioContext.
 pub fn decoded_audio_frame(id: usize, channels: u32, _sample_rate: u32, bytes: &[u8]) -> bool {
-    if channels == 0 || channels > MAX_AUDIO_CHANNELS || bytes.len() % (channels as usize * 4) != 0
-    {
+    let Some(bytes_per_frame) = (channels as usize).checked_mul(std::mem::size_of::<f32>()) else {
+        return false;
+    };
+    if channels == 0 || bytes.len() % bytes_per_frame != 0 {
         return false;
     }
     let Some(callbacks) = callbacks(id) else {

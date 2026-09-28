@@ -18,7 +18,7 @@ Exactly six function imports exist, all in `env`:
 | `worker_log_error(ptr, len)` | Consume a UTF-8 diagnostic synchronously. |
 | `worker_monotonic_now_ns()` | Return monotonic nanoseconds as a JavaScript `bigint`. |
 | `worker_unix_time_now_ns()` | Return Unix-epoch nanoseconds as a JavaScript `bigint`. |
-| `worker_media_command(operation, player_id, value, ptr, len)` | Copy a bounded media-player command synchronously; schedule parsing, decoding and callbacks asynchronously after returning to Wasm. |
+| `worker_media_command(operation, player_id, value, ptr, len)` | Copy a media-player command synchronously; schedule parsing, decoding and callbacks asynchronously after returning to Wasm. |
 
 The fetch import carries `{version:10, kind:"fetch", request:...}`,
 `{version:10, kind:"cancel", request_ids:[...]}`,
@@ -31,11 +31,11 @@ host socket. Binary frames are exposed as `ArrayBuffer` in the page.
 The fetch request DTO contains only `id`, `url`, `method`, `headers`, `body`,
 `destination`, `redirect_mode` and `cors_preflight`. `headers` is an ordered array of
 `[name, byte-array]` entries, preserving repeated fields. `body` is null or
-`{worker_bytes: byte-array|null}`. Only buffered request bodies up to 256 KiB
-are supported; an unbuffered body is rejected. Servo's internal `RequestBuilder`
-fields are not part of this protocol.
-The adapter rejects host commands over 2 MiB, malformed request DTOs, header
-lists over 64 KiB, and mismatched protocol versions before dispatch.
+`{worker_bytes: byte-array|null}`. Request bodies are currently buffered; an
+unbuffered body is rejected. There is no application-level byte limit on the
+buffered body. Servo's internal `RequestBuilder` fields are not part of this
+protocol. The adapter validates DTO structure and protocol versions before
+dispatch, without a project-defined command or header-size ceiling.
 Cancellation retires the Rust callback first, then cancels queued/active host I/O.
 
 ## Response lifecycle
@@ -43,9 +43,9 @@ Cancellation retires the Rust callback first, then cancels queued/active host I/
 For a followed same-origin redirect, the adapter first calls
 `servo_worker_process_redirect_cookies(payload, output)` with the response
 URL, next URL, request ID and `getSetCookie()` values. The export checks the
-pending request and its credentials mode, stores permitted cookies, and writes
-the next hop's `Cookie` header into the bounded output buffer. The adapter
-then sends the next request with that header.
+pending request and its credentials mode, stores permitted cookies, and reports
+the required output length before writing the next hop's `Cookie` header. The
+adapter allocates the needed buffer and then sends the next request with it.
 
 For each request ID, the host delivers:
 
@@ -60,9 +60,9 @@ For each request ID, the host delivers:
 Before headers, use `servo_worker_deliver_http_error(id, message)` for failure.
 Calls after completion/cancellation and chunks/EOF before headers return zero.
 A mid-body error rejects body consumers; partial content is not a success.
-Response limits: IDs 64 bytes, URLs 16 KiB, headers 64 KiB, error messages 4096
-bytes, chunks 256 KiB at the ABI (the adapter uses 64 KiB). The adapter defaults
-to 8 MiB total response bytes and releases unread bodies on error.
+Response data and headers have no project-defined size ceiling. Response bodies
+stream through 64 KiB adapter chunks; the chunk size is transport segmentation,
+not a total-response limit. The adapter releases unread bodies on error.
 
 Allocation is explicit: `servo_js_alloc` / `servo_js_free`. Hosts must pass valid,
 in-bounds allocated buffers; this is a trusted host ABI, not a memory-safe FFI for
@@ -95,18 +95,18 @@ volume, 10 set playback rate, 11 destroy, 12 set input size, 13 set seekable,
 and 14 set buffering. `value` carries a number/boolean or the create flags (bit
 0: video renderer; bit 1: Servo media audio source; bit 2: seekable stream).
 Commands return 0 when accepted, 1 when encoded data needs backpressure, and 2
-for unsupported/rejected commands. The command importer copies at most 2 MiB;
-the host bounds pending input and source cache to 8 MiB each per player and
-active players to four across the embedding Worker.
+for unsupported/rejected commands. The command importer has no project-defined
+copy-size or player-count ceiling. The host uses stream backpressure while
+decoding; buffered source data has no fixed byte quota.
 
 The host calls `servo_worker_media_event` for metadata, playback state, end of
 stream, `EnoughData`/`NeedData`, position, errors and duration. It calls
 `servo_worker_media_video_frame` with tightly packed BGRA pixels, or
 `servo_worker_media_audio_frame` with planar float32 samples. Frame dimensions
-are capped at 8192 per side and 40 MiB per video frame; audio is capped at 8
-channels and 4 MiB per chunk; event data is capped at 64 KiB. The paired
-`servo_worker_media_alloc/free` exports allocate callback input buffers up to
-40 MiB. The host must invoke these callbacks only after the command import
+have no project-defined byte or dimension cap. They remain subject to the Wasm
+address space, JavaScript typed-array limits, decoder constraints, and runtime
+memory. The paired `servo_worker_media_alloc/free` exports allocate callback
+input buffers without a project-defined size ceiling. The host must invoke these callbacks only after the command import
 returns; re-entering Servo while its media code holds locks is invalid.
 
 This is progressive primary-track playback, and codec availability varies with
@@ -124,8 +124,9 @@ storage, and Cache Storage now have cooperative in-process Worker services and
 memory-backed databases. Their data lasts only while the WASM instance stays
 alive. `CacheStorage.keys()` preserves cache creation order, including after
 deletion and recreation. `navigator.storage.estimate()` is available in the
-Worker; its 32 MiB quota is an estimate rather than an enforced limit, and
-its current usage value is a lower bound based on registry metadata because
+Worker; its quota is reported as unbounded, though actual allocations remain
+subject to the WebAssembly and embedding runtime's available memory. Its
+current usage value is a lower bound based on registry metadata because
 the endpoints do not yet report their in-memory byte counts.
 `navigator.storage.persist()` and `persisted()` report false because the
 current instance-local backend is not durable. Cache Storage
@@ -147,7 +148,7 @@ sending replacement navigation requests.
 
 `loadPage(url)` queues navigation. Host navigations between pumps coalesce to the
 last URL. A Worker host navigation replaces a stalled top-level navigation.
-`loadHtml(html, {url})` stages a bounded HTML response for one HTTP(S) document URL,
+`loadHtml(html, {url})` stages an HTML response for one HTTP(S) document URL,
 without a host network fetch; relative resources still use the host adapter.
 Only one supplied document may be staged at a time. A normal load or reset clears
 any staged document.
@@ -160,16 +161,15 @@ and a thrown exception or rejection becomes
 `{Err: {EvaluationFailure: {message, filename, line_number, column, stack}}}`.
 Promise settlement uses Servo's internal promise reactions, so a page that
 overrides `Promise.prototype.then` cannot intercept it. `evaluate()` drives the
-pump itself and returns as soon as its result arrives. If the budget is
-exhausted, or the page goes idle with the promise still pending, it cancels
-the evaluation and resolves with `{Err: "Timeout"}`; `reset()` resolves a
-pending evaluation with `{Err: "Canceled"}`. Synchronous work in the evaluated
-script is bounded by the script budget. Like `pumpUntilSettled()`, only one
-may run at a time.
+pump itself and returns as soon as its result arrives. Pump duration and turn
+limits default to unlimited; a caller-supplied finite budget that expires
+cancels the evaluation and resolves with `{Err: "Timeout"}`. `reset()` resolves
+a pending evaluation with `{Err: "Canceled"}`. Script work is unlimited by
+default and can be limited explicitly by the host. Like `pumpUntilSettled()`,
+only one may run at a time.
 
 The raw exports are `servo_worker_evaluate_page_async(ptr, len)`, which
-returns a nonzero evaluation ID (zero if rejected, including when 64
-evaluations are already pending); `servo_worker_poll_page_evaluation(id)`,
+returns a nonzero evaluation ID (zero if rejected); `servo_worker_poll_page_evaluation(id)`,
 which returns 1 when the result JSON is in
 `servo_worker_page_evaluation_result_ptr/len()` (the ID is then retired), 0
 while pending and -1 for an unknown, canceled or retired ID; and
@@ -178,8 +178,8 @@ discarded. If the document is replaced before the script runs, the result is
 `{Err: "WebViewNotReady"}`.
 
 `evaluatePage(source)` is the older interface. It queues a main-page-realm evaluation. `pumpUntilSettled()`
-does not report settlement while an accepted evaluation has no result yet; if the
-result never arrives, the budget is exhausted and it returns `settled:false`. `pageResult()` returns
+does not report settlement while an accepted evaluation has no result yet; if a
+caller-supplied finite budget expires first, it returns `settled:false`. `pageResult()` returns
 the serialized Servo result once available. This is a low-level, single-result
 slot: the adapter rejects a second evaluation until the first result is read.
 Reading it consumes the adapter's result slot. The raw WASM ABI does not enforce
@@ -198,12 +198,13 @@ stopped during that pump. One pump advances the cooperative browser loop.
 `nextTimerDelayMs()` exposes the next browser timer deadline.
 
 `pumpUntilSettled({maxDurationMs, maxTurns, until})` waits for host response activity,
-browser work and timers. It requires eight quiet turns and an optional synchronous
-predicate to report settlement. Exhausted budgets return `settled:false`.
+browser work and timers. Duration and turn budgets default to unlimited. It
+requires eight quiet turns and an optional synchronous predicate to report
+settlement. A caller-supplied finite budget can return `settled:false`.
 Concurrent settling calls are rejected. This is a quiescence heuristic, not a
 browser load event or proof that no future page work is possible. Its result
-includes `scriptsTerminated` for the pumps it ran. The host time budget cannot
-stop a synchronous page script; the operation budget below does.
+includes `scriptsTerminated` for the pumps it ran. A host time budget cannot
+stop a synchronous page script by itself.
 
 `createServoWorkerRuntime()` accepts an optional `onActivity` host callback. The
 adapter invokes it when fetch or WebSocket work delivers activity. Hosts can use
@@ -232,25 +233,11 @@ events and later evaluations run normally, although a terminated script may
 leave page state half-updated. Deep recursion still raises the ordinary
 catchable `InternalError` from the stack limit.
 
-The adapter option `scriptBudget` defaults to 20,000,000 units, and
-`runtime.scriptBudgetTerminations` reports the counter. Measured in Node on the
-development machine, one unit cost 0.25-0.55 us of wall time across plain
-loops, property access, builtin and DOM calls, a loop with a 500-operation body
-and scripted calls (the most expensive per unit), so an exhausted default turn
-took roughly 5-11 s. Size the budget as
-`CPU limit / (worst us per unit x hardware margin)`: the default leaves a 2.7x
-margin under Workers Paid's default 30 s CPU limit. Scale it with the
-configured limit and re-measure on the deployed platform. In local workerd, an
-empty `for (;;) {}` page (the cheapest work per unit) was terminated at the
-default budget and the whole request finished in under one second. With the budget unlimited, charging cost no
-measurable CPU in an A/B benchmark against the ABI 6 artifact.
-
-The budget is a work count, not CPU time. It does not bound memory, and a
-single native call that does not poll for interrupts (for example one very
-large sort or string operation) is charged as one call. A recurring runaway
-timer is terminated in every turn; the host's `pumpUntilSettled` deadline
-bounds the invocation as a whole. Hosts should treat terminations from an
-untrusted page as a signal to retire that session's runtime.
+The adapter option `scriptBudget` defaults to zero (unlimited), and
+`runtime.scriptBudgetTerminations` reports the counter. Hosts can choose a
+finite work budget for a defensive runtime. It is a work count, not CPU time,
+and it does not bound memory; hosting runtimes can still interrupt work when
+their own execution limits are reached.
 
 ## Navigation and input
 
@@ -283,11 +270,12 @@ The corresponding exports are `servo_worker_go_back/forward`,
 
 `await runtime.screenshot({maxDurationMs, maxPasses, fullPage})` returns PNG bytes
 of the current page: the viewport at its current scroll position, or with
-`fullPage` the whole document from its top, at the viewport width (height capped
-at 8 Mpixels to fit the 128 MB isolate). It asks the page to update its rendering
-once (layout otherwise stays idle on the Worker), pumps until settled, and repeats
-while a frame starts new image, font or canvas loads (up to `maxPasses`, default 4),
-then rasterizes on the CPU. The legacy `servo_worker_render_png(flags)` export
+`fullPage` the whole document from its top, at the viewport width. It asks the
+page to update its rendering once (layout otherwise stays idle on the Worker),
+pumps until settled, and repeats while a frame starts new image, font or canvas
+loads (without a pass limit by default), then rasterizes on the CPU. Rendered
+dimensions have no project-defined cap; Wasm and PNG representations and
+available runtime memory still apply. The legacy `servo_worker_render_png(flags)` export
 (bit 0: full page) returns a complete PNG in the frame result buffer.
 `servo_worker_request_frame()`, `servo_worker_frame_resource_generation()`,
 `servo_worker_frame_png_ptr/len()`, `servo_worker_frame_item_count()` and
@@ -331,7 +319,7 @@ in for Servo's file manager (`components/net/worker_blob_store.rs`): only GET
 is allowed, the URL must be valid (or held by a request's claim token) and
 belong to the requesting origin, and the whole blob is returned (no range
 requests). Blobs, slices, `File` objects and object URLs live in WASM memory
-for the life of the instance and count toward the 128 MB isolate limit. Images use
+for the life of the instance and count toward available runtime memory. Images use
 Servo's real image cache; decoding work is queued and run by the pump, not a
 thread pool. Canvas 2D is rasterized in-process by `vello_cpu` (single-threaded
 on wasm32), including `getImageData`, `putImageData`, `drawImage`, patterns,
@@ -349,11 +337,11 @@ slightly differently than in a browser that has them. Text is shaped
 with HarfRust (a pure-Rust HarfBuzz port) and measured with skrifa.
 
 `runtime.registerFont(bytes)` (export `servo_worker_register_font(ptr, len)`)
-adds a TTF/OTF/TTC/OTC file of up to 32 MiB and returns its face count, or throws
+adds a TTF/OTF/TTC/OTC file and returns its face count, or throws
 for data that is not a font. Registered fonts are usable by name and as fallback
 for characters the requested font lacks (for example CJK or emoji). Register
 them before loading pages that need them. Fonts are held in WASM memory, which
-counts toward the 128 MB isolate limit. Web fonts (`@font-face`) are not
+counts toward available runtime memory. Web fonts (`@font-face`) are not
 sanitized on this target (the native sanitizer is C); they are parsed only by
 the memory-safe Rust parsers.
 
@@ -368,12 +356,12 @@ kept in memory for the lifetime of the WASM instance only.
 
 ## Limits and intentionally incomplete behavior
 
-The default host limits are six simultaneous fetches, fifty pending requests,
-fifty actual network fetch calls per host invocation and ten thousand per runtime
-session (redirects count). `reset()` does not replenish either counter;
-`beginInvocation()` replenishes only the invocation counter. Synthetic supplied
-HTML costs no network fetch. These bounds do not prove Cloudflare CPU or
-total-memory compliance.
+The adapter applies no project-defined response-byte, subrequest, pending-fetch,
+connection-concurrency, WebSocket-count, or script-work limit by default.
+`createServoWorkerRuntime()` accepts finite `maxResponseBytes`,
+`maxSubrequests`, `maxSessionSubrequests`, and `scriptBudget` options for hosts
+that want their own defensive profile. Fetch redirects follow Fetch's
+20-redirect limit. Hosting, browser, WebAssembly and decoder limits still apply.
 
 Cross-origin requests use CORS. Servo decides, following Fetch, whether a
 request needs a preflight; if so the fetch DTO carries

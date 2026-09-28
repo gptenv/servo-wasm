@@ -59,16 +59,11 @@ pub fn should_panic_hook_suppress_termination() -> bool {
 // something of higher resolution.
 const FALLBACK_RIPPY: &[u8] = include_bytes!("resources/rippy.png");
 
-/// The current SVG stack relies on `resvg` to provide the natural dimensions of
-/// the SVG, which it automatically infers from the width/height/viewBox properties
-/// of the SVG. Since these can be arbitrarily large, this can cause us to allocate
-/// a pixmap with very large dimensions leading to the process being killed due to
-/// memory exhaustion. For example, the `/css/css-transforms/perspective-svg-001.html`
-/// test uses very large values for viewBox. Hence, we just clamp the maximum
-/// width/height of the pixmap allocated for rasterization.
+/// Native builds retain Servo's conservative SVG raster dimension guard. The
+/// Worker WASM build leaves raster dimensions uncapped and relies on the
+/// embedding runtime's available memory.
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_SVG_PIXMAP_DIMENSION: u32 = 5000;
-#[cfg(target_arch = "wasm32")]
-const MAX_WORKER_SVG_PIXMAP_PIXELS: u64 = 8 * 1024 * 1024;
 
 //
 // TODO(gw): Remaining work on image cache:
@@ -1087,19 +1082,15 @@ impl ImageCache for ImageCacheImpl {
         }
 
         let natural_size = vector_image.svg_tree.size().to_int_size();
-        let tinyskia_requested_size = {
-            let width = requested_size
-                .width
-                .try_into()
-                .unwrap_or(0)
-                .min(MAX_SVG_PIXMAP_DIMENSION);
-            let height = requested_size
-                .height
-                .try_into()
-                .unwrap_or(0)
-                .min(MAX_SVG_PIXMAP_DIMENSION);
-            tiny_skia::IntSize::from_wh(width, height).unwrap_or(natural_size)
-        };
+        let width = requested_size.width.try_into().unwrap_or(0);
+        let height = requested_size.height.try_into().unwrap_or(0);
+        #[cfg(not(target_arch = "wasm32"))]
+        let (width, height) = (
+            width.min(MAX_SVG_PIXMAP_DIMENSION),
+            height.min(MAX_SVG_PIXMAP_DIMENSION),
+        );
+        let tinyskia_requested_size =
+            tiny_skia::IntSize::from_wh(width, height).unwrap_or(natural_size);
 
         // Requirements from tiny_skia::Pixmap::new
         if tinyskia_requested_size.width() == 0
@@ -1110,14 +1101,6 @@ impl ImageCache for ImageCacheImpl {
                 "Asked for requested size {:?} which has zero size. Not returning image",
                 requested_size
             );
-            return None;
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        if u64::from(tinyskia_requested_size.width()) * u64::from(tinyskia_requested_size.height())
-            > MAX_WORKER_SVG_PIXMAP_PIXELS
-        {
-            debug!("Worker SVG rasterization exceeds the decoded pixel limit");
             return None;
         }
 
