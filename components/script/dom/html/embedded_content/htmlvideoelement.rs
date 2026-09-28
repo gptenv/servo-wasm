@@ -172,7 +172,7 @@ impl HTMLVideoElement {
     pub(crate) fn planar_video_for_webgpu(
         &self,
         device: &crate::dom::types::GPUDevice,
-    ) -> Fallible<(
+    ) -> script_bindings::error::Fallible<(
         Size2D<u32>,
         Option<Rc<crate::dom::gpuexternaltexture::PlanarTexture>>,
     )> {

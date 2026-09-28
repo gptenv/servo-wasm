@@ -14,6 +14,7 @@ const version = new WebAssembly.Instance(module, {
     worker_fetch_request() {},
     worker_getrandom() { return 1; },
     worker_log_error() {},
+    worker_media_command() { return 0; },
     worker_monotonic_now_ns() { return 0n; },
     worker_unix_time_now_ns() { return 0n; },
   },
