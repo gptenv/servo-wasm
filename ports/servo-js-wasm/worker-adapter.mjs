@@ -1286,8 +1286,10 @@ class ServoWorkerRuntime {
    * Render the current page as a pull-based PNG ReadableStream. Only one
    * 1024-pixel strip is rendered and compressed per pull, so callers can pass
    * this directly as a Worker Response body without retaining the full PNG.
+   * The default captures the current frame without waiting for network idle;
+   * set `waitForResources` when a settled snapshot is specifically needed.
    */
-  async screenshotStream({ maxDurationMs = Infinity, maxPasses = Infinity, fullPage = false, networkIdleMs = 500 } = {}) {
+  async screenshotStream({ maxDurationMs = Infinity, maxPasses = Infinity, fullPage = false, networkIdleMs = 500, waitForResources = false } = {}) {
     // A frame can start loads (CSS background images, web fonts, canvas
     // frames) that only a later frame shows; repeat until a frame adds none.
     const exports = this.instance.exports;
@@ -1301,20 +1303,30 @@ class ServoWorkerRuntime {
     // reflected in the count) and only a one-pass resource-generation bump
     // in the middle -- so require two consecutive quiet passes, not one,
     // before concluding nothing further is arriving.
+    const startedAt = performance.now();
     let quietPasses = 0;
     for (let pass = 0; pass < maxPasses; pass++) {
+      const remainingMs = maxDurationMs - (performance.now() - startedAt);
+      if (waitForResources && remainingMs <= 0) break;
       const resourcesBefore = exports.servo_worker_frame_resource_generation();
       const itemsBefore = exports.servo_worker_frame_item_count();
       if (exports.servo_worker_request_frame() !== 1) {
         throw new Error('Servo has not been bootstrapped');
       }
-      await this.pumpUntilSettled({ maxDurationMs, networkIdleMs });
+      if (waitForResources) {
+        await this.pumpUntilSettled({ maxDurationMs: remainingMs, networkIdleMs });
+      } else {
+        this.pump();
+        await Promise.resolve();
+        this.pump();
+      }
       if (exports.servo_worker_frame_resource_generation() === resourcesBefore &&
           exports.servo_worker_frame_item_count() === itemsBefore) {
         if (++quietPasses >= 2) break;
       } else {
         quietPasses = 0;
       }
+      if (!waitForResources) break;
     }
     if (this.#screenshotStreamActive) {
       throw new Error('A screenshot stream is already active on this runtime');
