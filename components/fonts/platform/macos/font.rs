@@ -197,6 +197,7 @@ impl PlatformFont {
 
     // This is adapted from WebRender glyph rasterizer for macos.
     // <https://github.com/servo/webrender/blob/main/wr_glyph_rasterizer/src/rasterizer.rs#L1006>
+    #[expect(unsafe_code)]
     fn get_extra_strikes(&self, strike_scale: f64) -> usize {
         if self.synthetic_bold {
             let mut bold_offset = unsafe { self.ctfont.size() } / 48.0;
