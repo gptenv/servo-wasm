@@ -1293,13 +1293,12 @@ class ServoWorkerRuntime {
     // A frame can start loads (CSS background images, web fonts, canvas
     // frames) that only a later frame shows; repeat until a frame adds none.
     const exports = this.instance.exports;
-    const firstPaint = await this.evaluate(`new Promise((resolve) => {
-      const afterDocument = () => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
+    const documentReady = await this.evaluate(`new Promise((resolve) => {
       if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', afterDocument, { once: true });
-      } else afterDocument();
+        document.addEventListener('DOMContentLoaded', () => resolve(true), { once: true });
+      } else resolve(true);
     })`, { maxDurationMs });
-    if (firstPaint?.Err) throw new Error(`Servo could not reach its first page paint: ${firstPaint.Err}`);
+    if (documentReady?.Err) throw new Error(`Servo document did not reach DOMContentLoaded: ${documentReady.Err}`);
     // Resources can also arrive one frame before the display list that uses
     // them (e.g. an SVG background rasterized at its used size), so a pass
     // that changes neither is not enough on its own to stop: a same-document
