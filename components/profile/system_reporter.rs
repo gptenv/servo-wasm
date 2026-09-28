@@ -115,6 +115,7 @@ fn system_heap_info() -> SystemHeapInfo {
 }
 
 #[cfg(target_os = "macos")]
+#[expect(unsafe_code)]
 fn macos_malloc_statistics() -> libc::malloc_statistics_t {
     let mut stats = libc::malloc_statistics_t {
         blocks_in_use: 0,
@@ -195,6 +196,7 @@ fn proportional_set_size() -> Option<usize> {
 }
 
 #[cfg(target_os = "macos")]
+#[expect(unsafe_code)]
 fn task_basic_info() -> Option<mach2::task_info::task_basic_info> {
     use mach2::kern_return::KERN_SUCCESS;
     use mach2::task::task_info;
