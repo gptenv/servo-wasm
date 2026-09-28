@@ -9365,6 +9365,7 @@ dependencies = [
  "encoding_rs",
  "euclid",
  "flate2",
+ "glow",
  "headers",
  "hkdf",
  "html5ever",

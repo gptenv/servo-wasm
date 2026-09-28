@@ -221,6 +221,7 @@ xml5ever = { workspace = true }
 xpath = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+glow = { workspace = true }
 libc = { workspace = true }
 webxr-api = { workspace = true, optional = true }
 x-wing = { workspace = true, optional = true }
