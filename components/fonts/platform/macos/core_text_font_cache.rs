@@ -91,6 +91,7 @@ impl CoreTextFontCache {
         Some(platform_font)
     }
 
+    #[expect(unsafe_code)]
     pub(crate) fn create_font_without_variations(
         font_identifier: FontIdentifier,
         data: Option<&FontData>,
@@ -132,6 +133,7 @@ impl CoreTextFontCache {
         Some(PlatformFont::new_with_ctfont(ctfont, synthetic_bold))
     }
 
+    #[expect(unsafe_code)]
     pub(crate) fn add_variations_to_font(
         platform_font: PlatformFont,
         font_identifier: &FontIdentifier,
@@ -243,6 +245,7 @@ impl CoreTextFontCache {
         platform_font
     }
 
+    #[expect(unsafe_code)]
     fn get_variation_axis_information(
         platform_font: &PlatformFont,
     ) -> Option<Vec<VariationAxisInformation>> {

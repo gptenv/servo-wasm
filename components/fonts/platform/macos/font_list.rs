@@ -24,6 +24,7 @@ use crate::{
     LowercaseFontFamilyName,
 };
 
+#[expect(unsafe_code)]
 pub(crate) fn for_each_available_family<F>(mut callback: F)
 where
     F: FnMut(String),
@@ -35,6 +36,7 @@ where
     }
 }
 
+#[expect(unsafe_code)]
 pub(crate) fn font_template_for_local_font_descriptor(
     family_descriptor: CFRetained<CTFontDescriptor>,
 ) -> Option<FontTemplate> {
@@ -67,6 +69,7 @@ pub(crate) fn font_template_for_local_font_descriptor(
     ))
 }
 
+#[expect(unsafe_code)]
 pub(crate) fn for_each_variation<F>(family_name: &str, mut callback: F)
 where
     F: FnMut(FontTemplate),
