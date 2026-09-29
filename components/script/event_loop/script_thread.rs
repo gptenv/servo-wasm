@@ -1089,6 +1089,7 @@ impl ScriptThread {
 
     /// Process one ready message without blocking the Worker isolate. The
     /// return value reports whether work was actually processed this turn.
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn pump(&self, cx: &mut js::context::JSContext) -> bool {
         self.handle_msgs_inner(cx, true)
     }

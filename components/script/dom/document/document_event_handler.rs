@@ -6,7 +6,6 @@ use std::array::from_ref;
 use std::cell::Cell;
 use std::f64::consts::PI;
 use std::mem;
-use std::str::FromStr;
 use std::time::Duration;
 
 use embedder_traits::{
