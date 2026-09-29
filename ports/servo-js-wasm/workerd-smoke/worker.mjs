@@ -117,7 +117,7 @@ async function screenshot() {
 // no host deadline could stop it.
 async function runaway() {
   const runtime = await createServoWorkerRuntime(servoWasm, {
-    url: 'about:blank', fetchImpl: async () => new Response('{}'),
+    url: 'about:blank', fetchImpl: async () => new Response('{}'), scriptBudget: 5_000_000,
   });
   runtime.loadHtml('<!doctype html><title>survived</title><body><script>for (;;) {}</script>',
     { url: 'https://workerd.example/' });

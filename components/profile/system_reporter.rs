@@ -148,6 +148,7 @@ fn system_heap_info() -> SystemHeapInfo {
 }
 
 #[cfg(target_os = "linux")]
+#[expect(unsafe_code)]
 fn page_size() -> usize {
     unsafe { ::libc::sysconf(::libc::_SC_PAGESIZE) as usize }
 }
