@@ -9,13 +9,16 @@
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::rc::Rc;
+#[cfg(target_arch = "wasm32")]
 use std::time::Duration;
 
 #[cfg(feature = "multiprocess")]
 use background_hang_monitor_api::HangAlert;
+use background_hang_monitor_api::BackgroundHangMonitorControlMsg;
+#[cfg(target_arch = "wasm32")]
 use background_hang_monitor_api::{
-    BackgroundHangMonitor, BackgroundHangMonitorClone, BackgroundHangMonitorControlMsg,
-    BackgroundHangMonitorExitSignal, BackgroundHangMonitorRegister, HangAnnotation,
+    BackgroundHangMonitor, BackgroundHangMonitorClone, BackgroundHangMonitorExitSignal,
+    BackgroundHangMonitorRegister, HangAnnotation,
 };
 use embedder_traits::ScriptToEmbedderChan;
 use layout_api::ScriptThreadFactory;

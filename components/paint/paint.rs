@@ -15,10 +15,11 @@ use bitflags::bitflags;
 use crossbeam_channel::Sender;
 use dpi::PhysicalSize;
 use embedder_traits::{
-    EventLoopWaker, InputEvent, InputEventAndId, InputEventId, InputEventResult,
-    ScreenshotCaptureError, Scroll, ShutdownState, ViewportDetails, WebViewPoint, WebViewRect,
-    WheelEvent,
+    EventLoopWaker, InputEventAndId, InputEventId, InputEventResult, ScreenshotCaptureError,
+    Scroll, ShutdownState, ViewportDetails, WebViewPoint, WebViewRect,
 };
+#[cfg(target_arch = "wasm32")]
+use embedder_traits::{InputEvent, WheelEvent};
 use euclid::{Scale, Size2D};
 use image::RgbaImage;
 use log::{debug, warn};
