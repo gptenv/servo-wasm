@@ -1083,6 +1083,7 @@ impl IndexedDBManager {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
     fn pump(&mut self) {
         while let Ok(message) = self.port.try_recv() {
             if !self.handle_message(message) {

@@ -310,6 +310,7 @@ where
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
     fn pump(&mut self) {
         while let Ok(message) = self.receiver.try_recv() {
             self.handle_message(message);
