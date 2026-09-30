@@ -108,7 +108,7 @@ struct WorkerRedirectCookies {
     set_cookies: Vec<String>,
 }
 
-const WORKER_ABI_VERSION: u32 = 11;
+const WORKER_ABI_VERSION: u32 = 12;
 
 /// The stable host-facing subset of a Servo request. Do not serialize
 /// RequestBuilder here: its internal fields are not an ABI contract.
@@ -393,6 +393,9 @@ pub extern "C" fn servo_worker_request_frame() -> i32 {
 
 thread_local! {
     static LAST_FRAME_PNG: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static LAST_RECORDING_FRAME: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static LAST_DECODED_RECORDING_FRAME: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static RECORDING_FRAME_SIZE: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
 }
 
 /// Rasterize the latest rendering (after `servo_worker_request_frame` and
@@ -484,6 +487,91 @@ pub extern "C" fn servo_worker_frame_png_ptr() -> *const u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn servo_worker_frame_png_len() -> usize {
     LAST_FRAME_PNG.with(|slot| slot.borrow().len())
+}
+
+/// Render the viewport to a bounded-size JPEG for screen recording. Returns its
+/// byte length; the host reads the result with the recording-frame accessors.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_render_jpeg(max_width: u32, max_height: u32, quality: u32) -> u32 {
+    let result = BROWSER.with(|browser| match browser.borrow().as_ref() {
+        Some(browser) => browser
+            .servo
+            .worker_render_jpeg(max_width, max_height, quality as u8),
+        None => Err("Servo has not been bootstrapped".to_owned()),
+    });
+    match result {
+        Ok((width, height, jpeg)) => LAST_RECORDING_FRAME.with(|slot| {
+            RECORDING_FRAME_SIZE.with(|size| size.set((width, height)));
+            let len = jpeg.len() as u32;
+            *slot.borrow_mut() = jpeg;
+            len
+        }),
+        Err(error) => {
+            LAST_RECORDING_FRAME.with(|slot| slot.borrow_mut().clear());
+            RECORDING_FRAME_SIZE.with(|size| size.set((0, 0)));
+            let message = format!("Worker recording frame render failed: {error}");
+            unsafe { host_log_error(message.as_ptr(), message.len()) };
+            0
+        },
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_recording_frame_ptr() -> *const u8 {
+    LAST_RECORDING_FRAME.with(|slot| slot.borrow().as_ptr())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_recording_frame_len() -> usize {
+    LAST_RECORDING_FRAME.with(|slot| slot.borrow().len())
+}
+
+/// Decode a recording JPEG into RGBA pixels for MP4 encoding.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_decode_jpeg(ptr: *const u8, len: usize) -> u32 {
+    if ptr.is_null() || len == 0 {
+        LAST_DECODED_RECORDING_FRAME.with(|slot| slot.borrow_mut().clear());
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let result = BROWSER.with(|browser| match browser.borrow().as_ref() {
+        Some(browser) => browser.servo.worker_decode_jpeg(bytes),
+        None => Err("Servo has not been bootstrapped".to_owned()),
+    });
+    match result {
+        Ok((width, height, rgba)) => LAST_DECODED_RECORDING_FRAME.with(|slot| {
+            RECORDING_FRAME_SIZE.with(|size| size.set((width, height)));
+            let len = rgba.len() as u32;
+            *slot.borrow_mut() = rgba;
+            len
+        }),
+        Err(error) => {
+            LAST_DECODED_RECORDING_FRAME.with(|slot| slot.borrow_mut().clear());
+            let message = format!("Worker recording frame decode failed: {error}");
+            unsafe { host_log_error(message.as_ptr(), message.len()) };
+            0
+        },
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_decoded_recording_frame_ptr() -> *const u8 {
+    LAST_DECODED_RECORDING_FRAME.with(|slot| slot.borrow().as_ptr())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_decoded_recording_frame_len() -> usize {
+    LAST_DECODED_RECORDING_FRAME.with(|slot| slot.borrow().len())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_recording_frame_width() -> u32 {
+    RECORDING_FRAME_SIZE.with(|size| size.get().0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_recording_frame_height() -> u32 {
+    RECORDING_FRAME_SIZE.with(|size| size.get().1)
 }
 
 /// Changes whenever the Worker renderer receives an image or font; compare it

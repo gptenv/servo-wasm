@@ -9,7 +9,7 @@
 const RESPONSE_CHUNK_BYTES = 64 * 1024;
 // Fetch follows at most 20 redirects by specification.
 const MAX_REDIRECTS = 20;
-const WORKER_ABI_VERSION = 11;
+const WORKER_ABI_VERSION = 12;
 const REQUIRED_EXPORTS = Object.freeze([
   'servo_worker_process_redirect_cookies',
   'servo_worker_set_script_budget',
@@ -26,6 +26,14 @@ const REQUIRED_EXPORTS = Object.freeze([
   'servo_worker_cookie_state_len',
   'servo_worker_cookie_state_ptr',
   'servo_worker_restore_cookie_state',
+  'servo_worker_render_jpeg',
+  'servo_worker_recording_frame_ptr',
+  'servo_worker_recording_frame_len',
+  'servo_worker_decode_jpeg',
+  'servo_worker_decoded_recording_frame_ptr',
+  'servo_worker_decoded_recording_frame_len',
+  'servo_worker_recording_frame_width',
+  'servo_worker_recording_frame_height',
 ]);
 const encoder = new TextEncoder();
 
@@ -38,7 +46,7 @@ const WORKER_CAPABILITIES = Object.freeze({
     'font-registration', 'cpu-screenshots', 'local-session-storage',
     'request-animation-frame', 'websocket-transport',
     'indexeddb', 'cache-storage-lifecycle', 'script-operation-budget',
-    'history-traversal',
+    'history-traversal', 'screen-recording-frame-capture',
   ]),
   partial: Object.freeze({
     fetch: 'Response bodies stream; request bodies are currently buffered. ' +
@@ -61,6 +69,9 @@ const WORKER_CAPABILITIES = Object.freeze({
       'Persistence depends on the embedding host.',
     screenshots: 'CPU display-list renderer; backdrop filters and non-rounded ' +
       'clip paths are incomplete, and mask coverage is limited to tested cases.',
+    screenRecording: 'The Worker ABI can capture downscaled viewport JPEG frames. ' +
+      'Servo MCP persists those frames and encodes H.264 MP4 asynchronously in ' +
+      'the host; capture is video-only and keeps the session Durable Object active.',
     history: 'Back, forward, reload, pushState/replaceState state and popstate ' +
       'work; history.length always reports 1. Settle after pushState before ' +
       'traversing so the entry is recorded.',
@@ -1309,6 +1320,48 @@ class ServoWorkerRuntime {
   async screenshot(options = {}) {
     const response = await new Response(await this.screenshotStream(options)).arrayBuffer();
     return new Uint8Array(response);
+  }
+
+  /** Capture a compressed viewport frame for host-side MP4 recording. */
+  async captureRecordingFrame({ maxWidth = 960, maxHeight = 540, quality = 70 } = {}) {
+    if (this.#screenshotStreamActive) {
+      throw new Error('A screenshot stream is already active on this runtime');
+    }
+    const exports = this.instance.exports;
+    if (exports.servo_worker_request_frame() !== 1) {
+      throw new Error('Servo has not been bootstrapped');
+    }
+    this.pump();
+    await Promise.resolve();
+    this.pump();
+    const length = exports.servo_worker_render_jpeg(maxWidth, maxHeight, quality);
+    if (!length) throw new Error('Servo could not render a recording frame (see the host log)');
+    const width = exports.servo_worker_recording_frame_width();
+    const height = exports.servo_worker_recording_frame_height();
+    const ptr = exports.servo_worker_recording_frame_ptr();
+    const jpeg = new Uint8Array(exports.memory.buffer, ptr, length).slice();
+    return { width, height, jpeg };
+  }
+
+  /** Decode a stored JPEG frame to RGBA for the MP4 encoder. */
+  async decodeRecordingFrame(jpeg) {
+    const exports = this.instance.exports;
+    const inputPtr = exports.servo_js_alloc(jpeg.length);
+    if (!inputPtr) throw new Error('Servo wasm allocation failed while decoding a recording frame');
+    let length;
+    try {
+      new Uint8Array(exports.memory.buffer, inputPtr, jpeg.length).set(jpeg);
+      length = exports.servo_worker_decode_jpeg(inputPtr, jpeg.length);
+    } finally {
+      this.#free(inputPtr, jpeg.length);
+    }
+    if (!length) throw new Error('Servo could not decode a stored recording frame (see the host log)');
+    const width = exports.servo_worker_recording_frame_width();
+    const height = exports.servo_worker_recording_frame_height();
+    if (length !== width * height * 4) throw new Error('Servo returned an invalid decoded recording frame');
+    const ptr = exports.servo_worker_decoded_recording_frame_ptr();
+    const rgba = new Uint8Array(exports.memory.buffer, ptr, length).slice();
+    return { width, height, rgba };
   }
 
   /**

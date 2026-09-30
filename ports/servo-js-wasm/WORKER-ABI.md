@@ -1,7 +1,7 @@
-# Raw Worker ABI, version 11
+# Raw Worker ABI, version 12
 
 The JavaScript adapter and WASM artifact are a matched pair. The adapter checks
-`servo_worker_abi_version() === 11` and checks that every export it requires
+`servo_worker_abi_version() === 12` and checks that every export it requires
 (redirect-cookie processing, the script budget, correlated evaluation, and cookie-state export/import) is present before
 running constructors or bootstrap. Rebuild
 the artifact whenever the interface or serialized request representation changes.
@@ -20,10 +20,10 @@ Exactly six function imports exist, all in `env`:
 | `worker_unix_time_now_ns()` | Return Unix-epoch nanoseconds as a JavaScript `bigint`. |
 | `worker_media_command(operation, player_id, value, ptr, len)` | Copy a media-player command synchronously; schedule parsing, decoding and callbacks asynchronously after returning to Wasm. |
 
-The fetch import carries `{version:11, kind:"fetch", request:...}`,
-`{version:11, kind:"cancel", request_ids:[...]}`,
-`{version:11, kind:"web_socket_connect", request_id, url, protocols}`, or
-`{version:11, kind:"web_socket_action", request_id, action}`. IDs serialize as
+The fetch import carries `{version:12, kind:"fetch", request:...}`,
+`{version:12, kind:"cancel", request_ids:[...]}`,
+`{version:12, kind:"web_socket_connect", request_id, url, protocols}`, or
+`{version:12, kind:"web_socket_action", request_id, action}`. IDs serialize as
 UUID strings. The WebSocket commands use the Worker's `WebSocket` host API; the
 adapter reports open, message, close and error events through the
 `servo_worker_websocket_*` exports and forwards page send/close actions to the
@@ -75,6 +75,15 @@ its byte length, or a negative value if serialization fails;
 export. The host must copy them before calling another export that could refresh
 the buffer. `servo_worker_restore_cookie_state(ptr, len)` replaces the complete
 jar and returns 1 on success or 0 if the bytes are invalid.
+
+Screen recording uses `servo_worker_render_jpeg(max_width, max_height, quality)`
+after a render request and pump. The host copies the JPEG from
+`servo_worker_recording_frame_ptr/len`; width and height are available through
+`servo_worker_recording_frame_width/height`. `servo_worker_decode_jpeg(ptr, len)`
+decodes a copied input buffer to RGBA, returned through
+`servo_worker_decoded_recording_frame_ptr/len`. Recording frames are viewport
+captures, downscaled to the supplied dimensions, and are intended for the
+embedding host's video encoder.
 
 ## Browser and scheduling lifecycle
 
