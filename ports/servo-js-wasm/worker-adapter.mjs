@@ -82,6 +82,10 @@ const WORKER_CAPABILITIES = Object.freeze({
     'dedicated-shared-workers', 'webgl', 'webgpu', 'web-audio', 'synchronous-xhr',
     'streaming-request-bodies',
   ]),
+  unsupportedReasons: Object.freeze({
+    'service-workers': 'Servo has a service-worker implementation, but this WASM port leaves it disabled. Its manager and service-worker globals use dedicated threads; Cloudflare Workers are single-threaded and do not expose the Web Worker API. Supporting it requires a cooperative service-worker scheduler plus durable registrations and fetch-event routing in the host.',
+    'web-audio': 'Servo has Web Audio DOM and graph code, but AudioContext and OfflineAudioContext explicitly throw NotSupportedError on wasm32 because the graph depends on a dedicated audio-render thread. The Cloudflare Worker runtime also has no audio device output. Offline rendering needs a single-thread graph backend; real-time output needs a host audio transport.',
+  }),
   unverified: Object.freeze([]),
 });
 

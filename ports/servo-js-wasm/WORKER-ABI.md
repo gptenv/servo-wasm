@@ -78,11 +78,13 @@ jar and returns 1 on success or 0 if the bytes are invalid.
 
 ## Browser and scheduling lifecycle
 
-`runtime.capabilities()` returns a frozen `{abiVersion, supported, partial,
-unsupported, unverified}` report for the host-facing feature set. Treat an
-unverified entry as unavailable until it has a passing runtime characterization.
-The report describes this adapter's support contract; it does not replace
-host-side URL/SSRF policy.
+`runtime.capabilities()` returns a frozen report with `abiVersion`, `supported`,
+`partial`, `unsupported`, `unsupportedReasons`, and `unverified` fields. The
+reason map explains known Worker-port exclusions; it is not a complete roadmap.
+Treat an unverified entry as unavailable until it has a passing runtime
+characterization. The report describes this adapter's support contract, not
+every API implemented by Servo's native builds, and it does not replace host-side
+URL/SSRF policy.
 The broader API inventory and unverified areas are tracked in
 [`worker-compatibility-matrix.md`](../../docs/worker-compatibility-matrix.md).
 
@@ -94,7 +96,12 @@ browser's WebCodecs decoders. Primary video frames return as BGRA to Servo's
 existing paint path. Ordinary audio PCM is sent to the embedding page for
 device playback; audio connected to a Servo media-element audio source is sent
 through Servo's existing media audio renderer. This host audio sink does not
-implement Servo's general Web Audio API graph.
+implement Servo's general Web Audio API graph. Servo's `AudioContext` and
+`OfflineAudioContext` constructors explicitly reject WASM Worker builds: Servo's
+current media graph creates a dedicated render thread, while Cloudflare Workers
+run single-threaded and have no device output. Offline rendering would need a
+single-threaded graph backend; real-time audio would additionally need a host
+audio output transport.
 
 `worker_media_command` operations are: 0 create player, 1 set MIME type, 2 push
 encoded bytes, 3 end input, 4 play, 5 pause, 6 stop, 7 seek, 8 set muted, 9 set
@@ -391,7 +398,11 @@ must therefore cover every method, including preflights and cross-origin
 streams are not implemented. Full Fetch redirect/manual-redirect behavior,
 response-reader and cloned-response cancellation semantics, service-worker
 support, IndexedDB transaction behavior and Cache request/response operations
-remain unsupported or uncharacterized. Some APIs would block the Worker's only
+remain unsupported or uncharacterized. The Service Worker DOM and manager code
+exist in Servo, but this port leaves the feature disabled; its manager and
+service-worker globals require dedicated threads, so exposing them requires a
+cooperative scheduler, durable registrations, and host fetch-event routing.
+Some APIs would block the Worker's only
 thread or spawn a native thread, so they fail explicitly instead: synchronous
 `XMLHttpRequest` to http(s) URLs throws `NetworkError` (the host cannot answer
 until the script returns; synchronous `data:` and `blob:` requests still
