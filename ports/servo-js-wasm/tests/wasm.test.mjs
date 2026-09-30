@@ -554,6 +554,10 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   assert.ok(!runtime.capabilities().unsupported.includes('cache-storage'));
   assert.ok(runtime.capabilities().supported.includes('request-animation-frame'));
   assert.ok(runtime.capabilities().supported.includes('websocket-transport'));
+  assert.ok(runtime.capabilities().unsupported.includes('service-workers'));
+  assert.ok(runtime.capabilities().unsupported.includes('web-audio'));
+  assert.match(runtime.capabilities().unsupportedReasons['service-workers'], /cooperative service-worker scheduler/);
+  assert.match(runtime.capabilities().unsupportedReasons['web-audio'], /dedicated audio-render thread/);
 
   const turn = async () => {
     runtime.pump();
