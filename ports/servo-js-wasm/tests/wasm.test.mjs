@@ -1080,18 +1080,30 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
         write.onerror = () => document.body.dataset.idbStatus = 'write-error';
         write.oncomplete = () => {
           const read = db.transaction('records', 'readonly');
-          const get = read.objectStore('records').get('record-key');
-          get.onerror = () => document.body.dataset.idbStatus = 'read-error';
-          get.onsuccess = () => {
-            document.body.dataset.idbStatus = String(get.result);
+          const store = read.objectStore('records');
+          const get = store.get('record-key');
+          const all = store.getAll();
+          const keys = store.getAllKeys();
+          let allValues;
+          let allKeys;
+          const report = () => {
+            if (!allValues || !allKeys || get.readyState !== 'done') return;
+            document.body.dataset.idbStatus =
+              String(get.result) + ':' + allValues.length + ':' + String(allKeys[0]);
             db.close();
           };
+          get.onerror = () => document.body.dataset.idbStatus = 'read-error';
+          get.onsuccess = report;
+          all.onerror = () => document.body.dataset.idbStatus = 'get-all-error';
+          all.onsuccess = () => { allValues = all.result; report(); };
+          keys.onerror = () => document.body.dataset.idbStatus = 'get-all-keys-error';
+          keys.onsuccess = () => { allKeys = keys.result; report(); };
         };
       };
       return 1;
     })()`), true);
     for (let i = 0; i < 120; i++) await turn();
-    await checkPage('document.body.dataset.idbStatus === "stored-value"');
+    await checkPage('document.body.dataset.idbStatus === "stored-value:1:record-key"');
   });
 
   await t.test('Cache Storage worker service supports cache lifecycle operations', async () => {
