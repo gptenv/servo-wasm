@@ -1339,7 +1339,9 @@ class ServoWorkerRuntime {
     const width = exports.servo_worker_recording_frame_width();
     const height = exports.servo_worker_recording_frame_height();
     const ptr = exports.servo_worker_recording_frame_ptr();
-    const jpeg = new Uint8Array(exports.memory.buffer, ptr, length).slice();
+    // The caller consumes this view synchronously into storage before the next
+    // recording render replaces LAST_RECORDING_FRAME in Servo's WASM memory.
+    const jpeg = new Uint8Array(exports.memory.buffer, ptr, length);
     return { width, height, jpeg };
   }
 
@@ -1360,7 +1362,9 @@ class ServoWorkerRuntime {
     const height = exports.servo_worker_recording_frame_height();
     if (length !== width * height * 4) throw new Error('Servo returned an invalid decoded recording frame');
     const ptr = exports.servo_worker_decoded_recording_frame_ptr();
-    const rgba = new Uint8Array(exports.memory.buffer, ptr, length).slice();
+    // This borrowed view remains valid until the next decodeRecordingFrame()
+    // call. The encoder copies it synchronously in addFrameRgba().
+    const rgba = new Uint8Array(exports.memory.buffer, ptr, length);
     return { width, height, rgba };
   }
 

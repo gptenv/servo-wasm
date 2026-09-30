@@ -300,6 +300,16 @@ impl Paint {
     }
 
     #[cfg(target_arch = "wasm32")]
+    pub fn worker_render_jpeg(
+        &self,
+        max_width: u32,
+        max_height: u32,
+        quality: u8,
+    ) -> Result<(u32, u32, Vec<u8>), String> {
+        crate::worker_render::render_jpeg(max_width, max_height, quality)
+    }
+
+    #[cfg(target_arch = "wasm32")]
     pub fn worker_stream_png_begin(&self, full_page: bool) -> Result<Vec<u8>, String> {
         crate::worker_render::stream_png_begin(full_page)
     }

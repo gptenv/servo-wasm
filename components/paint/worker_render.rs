@@ -18,6 +18,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 use flate2::{Compress, Compression, FlushCompress};
+use image::codecs::jpeg::JpegEncoder;
 
 use paint_api::display_list::{ScrollTree, SpatialTreeNodeInfo};
 use pixels::{Multiply, transform_inplace};
@@ -266,6 +267,59 @@ pub(crate) fn render_png(full_page: bool) -> Result<Vec<u8>, String> {
                 .map_err(|error| format!("PNG finish failed: {error:?}"))?;
         }
         Ok(png)
+    })
+}
+
+/// Render a bounded viewport JPEG directly at its final recording dimensions.
+/// This avoids building a full-size PNG, decoding it back to pixels, and only
+/// then downscaling it for recording.
+pub(crate) fn render_jpeg(
+    max_width: u32,
+    max_height: u32,
+    quality: u8,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    worker_frame::with_display_lists(|lists| {
+        let root = worker_frame::root_pipeline(lists).ok_or("No page has been rendered yet")?;
+        let info = &lists[&root].info;
+        let device_scale = info.viewport_details.hidpi_scale_factor.get();
+        let logical_size = info.viewport_details.size;
+        let source_width = (logical_size.width * device_scale).ceil().max(1.0) as u32;
+        let source_height = (logical_size.height * device_scale).ceil().max(1.0) as u32;
+        if source_width < 2 || source_height < 2 {
+            return Err("Rendered viewport is too small for an H.264 frame.".to_owned());
+        }
+
+        let width_limit = max_width.clamp(2, u32::from(u16::MAX));
+        let height_limit = max_height.clamp(2, u32::from(u16::MAX));
+        let fit = (width_limit as f64 / source_width as f64)
+            .min(height_limit as f64 / source_height as f64)
+            .min(1.0);
+        let width = ((source_width as f64 * fit).floor() as u32).max(2) & !1;
+        let height = ((source_height as f64 * fit).floor() as u32).max(2) & !1;
+        // Preserve the same aspect-ratio fit used by the old full-size PNG
+        // path. Rounding to even output dimensions may leave a sub-pixel edge.
+        let base = Affine::scale(device_scale as f64 * fit);
+        let mut pixmap = worker_frame::with_resources(|resources| {
+            let mut renderer = Renderer::new(width as u16, height as u16, lists, resources);
+            renderer.draw_pipeline(root, base, true);
+            renderer.finish()
+        });
+        transform_inplace(
+            pixmap.data_as_u8_slice_mut(),
+            Multiply::UnMultiply,
+            false,
+            false,
+        );
+
+        let mut rgb = Vec::with_capacity((width * height * 3) as usize);
+        for pixel in pixmap.data_as_u8_slice().chunks_exact(4) {
+            rgb.extend_from_slice(&pixel[..3]);
+        }
+        let mut jpeg = Vec::new();
+        JpegEncoder::new_with_quality(&mut jpeg, quality.clamp(1, 100))
+            .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
+            .map_err(|error| format!("Could not encode the recording frame: {error}"))?;
+        Ok((width, height, jpeg))
     })
 }
 

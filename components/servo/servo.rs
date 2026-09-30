@@ -1165,36 +1165,10 @@ impl Servo {
         max_height: u32,
         quality: u8,
     ) -> Result<(u32, u32, Vec<u8>), String> {
-        use image::codecs::jpeg::JpegEncoder;
-        use image::imageops::FilterType;
-        use image::GenericImageView;
-
-        let png = self.worker_render_png(false)?;
-        let image = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
-            .map_err(|error| format!("Could not decode the rendered PNG: {error}"))?;
-        let (source_width, source_height) = image.dimensions();
-        if source_width < 2 || source_height < 2 {
-            return Err("Rendered viewport is too small for an H.264 frame.".to_owned());
-        }
-
-        let width_limit = max_width.max(2);
-        let height_limit = max_height.max(2);
-        let scale = (width_limit as f64 / source_width as f64)
-            .min(height_limit as f64 / source_height as f64)
-            .min(1.0);
-        let width = ((source_width as f64 * scale).floor() as u32).max(2) & !1;
-        let height = ((source_height as f64 * scale).floor() as u32).max(2) & !1;
-        let scaled = if width != source_width || height != source_height {
-            image.resize_exact(width, height, FilterType::Triangle)
-        } else {
-            image
-        };
-        let rgb = scaled.to_rgb8();
-        let mut jpeg = Vec::new();
-        JpegEncoder::new_with_quality(&mut jpeg, quality.clamp(1, 100))
-            .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
-            .map_err(|error| format!("Could not encode the recording frame: {error}"))?;
-        Ok((width, height, jpeg))
+        self.0
+            .paint
+            .borrow()
+            .worker_render_jpeg(max_width, max_height, quality)
     }
 
     /// Decode one recorded JPEG frame to RGBA pixels for the host-side MP4 encoder.
