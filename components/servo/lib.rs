@@ -79,6 +79,8 @@ pub use net::resource_thread::worker_cookie_header_for_url;
 #[cfg(target_arch = "wasm32")]
 pub use net::resource_thread::worker_request_accepts_cookies;
 #[cfg(target_arch = "wasm32")]
+pub use net::resource_thread::{restore_worker_cookie_storage, serialize_worker_cookie_storage};
+#[cfg(target_arch = "wasm32")]
 pub use net::worker_blob_store::read_blob_url as read_worker_blob_url;
 pub use net_traits::CookieSource;
 // This API should probably not be exposed in this way. Instead there should be a fully

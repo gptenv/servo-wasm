@@ -1,8 +1,8 @@
-# Raw Worker ABI, version 10
+# Raw Worker ABI, version 11
 
 The JavaScript adapter and WASM artifact are a matched pair. The adapter checks
-`servo_worker_abi_version() === 10` and checks that every export it requires
-(redirect-cookie processing, the script budget and correlated evaluation) is present before
+`servo_worker_abi_version() === 11` and checks that every export it requires
+(redirect-cookie processing, the script budget, correlated evaluation, and cookie-state export/import) is present before
 running constructors or bootstrap. Rebuild
 the artifact whenever the interface or serialized request representation changes.
 This is a project-internal protocol, not an MCP protocol or a stable upstream Servo API.
@@ -20,10 +20,10 @@ Exactly six function imports exist, all in `env`:
 | `worker_unix_time_now_ns()` | Return Unix-epoch nanoseconds as a JavaScript `bigint`. |
 | `worker_media_command(operation, player_id, value, ptr, len)` | Copy a media-player command synchronously; schedule parsing, decoding and callbacks asynchronously after returning to Wasm. |
 
-The fetch import carries `{version:10, kind:"fetch", request:...}`,
-`{version:10, kind:"cancel", request_ids:[...]}`,
-`{version:10, kind:"web_socket_connect", request_id, url, protocols}`, or
-`{version:10, kind:"web_socket_action", request_id, action}`. IDs serialize as
+The fetch import carries `{version:11, kind:"fetch", request:...}`,
+`{version:11, kind:"cancel", request_ids:[...]}`,
+`{version:11, kind:"web_socket_connect", request_id, url, protocols}`, or
+`{version:11, kind:"web_socket_action", request_id, action}`. IDs serialize as
 UUID strings. The WebSocket commands use the Worker's `WebSocket` host API; the
 adapter reports open, message, close and error events through the
 `servo_worker_websocket_*` exports and forwards page send/close actions to the
@@ -69,6 +69,13 @@ in-bounds allocated buffers; this is a trusted host ABI, not a memory-safe FFI f
 arbitrary pointer values. Never retain a typed-array view across an export that
 could grow WASM memory. The adapter copies each input and frees it after the call.
 
+`servo_worker_cookie_state_len()` refreshes the serialized cookie jar and returns
+its byte length, or a negative value if serialization fails;
+`servo_worker_cookie_state_ptr()` points to those bytes until the next cookie-state
+export. The host must copy them before calling another export that could refresh
+the buffer. `servo_worker_restore_cookie_state(ptr, len)` replaces the complete
+jar and returns 1 on success or 0 if the bytes are invalid.
+
 ## Browser and scheduling lifecycle
 
 `runtime.capabilities()` returns a frozen `{abiVersion, supported, partial,
@@ -113,28 +120,26 @@ This is progressive primary-track playback, and codec availability varies with
 the browser. MSE, HLS/DASH, DRM and reliable random-access seeking are not
 provided. No codec implementation is embedded in Servo-WASM.
 
-`document.cookie` and Worker fetch requests use Servo's in-memory RFC 6265 cookie
-jar. Final responses and followed same-origin redirects store `Set-Cookie`
-values when the host exposes `Headers.getSetCookie()` and the request's
-credentials mode permits them. `HttpOnly` cookies remain hidden from page
-script. Cross-site SameSite context checks are incomplete. The jar is lost
-with the WASM instance, so the capability report marks cookies as partial.
-`localStorage` and `sessionStorage` are instance-local. IndexedDB, client
-storage, and Cache Storage now have cooperative in-process Worker services and
-memory-backed databases. Their data lasts only while the WASM instance stays
-alive. `CacheStorage.keys()` preserves cache creation order, including after
-deletion and recreation. `navigator.storage.estimate()` is available in the
-Worker; its quota is reported as unbounded, though actual allocations remain
-subject to the WebAssembly and embedding runtime's available memory. Its
-current usage value is a lower bound based on registry metadata because
-the endpoints do not yet report their in-memory byte counts.
-`navigator.storage.persist()` and `persisted()` report false because the
-current instance-local backend is not durable. Cache Storage
-remains incomplete: request/response operations such as
-`Cache.match`, `Cache.put`, and `Cache.add` are not implemented by the current
-Servo Cache API surface. The production artifact covers an IndexedDB
-open/write/read transaction sequence; broader ordering, origin isolation and
-database lifetime still need validation before claiming full compatibility.
+`document.cookie` and Worker fetch requests use Servo's RFC 6265 cookie jar.
+`servo_worker_cookie_state_len/ptr` exports its complete postcard-serialized
+state, and `servo_worker_restore_cookie_state` replaces it from host bytes.
+This includes `HttpOnly` cookies and cookie attributes; page script still
+cannot read `HttpOnly` cookies. Final responses and followed same-origin
+redirects store `Set-Cookie` values when the host exposes
+`Headers.getSetCookie()` and the request's credentials mode permits them.
+Cross-site SameSite context checks are incomplete.
+
+`localStorage`, `sessionStorage`, and IndexedDB remain runtime-local services
+inside this WASM adapter. The Servo MCP Worker persists them in its per-tab
+Durable Object: all Web Storage entries, each IndexedDB database's schema, and
+records containing the supported structured-clone values. That host persistence
+is not part of this raw ABI. Cache Storage is still runtime-local and incomplete:
+request/response operations such as `Cache.match`, `Cache.put`, and `Cache.add`
+are not implemented by the current Servo Cache API surface. `CacheStorage.keys()`
+preserves cache creation order, including after deletion and recreation.
+`navigator.storage.estimate()` reports an unbounded quota and a metadata-only
+usage lower bound; `persist()` and `persisted()` report false. The WASM instance
+and the embedding runtime's available memory remain practical limits.
 
 One browser/SpiderMonkey runtime may be bootstrapped per WASM instance. A second
 bootstrap returns false. Use a separate instance for unrelated incoming requests;

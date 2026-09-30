@@ -50,7 +50,7 @@ test('host command parser rejects mismatched ABI and malformed bounded DTOs', ()
     headers: [['accept', [116, 101, 120, 116]]], body: null,
     destination: 'None', redirect_mode: 'Follow',
   };
-  const valid = { version: 10, kind: 'fetch', request };
+  const valid = { version: 11, kind: 'fetch', request };
   assert.deepEqual(parseWorkerHostMessage(hostCommand(valid)), valid);
   const preflighted = { ...valid, request: { ...request,
     cors_preflight: { method: 'PUT', headers: ['x-token'] } } };
@@ -64,13 +64,13 @@ test('host command parser rejects mismatched ABI and malformed bounded DTOs', ()
     { ...valid, request: { ...request, cors_preflight: { method: 'PUT\r\n', headers: [] } } },
     { ...valid, request: { ...request, cors_preflight: { method: 'PUT', headers: ['X-Upper'] } } },
     { ...valid, request: { ...request, cors_preflight: { method: 'PUT', headers: 'x-token' } } },
-    { version: 10, kind: 'cancel', request_ids: [''] },
-    { version: 10, kind: 'unrecognized' },
+    { version: 11, kind: 'cancel', request_ids: [''] },
+    { version: 11, kind: 'unrecognized' },
   ]) {
     assert.throws(() => parseWorkerHostMessage(hostCommand(malformed)));
   }
   const largeCommand = new TextEncoder().encode(JSON.stringify({
-    version: 10,
+    version: 11,
     kind: 'cancel',
     request_ids: ['x'.repeat(2 * 1024 * 1024)],
   }));
@@ -194,7 +194,7 @@ test('SpiderMonkey smoke export runs in wasm', () => {
 });
 
 test('Worker lifecycle exports are present and initially idle', () => {
-  assert.equal(instance.exports.servo_worker_abi_version(), 10);
+  assert.equal(instance.exports.servo_worker_abi_version(), 11);
   assert.equal(typeof instance.exports.servo_worker_evaluate_page_async, 'function');
   assert.equal(Number(instance.exports.servo_worker_poll_page_evaluation(1)), -1);
   assert.equal(typeof instance.exports.servo_worker_set_script_budget, 'function');
@@ -205,6 +205,17 @@ test('Worker lifecycle exports are present and initially idle', () => {
   assert.equal(typeof instance.exports.servo_worker_websocket_open, 'function');
   assert.equal(typeof instance.exports.servo_worker_websocket_message, 'function');
   assert.equal(typeof instance.exports.servo_worker_websocket_close, 'function');
+  assert.equal(typeof instance.exports.servo_worker_cookie_state_len, 'function');
+  assert.equal(typeof instance.exports.servo_worker_cookie_state_ptr, 'function');
+  assert.equal(typeof instance.exports.servo_worker_restore_cookie_state, 'function');
+  const cookieStateLength = instance.exports.servo_worker_cookie_state_len();
+  assert.ok(cookieStateLength > 0);
+  const cookieStatePointer = instance.exports.servo_worker_cookie_state_ptr();
+  const cookieState = new Uint8Array(instance.exports.memory.buffer, cookieStatePointer, cookieStateLength).slice();
+  const restorePointer = instance.exports.servo_js_alloc(cookieState.byteLength);
+  new Uint8Array(instance.exports.memory.buffer, restorePointer, cookieState.byteLength).set(cookieState);
+  assert.equal(instance.exports.servo_worker_restore_cookie_state(restorePointer, cookieState.byteLength), 1);
+  instance.exports.servo_js_free(restorePointer, cookieState.byteLength);
   assert.equal(Number(instance.exports.servo_worker_pending_fetch_count()), 0);
   assert.equal(Number(instance.exports.servo_worker_reset()), 0);
 });
@@ -532,7 +543,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       return socket;
     },
   });
-  assert.equal(runtime.capabilities().abiVersion, 10);
+  assert.equal(runtime.capabilities().abiVersion, 11);
   assert.ok(runtime.capabilities().supported.includes('script-operation-budget'));
   assert.ok(runtime.capabilities().supported.includes('cpu-screenshots'));
   assert.ok(runtime.capabilities().partial.cookies);
@@ -1172,6 +1183,13 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     })()`), true);
     for (let i = 0; i < 80; i++) await turn();
     await checkPage('document.body.dataset.redirectCookie === "true"');
+  });
+
+  await t.test('the complete cookie jar can be exported and restored', () => {
+    const savedCookies = runtime.exportCookieState();
+    assert.ok(savedCookies instanceof Uint8Array);
+    assert.ok(savedCookies.byteLength > 0);
+    assert.equal(runtime.restoreCookieState(savedCookies), true);
   });
 
   await t.test('a frame request makes layout build a display list for the Worker renderer', async () => {

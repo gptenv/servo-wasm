@@ -121,6 +121,21 @@ pub mod resource_thread {
         })
     }
 
+    /// Serialize the complete Worker cookie jar, including HttpOnly cookies
+    /// and metadata that is intentionally hidden from document.cookie.
+    pub fn serialize_worker_cookie_storage() -> Result<Vec<u8>, String> {
+        COOKIES.with(|jar| postcard::to_stdvec(&*jar.borrow()).map_err(|error| error.to_string()))
+    }
+
+    /// Restore a complete cookie jar previously produced by
+    /// `serialize_worker_cookie_storage`.
+    pub fn restore_worker_cookie_storage(bytes: &[u8]) -> Result<(), String> {
+        let restored: crate::cookie_storage::CookieStorage =
+            postcard::from_bytes(bytes).map_err(|error| error.to_string())?;
+        COOKIES.with(|jar| *jar.borrow_mut() = restored);
+        Ok(())
+    }
+
     fn worker_cookie_header_for_request(request: &RequestBuilder) -> Option<String> {
         let origin = match &request.origin {
             Origin::Origin(origin) => Some(origin),

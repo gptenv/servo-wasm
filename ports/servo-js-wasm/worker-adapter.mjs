@@ -9,7 +9,7 @@
 const RESPONSE_CHUNK_BYTES = 64 * 1024;
 // Fetch follows at most 20 redirects by specification.
 const MAX_REDIRECTS = 20;
-const WORKER_ABI_VERSION = 10;
+const WORKER_ABI_VERSION = 11;
 const REQUIRED_EXPORTS = Object.freeze([
   'servo_worker_process_redirect_cookies',
   'servo_worker_set_script_budget',
@@ -23,6 +23,9 @@ const REQUIRED_EXPORTS = Object.freeze([
   'servo_worker_media_event',
   'servo_worker_media_alloc',
   'servo_worker_media_free',
+  'servo_worker_cookie_state_len',
+  'servo_worker_cookie_state_ptr',
+  'servo_worker_restore_cookie_state',
 ]);
 const encoder = new TextEncoder();
 
@@ -43,17 +46,19 @@ const WORKER_CAPABILITIES = Object.freeze({
       'host subrequest, not cached) when required; preflighted requests do not ' +
       'follow redirects. Credentialed cross-origin requests require explicit ' +
       'Access-Control-Allow-Origin and Access-Control-Allow-Credentials.',
-    cookies: 'document.cookie and Worker fetches use Servo’s in-memory RFC 6265 ' +
-      'cookie jar. Final and followed same-origin redirect cookies require ' +
-      'Headers.getSetCookie() and the request credentials mode; complete ' +
-      'SameSite context checks are missing, and ' +
-      'cookies are lost when the WASM instance is discarded.',
-    storage: 'localStorage, sessionStorage, IndexedDB and Cache Storage are ' +
-      'instance-local and do not persist across WASM instances. ' +
+    cookies: 'document.cookie and Worker fetches use Servo’s RFC 6265 cookie ' +
+      'jar. The Worker adapter can export and restore the complete jar, including ' +
+      'HttpOnly cookies and attributes. Final and followed same-origin redirect ' +
+      'cookies require Headers.getSetCookie() and the request credentials mode; ' +
+      'complete SameSite context checks are missing.',
+    storage: 'Servo storage services are runtime-local; the Servo MCP host saves ' +
+      'all localStorage and sessionStorage entries plus IndexedDB databases, ' +
+      'schemas, and supported structured-clone values in the session Durable ' +
+      'Object. Cache Storage is not persisted and its request/response operations ' +
+      'are not implemented. ' +
       'navigator.storage.estimate() has a metadata-only usage lower bound and ' +
       'reports an unbounded application quota; persist() reports false. ' +
-      'Cache request/response operations ' +
-      'are not implemented.',
+      'Persistence depends on the embedding host.',
     screenshots: 'CPU display-list renderer; backdrop filters and non-rounded ' +
       'clip paths are incomplete, and mask coverage is limited to tested cases.',
     history: 'Back, forward, reload, pushState/replaceState state and popstate ' +
@@ -1248,6 +1253,25 @@ class ServoWorkerRuntime {
     this.#inlinePage = null;
     this.#notifyActivity();
     return this.instance.exports.servo_worker_reset() === 1;
+  }
+
+  /** Export Servo's full cookie jar, including HttpOnly cookies and metadata. */
+  exportCookieState() {
+    const len = this.instance.exports.servo_worker_cookie_state_len();
+    if (len < 0) throw new Error('Servo could not serialize its cookie jar');
+    const ptr = this.instance.exports.servo_worker_cookie_state_ptr();
+    return new Uint8Array(this.instance.exports.memory.buffer, ptr, len).slice();
+  }
+
+  /** Restore cookie state previously returned by exportCookieState(). */
+  restoreCookieState(bytes) {
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    return this.#withBytes([data], ([buffer]) => {
+      if (this.instance.exports.servo_worker_restore_cookie_state(buffer.ptr, buffer.len) !== 1) {
+        throw new TypeError('Servo rejected the saved cookie jar');
+      }
+      return true;
+    });
   }
 
   /**
