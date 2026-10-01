@@ -163,6 +163,24 @@ jobs:
             assert.ok(runawayResult.status.scriptsTerminated > 0);
           '
 
+      - name: Assemble the deployable Worker package
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="$RUNNER_TEMP/servo-worker-package"
+          mkdir -p "$package_dir"
+          cp target/wasm32-unknown-unknown/production-stripped/servo_js_wasm.wasm "$package_dir/"
+          cp ports/servo-js-wasm/worker-adapter.mjs "$package_dir/"
+          cp "$RUNNER_TEMP/worker-release-manifest.json" "$package_dir/release-manifest.json"
+
+      - name: Publish the deployable Worker package
+        uses: actions/upload-artifact@v4
+        with:
+          name: servo-worker-${{ github.sha }}
+          path: ${{ runner.temp }}/servo-worker-package/
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Retain Worker build evidence
         if: always()
         uses: actions/upload-artifact@v4
