@@ -2,14 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::rc::Rc;
-use std::{fs, ptr, slice, str};
+use std::{cell::RefCell, fs, ptr, slice, str};
 
 use encoding_rs::{Encoding, UTF_8};
 use http::HeaderMap;
 use http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
-use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
+use ipc_channel::ipc::{IpcReceiver, IpcSender};
+#[cfg(not(target_arch = "wasm32"))]
+use ipc_channel::ipc;
 use ipc_channel::router::ROUTER;
 use js::context::JSContext;
 use js::jsapi::{Heap, JSObject, Value as JSValue};
@@ -22,6 +25,8 @@ use mime::{self, Mime};
 use net_traits::request::{
     BodyChunkRequest, BodyChunkResponse, BodySource as NetBodySource, RequestBody,
 };
+#[cfg(target_arch = "wasm32")]
+use net_traits::{WorkerRequestBodyCommand, WorkerRequestBodyEvent};
 use script_bindings::reflector::DomObject;
 use servo_base::generic_channel::GenericSharedMemory;
 use servo_constellation_traits::BlobImpl;
@@ -54,6 +59,244 @@ use crate::dom::urlsearchparams::URLSearchParams;
 use crate::fetch::mime_multipart::{Node, read_multipart_body};
 use crate::realms::enter_auto_realm;
 use crate::tasks::task_source::SendableTaskSource;
+
+#[cfg(target_arch = "wasm32")]
+const WORKER_REQUEST_BODY_INLINE_LIMIT: usize = 256 * 1024;
+
+#[cfg(target_arch = "wasm32")]
+struct WorkerRequestBodyStream {
+    stream: Trusted<ReadableStream>,
+    task_source: SendableTaskSource,
+    reader_acquired: bool,
+    read_pending: bool,
+    cancelled: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static WORKER_REQUEST_BODY_STREAMS: RefCell<HashMap<String, WorkerRequestBodyStream>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Install the command path used by the Worker host's ReadableStream pull
+/// callback. It is safe to replace this handler when the adapter is installed.
+#[cfg(target_arch = "wasm32")]
+pub fn install_worker_request_body_stream_bridge() {
+    net_traits::set_worker_request_body_command_handler(Box::new(|id, command| match command {
+        WorkerRequestBodyCommand::Pull => queue_worker_request_body_read(id),
+        WorkerRequestBodyCommand::Cancel => cancel_worker_request_body_read(id),
+    }));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn register_worker_request_body_stream(stream: &DomRoot<ReadableStream>) -> String {
+    let id = net_traits::request::RequestId::default().0.to_string();
+    let task_source = stream
+        .global()
+        .task_manager()
+        .networking_task_source()
+        .into();
+    WORKER_REQUEST_BODY_STREAMS.with(|streams| {
+        streams.borrow_mut().insert(
+            id.clone(),
+            WorkerRequestBodyStream {
+                stream: Trusted::new(&**stream),
+                task_source,
+                reader_acquired: false,
+                read_pending: false,
+                cancelled: false,
+            },
+        );
+    });
+    id
+}
+
+#[cfg(target_arch = "wasm32")]
+fn queue_worker_request_body_read(id: String) {
+    let next = WORKER_REQUEST_BODY_STREAMS.with(|streams| {
+        let mut streams = streams.borrow_mut();
+        let Some(stream) = streams.get_mut(&id) else { return Err(()); };
+        if stream.read_pending || stream.cancelled {
+            return Ok(None);
+        }
+        stream.read_pending = true;
+        Ok(Some((
+            stream.stream.clone(),
+            stream.task_source.clone(),
+            stream.reader_acquired,
+        )))
+    });
+    let (trusted_stream, task_source, reader_acquired) = match next {
+        Ok(Some(state)) => state,
+        Ok(None) => return,
+        Err(()) => {
+            net_traits::worker_request_body_event(id, WorkerRequestBodyEvent::Error);
+            return;
+        },
+    };
+
+    task_source.queue(task!(read_worker_request_body_chunk: move |cx| {
+        let is_active = WORKER_REQUEST_BODY_STREAMS.with(|streams| {
+            streams.borrow().get(&id).is_some_and(|state| !state.cancelled)
+        });
+        if !is_active { return; }
+        let stream = trusted_stream.root();
+        if !reader_acquired {
+            if stream.acquire_default_reader(cx).is_err() {
+                WORKER_REQUEST_BODY_STREAMS.with(|streams| { streams.borrow_mut().remove(&id); });
+                net_traits::worker_request_body_event(id, WorkerRequestBodyEvent::Error);
+                return;
+            }
+            WORKER_REQUEST_BODY_STREAMS.with(|streams| {
+                if let Some(state) = streams.borrow_mut().get_mut(&id) {
+                    state.reader_acquired = true;
+                }
+            });
+        }
+
+        let global = stream.global();
+        let promise = stream.read_a_chunk(cx);
+        rooted!(&in(cx) let mut promise_handler = Some(WorkerRequestBodyPromiseHandler {
+            request_id: id.clone(),
+            stream: Dom::from_ref(&stream),
+        }));
+        rooted!(&in(cx) let mut rejection_handler = Some(WorkerRequestBodyPromiseRejectionHandler {
+            request_id: id,
+            stream: Dom::from_ref(&stream),
+        }));
+        let handler = PromiseNativeHandler::new(
+            cx,
+            &global,
+            promise_handler.take().map(|handler| Box::new(handler) as Box<_>),
+            rejection_handler.take().map(|handler| Box::new(handler) as Box<_>),
+        );
+        let mut realm = enter_auto_realm(cx, &*global);
+        promise.append_native_handler(&mut realm.current_realm(), &handler);
+    }));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn cancel_worker_request_body_read(id: String) {
+    let state = WORKER_REQUEST_BODY_STREAMS.with(|streams| {
+        let mut streams = streams.borrow_mut();
+        let state = streams.get_mut(&id)?;
+        if !state.reader_acquired {
+            streams.remove(&id);
+            return None;
+        }
+        state.cancelled = true;
+        let pending = state.read_pending;
+        let state = (state.stream.clone(), state.task_source.clone(), pending);
+        if !pending {
+            streams.remove(&id);
+        }
+        Some(state)
+    });
+    if let Some((stream, task_source, _pending)) = state {
+        task_source.queue(task!(cancel_worker_request_body_reader: move |cx| {
+            stream.root().stop_reading(cx);
+        }));
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn finish_worker_request_body_read(id: &str, stream: &ReadableStream, cx: &mut JSContext) -> bool {
+    let cancelled = WORKER_REQUEST_BODY_STREAMS.with(|streams| {
+        streams
+            .borrow_mut()
+            .remove(id)
+            .is_none_or(|state| state.cancelled)
+    });
+    if !cancelled {
+        stream.stop_reading(cx);
+    }
+    !cancelled
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+struct WorkerRequestBodyPromiseHandler {
+    request_id: String,
+    stream: Dom<ReadableStream>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl js::gc::Rootable for WorkerRequestBodyPromiseHandler {}
+
+#[cfg(target_arch = "wasm32")]
+impl Callback for WorkerRequestBodyPromiseHandler {
+    fn callback(&self, cx: &mut CurrentRealm, value: HandleValue) {
+        let is_done = match get_read_promise_done(cx, &value) {
+            Ok(is_done) => is_done,
+            Err(_) => {
+                let active = finish_worker_request_body_read(&self.request_id, &self.stream, cx);
+                if !active { return; }
+                net_traits::worker_request_body_event(
+                    self.request_id.clone(),
+                    WorkerRequestBodyEvent::Error,
+                );
+                return;
+            },
+        };
+        if is_done {
+            let active = finish_worker_request_body_read(&self.request_id, &self.stream, cx);
+            if !active { return; }
+            net_traits::worker_request_body_event(
+                self.request_id.clone(),
+                WorkerRequestBodyEvent::Done,
+            );
+            return;
+        }
+        let bytes = match get_read_promise_bytes(cx, &value) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                let active = finish_worker_request_body_read(&self.request_id, &self.stream, cx);
+                if !active { return; }
+                net_traits::worker_request_body_event(
+                    self.request_id.clone(),
+                    WorkerRequestBodyEvent::Error,
+                );
+                return;
+            },
+        };
+        let active = WORKER_REQUEST_BODY_STREAMS.with(|streams| {
+            let mut streams = streams.borrow_mut();
+            let Some(state) = streams.get_mut(&self.request_id) else { return false; };
+            if state.cancelled { streams.remove(&self.request_id); return false; }
+            state.read_pending = false;
+            true
+        });
+        if !active { return; }
+        net_traits::worker_request_body_event(
+            self.request_id.clone(),
+            WorkerRequestBodyEvent::Chunk(bytes),
+        );
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+struct WorkerRequestBodyPromiseRejectionHandler {
+    request_id: String,
+    stream: Dom<ReadableStream>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl js::gc::Rootable for WorkerRequestBodyPromiseRejectionHandler {}
+
+#[cfg(target_arch = "wasm32")]
+impl Callback for WorkerRequestBodyPromiseRejectionHandler {
+    fn callback(&self, cx: &mut CurrentRealm, _value: HandleValue) {
+        let active = finish_worker_request_body_read(&self.request_id, &self.stream, cx);
+        if !active { return; }
+        net_traits::worker_request_body_event(
+            self.request_id.clone(),
+            WorkerRequestBodyEvent::Error,
+        );
+    }
+}
 
 /// <https://fetch.spec.whatwg.org/#concept-body-clone>
 pub(crate) fn clone_body_stream_for_dom_body(
@@ -435,14 +678,18 @@ impl ExtractedBody {
 
         #[cfg(target_arch = "wasm32")]
         {
-            // A raw Worker cannot start ipc-channel's router thread. Most
-            // RequestInit bodies already have bytes in the extracted stream;
-            // carry those directly to the host. Streams without in-memory
-            // bytes are reported as unsupported by the Worker fetch adapter.
-            let bytes =
-                in_memory.and_then(|memory| (memory.len() <= 256 * 1024).then(|| memory.to_vec()));
+            // Keep small bodies inline to avoid creating a stream for ordinary
+            // requests. Larger or externally-backed bodies stay in the DOM
+            // stream and are pulled by the host as fetch() requests chunks.
+            let bytes = in_memory
+                .as_ref()
+                .filter(|memory| memory.len() <= WORKER_REQUEST_BODY_INLINE_LIMIT)
+                .map(|memory| memory.to_vec());
+            let stream_id = bytes
+                .is_none()
+                .then(|| register_worker_request_body_stream(&stream));
             return (
-                RequestBody::new_worker(bytes, net_source, total_bytes),
+                RequestBody::new_worker(bytes, stream_id, net_source, total_bytes),
                 stream,
             );
         }

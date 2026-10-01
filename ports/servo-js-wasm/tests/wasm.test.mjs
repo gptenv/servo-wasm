@@ -26,6 +26,9 @@ import { webPlatformCases } from './web-platform-cases.mjs';
 // below, which additionally asserts no *other* imports crept in.
 const WORKER_ENV_IMPORT_ALLOWLIST = [
   'worker_fetch_request',
+  'worker_fetch_body_chunk',
+  'worker_fetch_body_done',
+  'worker_fetch_body_error',
   'worker_getrandom',
   'worker_log_error',
   'worker_media_command',
@@ -50,7 +53,7 @@ test('host command parser rejects mismatched ABI and malformed bounded DTOs', ()
     headers: [['accept', [116, 101, 120, 116]]], body: null,
     destination: 'None', redirect_mode: 'Follow',
   };
-  const valid = { version: 12, kind: 'fetch', request };
+  const valid = { version: 13, kind: 'fetch', request };
   assert.deepEqual(parseWorkerHostMessage(hostCommand(valid)), valid);
   const preflighted = { ...valid, request: { ...request,
     cors_preflight: { method: 'PUT', headers: ['x-token'] } } };
@@ -61,16 +64,17 @@ test('host command parser rejects mismatched ABI and malformed bounded DTOs', ()
     { ...valid, request: { ...request, headers: [['cookie\r\nx', [1]]] } },
     { ...valid, request: { ...request, headers: [['x', [256]]] } },
     { ...valid, request: { ...request, body: { worker_bytes: [256] } } },
+    { ...valid, request: { ...request, body: { worker_bytes: [1], worker_stream_id: 'x' } } },
     { ...valid, request: { ...request, cors_preflight: { method: 'PUT\r\n', headers: [] } } },
     { ...valid, request: { ...request, cors_preflight: { method: 'PUT', headers: ['X-Upper'] } } },
     { ...valid, request: { ...request, cors_preflight: { method: 'PUT', headers: 'x-token' } } },
-    { version: 12, kind: 'cancel', request_ids: [''] },
-    { version: 12, kind: 'unrecognized' },
+    { version: 13, kind: 'cancel', request_ids: [''] },
+    { version: 13, kind: 'unrecognized' },
   ]) {
     assert.throws(() => parseWorkerHostMessage(hostCommand(malformed)));
   }
   const largeCommand = new TextEncoder().encode(JSON.stringify({
-    version: 12,
+    version: 13,
     kind: 'cancel',
     request_ids: ['x'.repeat(2 * 1024 * 1024)],
   }));
@@ -89,6 +93,9 @@ instance = new WebAssembly.Instance(wasm, {
     // This low-level instance only runs isolated SpiderMonkey probes. The
     // separate adapter instance below exercises the real fetch protocol.
     worker_fetch_request: (_ptr, _len) => {},
+    worker_fetch_body_chunk: () => {},
+    worker_fetch_body_done: () => {},
+    worker_fetch_body_error: () => {},
     worker_media_command: (_operation, _playerId, _value, _ptr, _len) => 0,
     // Real entropy, not a stub: getrandom's custom wasm32 backend
     // (servo-net-traits' __getrandom_v03_custom) is fail-closed on a
@@ -194,7 +201,7 @@ test('SpiderMonkey smoke export runs in wasm', () => {
 });
 
 test('Worker lifecycle exports are present and initially idle', () => {
-  assert.equal(instance.exports.servo_worker_abi_version(), 12);
+  assert.equal(instance.exports.servo_worker_abi_version(), 13);
   assert.equal(typeof instance.exports.servo_worker_evaluate_page_async, 'function');
   assert.equal(Number(instance.exports.servo_worker_poll_page_evaluation(1)), -1);
   assert.equal(typeof instance.exports.servo_worker_set_script_budget, 'function');
@@ -306,6 +313,22 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   let rejectedBodyCanceled = false;
   let failedStreamController;
   let queuedAborts = 0;
+  const readRequestBody = async (body) => {
+    if (!(body instanceof ReadableStream)) return new Uint8Array(body ?? []);
+    const reader = body.getReader();
+    const chunks = [];
+    let length = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      length += value.byteLength;
+    }
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return bytes;
+  };
   const runtime = await createServoWorkerRuntime(wasm, {
     url: 'about:blank',
     // This one runtime deliberately stress-loads many pages in a single test.
@@ -445,7 +468,10 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       }
       if (url.endsWith('/failure')) throw new Error('fixture network failure');
       if (url.endsWith('/post')) {
-        return new Response(new TextDecoder().decode(init.body), {
+        const bytes = await readRequestBody(init.body);
+        const recorded = requests.findLast((request) => request.url === url && request.body === init.body);
+        if (recorded) recorded.body = bytes;
+        return new Response(new TextDecoder().decode(bytes), {
           status: 200,
           headers: { 'content-type': 'text/plain' },
         });
@@ -543,7 +569,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       return socket;
     },
   });
-  assert.equal(runtime.capabilities().abiVersion, 12);
+  assert.equal(runtime.capabilities().abiVersion, 13);
   assert.ok(runtime.capabilities().supported.includes('script-operation-budget'));
   assert.ok(runtime.capabilities().supported.includes('cpu-screenshots'));
   assert.ok(runtime.capabilities().partial.cookies);
@@ -562,6 +588,20 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   const turn = async () => {
     runtime.pump();
     await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  const waitForPageResult = async () => {
+    while (true) {
+      const result = runtime.pageResult();
+      if (result !== undefined) return result;
+      await turn();
+    }
+  };
+  const waitForPageCondition = async (source) => {
+    while (true) {
+      assert.equal(runtime.evaluatePage(source), true);
+      const result = await waitForPageResult();
+      if (result?.Ok?.Number === 1) return result;
+    }
   };
   assert.equal(runtime.bootstrap(1280, 720, 'about:blank'), false,
     'a second bootstrap must fail without replacing the live SpiderMonkey runtime');
@@ -625,8 +665,18 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       'fetch("/oversize").catch(() => document.body.dataset.oversize = "yes");' +
       'fetch("/post", {method: "POST", body: "x"}).then(r => r.text()).then(t => ' +
       'document.body.dataset.postEcho = t);' +
-      'fetch("/post", {method: "POST", body: "x".repeat(300000)}).catch(() => ' +
-      'document.body.dataset.largePostRejected = "yes");' +
+      'window.largePostPromise = fetch("/post", {method: "POST", body: "x".repeat(300000)}).then(r => r.text()).then(t => ' +
+      'document.body.dataset.largePostLength = String(t.length)).catch(e => ' +
+      'document.body.dataset.largePostError = String(e));' +
+      'window.streamPutPromise = fetch("/post", {method: "PUT", body: new ReadableStream({' +
+      'start(c) { c.enqueue(new TextEncoder().encode("upload-")); ' +
+      'c.enqueue(new TextEncoder().encode("stream")); c.close() }' +
+      '}), duplex: \"half\"}).then(r => r.text()).then(t => document.body.dataset.streamPost = t).catch(e => ' +
+      'document.body.dataset.streamPostError = String(e));' +
+      'window.fileUploadPromise = fetch("/post", {method: "PUT", body: ' +
+      'new File(["file-data".repeat(40000)], "upload.txt")}).then(r => r.text()).then(t => ' +
+      'document.body.dataset.fileUploadLength = String(t.length)).catch(e => ' +
+      'document.body.dataset.fileUploadError = String(e));' +
       'fetch("/js-redirect").then(r => r.json().then(body => ({r, body}))).then(({r, body}) => ' +
       'document.body.dataset.redirected = String(r.redirected && ' +
       'r.url.endsWith("/data.json") && body.value === "fetch-ok"));' +
@@ -647,15 +697,19 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       'fetch("https://cors.example/ok", {credentials:"include"}).catch(() => ' +
       'document.body.dataset.corsCredentialsBlocked = "yes");' +
       'fetch("https://cors.example/ok", {headers:{"x-unsafe":"yes"}}).catch(() => ' +
-      'document.body.dataset.corsPreflightBlocked = "yes"); 1',
+      'document.body.dataset.corsPreflightBlocked = "yes"); ' +
+      'Promise.all([window.largePostPromise, window.streamPutPromise, window.fileUploadPromise]).then(() => ' +
+      'document.body.dataset.uploadsComplete = "yes"); 1',
   ), true);
-  for (let i = 0; i < 30; i++) await turn();
-  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 1 } });
+  await waitForPageCondition('document.body.dataset.uploadsComplete === "yes" ? 1 : 0');
   assert.equal(runtime.evaluatePage(
-    'document.body.dataset.failed === "yes" && ' +
+      'document.body.dataset.failed === "yes" && ' +
       'document.body.dataset.oversize === "yes" && ' +
       'document.body.dataset.postEcho === "x" && ' +
-      'document.body.dataset.largePostRejected === "yes" && ' +
+      'document.body.dataset.largePostLength === "300000" && ' +
+      'document.body.dataset.streamPost === "upload-stream" && ' +
+      'document.body.dataset.fileUploadLength === "360000" && ' +
       'document.body.dataset.crossRedirectBlocked === "yes" && ' +
       'document.body.dataset.crossOriginBlocked === "yes" && ' +
       'document.body.dataset.corsOk === "true" && ' +
@@ -665,14 +719,22 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       'document.body.dataset.corsPreflightBlocked === "yes" && ' +
       'document.body.dataset.redirected === "true" ? 42 : 0',
   ), true);
-  for (let i = 0; i < 10; i++) await turn();
-  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
   assert.ok(fetchErrors.some((message) => message.includes('fixture network failure')));
   assert.ok(fetchErrors.some((message) => message.includes('exceeds')));
-  assert.ok(fetchErrors.some((message) => message.includes('request-body streaming')));
+  assert.ok(!fetchErrors.some((message) => message.includes('request-body streaming')));
   const postRequest = requests.find(({ url }) => url.endsWith('/post'));
   assert.equal(postRequest?.method, 'POST');
   assert.equal(new TextDecoder().decode(postRequest.body), 'x');
+  const largePostRequest = requests.find(({ url, method, body }) =>
+    url.endsWith('/post') && method === 'POST' && body instanceof Uint8Array && body.byteLength === 300000);
+  assert.equal(largePostRequest?.body.byteLength, 300000);
+  const streamedPutRequest = requests.find(({ url, method, body }) =>
+    url.endsWith('/post') && method === 'PUT' && body instanceof Uint8Array && body.byteLength === 13);
+  assert.equal(new TextDecoder().decode(streamedPutRequest?.body), 'upload-stream');
+  const fileUploadRequest = requests.find(({ url, method, body }) =>
+    url.endsWith('/post') && method === 'PUT' && body instanceof Uint8Array && body.byteLength === 360000);
+  assert.equal(fileUploadRequest?.body.byteLength, 360000);
   assert.equal(requests.some(({ url }) => url === 'https://other.example/data.json'), true,
     'simple cross-origin page requests reach the host, then require CORS permission');
   assert.equal(requests.find(({ url }) => url === 'https://cors.example/ok')?.origin,
@@ -725,21 +787,18 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   assert.equal(runtime.evaluatePage(
     'document.body.dataset.timer === "fired" ? 42 : 0',
   ), true);
-  for (let i = 0; i < 10; i++) await turn();
-  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
 
   // A recurring timer never lets a strict settle finish, but with the network
   // idle it counts as settled under networkIdleMs.
   assert.equal(runtime.evaluatePage('window.poll = setInterval(() => {}, 50); 1'), true);
-  for (let i = 0; i < 5; i++) await turn();
-  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 1 } });
   assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 600 })).settled, false);
   const idleStatus = await runtime.pumpUntilSettled({ maxDurationMs: 3_000, networkIdleMs: 200 });
   assert.equal(idleStatus.settled, true, JSON.stringify(idleStatus));
   assert.equal(idleStatus.timersPending, true);
   assert.equal(runtime.evaluatePage('clearInterval(window.poll); 1'), true);
-  for (let i = 0; i < 5; i++) await turn();
-  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 1 } });
 
   const heapBeforeRepeatLoads = runtime.instance.exports.memory.buffer.byteLength;
   for (let page = 0; page < 4; page++) {
@@ -750,8 +809,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     'document.title === "Worker fixture" && ' +
       'document.querySelector("#answer") !== null ? 42 : 0',
   ), true);
-  for (let i = 0; i < 10; i++) await turn();
-  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
   const heapAfterRepeatLoads = runtime.instance.exports.memory.buffer.byteLength;
   assert.ok(heapAfterRepeatLoads <= 128 * 1024 * 1024,
     `WASM heap exceeded the Worker memory ceiling: ${heapAfterRepeatLoads} bytes`);
@@ -759,16 +817,14 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     `repeated page loads grew the heap unexpectedly: ${heapBeforeRepeatLoads} -> ${heapAfterRepeatLoads}`);
 
   assert.equal(runtime.evaluatePage('globalThis.oldPageSentinel = "private"; 42'), true);
-  for (let i = 0; i < 10; i++) await turn();
-  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
   assert.equal(runtime.loadPage('https://other.example/'), true);
   for (let i = 0; i < 50; i++) await turn();
   assert.equal(runtime.evaluatePage(
     'location.origin === "https://other.example" && ' +
       'typeof oldPageSentinel === "undefined" ? 42 : 0',
   ), true);
-  for (let i = 0; i < 10; i++) await turn();
-  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
 
   assert.equal(runtime.loadPage('https://example.test/redirect'), true);
   for (let i = 0; i < 45; i++) await turn();
@@ -776,8 +832,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   assert.equal(runtime.evaluatePage(
     'location.pathname === "/final" && document.title === "Worker fixture" ? 42 : 0',
   ), true);
-  for (let i = 0; i < 10; i++) await turn();
-  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
 
   assert.equal(runtime.evaluatePage('globalThis.oldPageSentinel = "private"; 42'), true);
   for (let i = 0; i < 10; i++) await turn();
@@ -787,8 +842,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   assert.equal(runtime.evaluatePage(
     'document.URL === "about:blank" && typeof oldPageSentinel === "undefined" ? 42 : 0',
   ), true);
-  for (let i = 0; i < 10; i++) await turn();
-  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
 
   assert.equal(runtime.loadPage('https://example.test/slow'), true);
   for (let i = 0; i < 10; i++) await turn();
@@ -913,8 +967,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     assert.equal(runtime.evaluatePage(
       'document.body.dataset.rafProbe === "fired" ? 42 : 0',
     ), true);
-    for (let i = 0; i < 10; i++) await turn();
-    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+    assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
   });
 
   await t.test('requestAnimationFrame supports recurring callbacks', async () => {
@@ -932,8 +985,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     assert.equal(runtime.evaluatePage(
       'document.body.dataset.rafCount === "2" ? 42 : 0',
     ), true);
-    for (let i = 0; i < 10; i++) await turn();
-    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+    assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
   });
 
   await t.test('WebSocket connects, exchanges messages, and closes through the Worker host', async () => {
@@ -953,8 +1005,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       'document.body.dataset.wsMessage === "worker-echo" && ' +
       'document.body.dataset.wsClose === "1000:done" ? 42 : 0',
     ), true);
-    for (let i = 0; i < 10; i++) await turn();
-    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+    assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
     assert.equal(webSocketConnections.length, 1);
     assert.equal(webSocketConnections[0].binaryType, 'arraybuffer');
   });
@@ -973,8 +1024,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     runtime.evaluatePage('globalThis.beforeController = new AbortController();' +
       'fetch("/abort-before", {signal: beforeController.signal}).catch(e => ' +
       'document.body.dataset.beforeAbort = e.name); 1');
-    for (let i = 0; i < 10; i++) await turn();
-    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
+    assert.deepEqual(await waitForPageResult(), { Ok: { Number: 1 } });
     assert.ok(requests.some(({ url }) => url.endsWith('/abort-before')));
     runtime.evaluatePage('beforeController.abort(); 1');
     await settle();

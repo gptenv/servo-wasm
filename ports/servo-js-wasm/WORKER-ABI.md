@@ -1,7 +1,7 @@
-# Raw Worker ABI, version 12
+# Raw Worker ABI, version 13
 
 The JavaScript adapter and WASM artifact are a matched pair. The adapter checks
-`servo_worker_abi_version() === 12` and checks that every export it requires
+`servo_worker_abi_version() === 13` and checks that every export it requires
 (redirect-cookie processing, the script budget, correlated evaluation, and cookie-state export/import) is present before
 running constructors or bootstrap. Rebuild
 the artifact whenever the interface or serialized request representation changes.
@@ -9,21 +9,24 @@ This is a project-internal protocol, not an MCP protocol or a stable upstream Se
 
 ## Host imports
 
-Exactly six function imports exist, all in `env`:
+Exactly nine function imports exist, all in `env`:
 
 | Import | Contract |
 | --- | --- |
 | `worker_fetch_request(ptr, len)` | Copy and decode a UTF-8 JSON command synchronously; do network I/O asynchronously. |
+| `worker_fetch_body_chunk(id_ptr, id_len, bytes_ptr, bytes_len)` | Copy one request-body chunk into the host stream and resume its pending pull. |
+| `worker_fetch_body_done(id_ptr, id_len)` | Close a completed request-body stream. |
+| `worker_fetch_body_error(id_ptr, id_len)` | Error a failed request-body stream. |
 | `worker_getrandom(ptr, len)` | Fill every requested byte using a CSPRNG; return zero on success, nonzero on failure. Never use a deterministic fallback. |
 | `worker_log_error(ptr, len)` | Consume a UTF-8 diagnostic synchronously. |
 | `worker_monotonic_now_ns()` | Return monotonic nanoseconds as a JavaScript `bigint`. |
 | `worker_unix_time_now_ns()` | Return Unix-epoch nanoseconds as a JavaScript `bigint`. |
 | `worker_media_command(operation, player_id, value, ptr, len)` | Copy a media-player command synchronously; schedule parsing, decoding and callbacks asynchronously after returning to Wasm. |
 
-The fetch import carries `{version:12, kind:"fetch", request:...}`,
-`{version:12, kind:"cancel", request_ids:[...]}`,
-`{version:12, kind:"web_socket_connect", request_id, url, protocols}`, or
-`{version:12, kind:"web_socket_action", request_id, action}`. IDs serialize as
+The fetch import carries `{version:13, kind:"fetch", request:...}`,
+`{version:13, kind:"cancel", request_ids:[...]}`,
+`{version:13, kind:"web_socket_connect", request_id, url, protocols}`, or
+`{version:13, kind:"web_socket_action", request_id, action}`. IDs serialize as
 UUID strings. The WebSocket commands use the Worker's `WebSocket` host API; the
 adapter reports open, message, close and error events through the
 `servo_worker_websocket_*` exports and forwards page send/close actions to the
@@ -31,12 +34,20 @@ host socket. Binary frames are exposed as `ArrayBuffer` in the page.
 The fetch request DTO contains only `id`, `url`, `method`, `headers`, `body`,
 `destination`, `redirect_mode` and `cors_preflight`. `headers` is an ordered array of
 `[name, byte-array]` entries, preserving repeated fields. `body` is null or
-`{worker_bytes: byte-array|null}`. Request bodies are currently buffered; an
-unbuffered body is rejected. There is no application-level byte limit on the
-buffered body. Servo's internal `RequestBuilder` fields are not part of this
-protocol. The adapter validates DTO structure and protocol versions before
-dispatch, without a project-defined command or header-size ceiling.
-Cancellation retires the Rust callback first, then cancels queued/active host I/O.
+contains exactly one of `worker_bytes: byte-array` and
+`worker_stream_id: UUID string`. Small in-memory bodies use the byte field;
+large or externally-backed bodies use the stream ID. The host creates a
+`ReadableStream` and asks Servo for one chunk each time Fetch pulls. The stream
+ends on `worker_fetch_body_done` or fails on `worker_fetch_body_error`; host
+cancellation calls `servo_worker_cancel_request_body`. This keeps only a
+bounded chunk in transit and preserves backpressure through Cloudflare's fetch
+implementation. Since a consumed stream cannot be replayed, followed redirects
+that preserve a streamed request body fail rather than silently sending an
+empty or partial upload. Servo's internal `RequestBuilder` fields are not part
+of this protocol. The adapter validates DTO structure and protocol versions
+before dispatch, without a project-defined command or header-size ceiling.
+Cancellation retires the Rust callback first, then cancels queued/active host I/O
+and releases any active request-body reader.
 
 ## Response lifecycle
 

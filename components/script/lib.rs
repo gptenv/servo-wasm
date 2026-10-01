@@ -72,6 +72,10 @@ mod xpath;
 pub use event_loop::script_thread::ScriptThread;
 #[cfg(target_arch = "wasm32")]
 pub use event_loop::script_thread::request_worker_rendering;
+#[cfg(target_arch = "wasm32")]
+pub fn install_worker_request_body_stream_bridge() {
+    fetch::body::install_worker_request_body_stream_bridge();
+}
 pub(crate) use script_bindings::DomTypes;
 pub(crate) use script_bindings::reflector::{DomObject, MutDomObject, Reflector};
 

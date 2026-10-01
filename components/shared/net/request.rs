@@ -335,10 +335,13 @@ pub struct RequestBody {
     source: BodySource,
     /// <https://fetch.spec.whatwg.org/#concept-body-total-bytes>
     total_bytes: Option<usize>,
-    /// A bounded, in-memory request payload for the single-threaded Worker
-    /// host. The native path continues to transmit through the IPC sender.
+    /// A small in-memory request payload for the single-threaded Worker host.
+    /// Larger and externally-backed bodies use the pull-based stream bridge.
     #[cfg(target_arch = "wasm32")]
     pub worker_bytes: Option<Vec<u8>>,
+    /// Host-side stream key for a request body that is not carried inline.
+    #[cfg(target_arch = "wasm32")]
+    pub worker_stream_id: Option<String>,
 }
 
 impl RequestBody {
@@ -353,12 +356,15 @@ impl RequestBody {
             total_bytes,
             #[cfg(target_arch = "wasm32")]
             worker_bytes: None,
+            #[cfg(target_arch = "wasm32")]
+            worker_stream_id: None,
         }
     }
 
     #[cfg(target_arch = "wasm32")]
     pub fn new_worker(
         bytes: Option<Vec<u8>>,
+        stream_id: Option<String>,
         source: BodySource,
         total_bytes: Option<usize>,
     ) -> Self {
@@ -367,6 +373,7 @@ impl RequestBody {
             source,
             total_bytes,
             worker_bytes: bytes,
+            worker_stream_id: stream_id,
         }
     }
 

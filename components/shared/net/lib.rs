@@ -951,12 +951,38 @@ pub type WorkerFetchRequestHandler =
 #[cfg(target_arch = "wasm32")]
 pub type WorkerFetchCancelHandler = Box<dyn FnMut(Vec<RequestId>)>;
 
+/// Commands sent from the Worker host when it pulls or cancels a streamed
+/// request body.
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerRequestBodyCommand {
+    Pull,
+    Cancel,
+}
+
+/// Events delivered from Servo's script stream reader to the Worker host.
+#[cfg(target_arch = "wasm32")]
+pub enum WorkerRequestBodyEvent {
+    Chunk(Vec<u8>),
+    Done,
+    Error,
+}
+
+#[cfg(target_arch = "wasm32")]
+pub type WorkerRequestBodyCommandHandler = Box<dyn FnMut(String, WorkerRequestBodyCommand)>;
+#[cfg(target_arch = "wasm32")]
+pub type WorkerRequestBodyEventHandler = Box<dyn FnMut(String, WorkerRequestBodyEvent)>;
+
 #[cfg(target_arch = "wasm32")]
 thread_local! {
     static WORKER_FETCH_REQUEST_HANDLER:
         std::cell::RefCell<Option<WorkerFetchRequestHandler>> = const { std::cell::RefCell::new(None) };
     static WORKER_FETCH_CANCEL_HANDLER:
         std::cell::RefCell<Option<WorkerFetchCancelHandler>> = const { std::cell::RefCell::new(None) };
+    static WORKER_REQUEST_BODY_COMMAND_HANDLER:
+        std::cell::RefCell<Option<WorkerRequestBodyCommandHandler>> = const { std::cell::RefCell::new(None) };
+    static WORKER_REQUEST_BODY_EVENT_HANDLER:
+        std::cell::RefCell<Option<WorkerRequestBodyEventHandler>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -992,6 +1018,40 @@ pub fn set_worker_fetch_request_handler(handler: WorkerFetchRequestHandler) {
 #[cfg(target_arch = "wasm32")]
 pub fn set_worker_fetch_cancel_handler(handler: WorkerFetchCancelHandler) {
     WORKER_FETCH_CANCEL_HANDLER.with(|slot| *slot.borrow_mut() = Some(handler));
+}
+
+/// Install the script-side request-body stream reader or Worker-host event
+/// sink. These callbacks are Worker-only because native fetch streams use IPC.
+#[cfg(target_arch = "wasm32")]
+pub fn set_worker_request_body_command_handler(handler: WorkerRequestBodyCommandHandler) {
+    WORKER_REQUEST_BODY_COMMAND_HANDLER.with(|slot| *slot.borrow_mut() = Some(handler));
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn set_worker_request_body_event_handler(handler: WorkerRequestBodyEventHandler) {
+    WORKER_REQUEST_BODY_EVENT_HANDLER.with(|slot| *slot.borrow_mut() = Some(handler));
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn worker_request_body_command(id: String, command: WorkerRequestBodyCommand) {
+    WORKER_REQUEST_BODY_COMMAND_HANDLER.with(|slot| {
+        if let Ok(mut slot) = slot.try_borrow_mut() {
+            if let Some(handler) = slot.as_mut() {
+                handler(id, command);
+            }
+        }
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn worker_request_body_event(id: String, event: WorkerRequestBodyEvent) {
+    WORKER_REQUEST_BODY_EVENT_HANDLER.with(|slot| {
+        if let Ok(mut slot) = slot.try_borrow_mut() {
+            if let Some(handler) = slot.as_mut() {
+                handler(id, event);
+            }
+        }
+    });
 }
 
 /// A thread to handle fetches in a Servo process. This thread is responsible for
@@ -1481,8 +1541,8 @@ pub fn trim_http_whitespace(mut slice: &[u8]) -> &[u8] {
 
 /// Returns true if a given string has a given suffix with case-insensitive match.
 pub fn ends_with_ignore_ascii_case(string: &str, suffix: &str) -> bool {
-    string.len() >= suffix.len() &&
-        string.as_bytes()[string.len() - suffix.len()..].eq_ignore_ascii_case(suffix.as_bytes())
+    string.len() >= suffix.len()
+        && string.as_bytes()[string.len() - suffix.len()..].eq_ignore_ascii_case(suffix.as_bytes())
 }
 
 /// Returns the cached current system locale, or en-US by default.

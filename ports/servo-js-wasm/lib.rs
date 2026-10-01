@@ -108,7 +108,7 @@ struct WorkerRedirectCookies {
     set_cookies: Vec<String>,
 }
 
-const WORKER_ABI_VERSION: u32 = 12;
+const WORKER_ABI_VERSION: u32 = 13;
 
 /// The stable host-facing subset of a Servo request. Do not serialize
 /// RequestBuilder here: its internal fields are not an ABI contract.
@@ -136,6 +136,7 @@ struct WorkerCorsPreflightRequest<'a> {
 #[derive(serde::Serialize)]
 struct WorkerFetchBody<'a> {
     worker_bytes: Option<&'a [u8]>,
+    worker_stream_id: Option<&'a str>,
 }
 
 impl<'a> WorkerFetchRequest<'a> {
@@ -151,6 +152,7 @@ impl<'a> WorkerFetchRequest<'a> {
                 .collect(),
             body: request.body.as_ref().map(|body| WorkerFetchBody {
                 worker_bytes: body.worker_bytes.as_deref(),
+                worker_stream_id: body.worker_stream_id.as_deref(),
             }),
             destination: &request.destination,
             redirect_mode: &request.redirect_mode,
@@ -1193,6 +1195,17 @@ unsafe extern "C" {
     /// Host entry point receiving a versioned fetch or cancellation command.
     #[link_name = "worker_fetch_request"]
     fn host_fetch_request(ptr: *const u8, len: usize);
+    #[link_name = "worker_fetch_body_chunk"]
+    fn host_fetch_body_chunk(
+        id_ptr: *const u8,
+        id_len: usize,
+        bytes_ptr: *const u8,
+        bytes_len: usize,
+    );
+    #[link_name = "worker_fetch_body_done"]
+    fn host_fetch_body_done(id_ptr: *const u8, id_len: usize);
+    #[link_name = "worker_fetch_body_error"]
+    fn host_fetch_body_error(id_ptr: *const u8, id_len: usize);
 }
 
 fn install_worker_panic_hook() {
@@ -1211,6 +1224,21 @@ fn install_worker_panic_hook() {
 }
 
 fn install_fetch_adapter() {
+    servo::install_worker_request_body_stream_bridge();
+    net_traits::set_worker_request_body_event_handler(Box::new(|id, event| {
+        let id = id.as_bytes();
+        match event {
+            net_traits::WorkerRequestBodyEvent::Chunk(bytes) => unsafe {
+                host_fetch_body_chunk(id.as_ptr(), id.len(), bytes.as_ptr(), bytes.len());
+            },
+            net_traits::WorkerRequestBodyEvent::Done => unsafe {
+                host_fetch_body_done(id.as_ptr(), id.len());
+            },
+            net_traits::WorkerRequestBodyEvent::Error => unsafe {
+                host_fetch_body_error(id.as_ptr(), id.len());
+            },
+        }
+    }));
     set_worker_fetch_cancel_handler(Box::new(|request_ids| {
         for request_id in &request_ids {
             complete_worker_fetch_error(*request_id, NetworkError::LoadCancelled);
@@ -1393,13 +1421,6 @@ fn worker_response_visibility(
     let Some(origin) = origin else {
         return Err(NetworkError::CorsGeneral);
     };
-    if request
-        .body
-        .as_ref()
-        .is_some_and(|body| body.worker_bytes.is_none())
-    {
-        return Err(NetworkError::CorsGeneral);
-    }
     let origin = origin.ascii_serialization().into_owned();
     if origin == "null" {
         return Err(NetworkError::CorsGeneral);
@@ -1645,6 +1666,32 @@ pub extern "C" fn servo_worker_reset() -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn servo_worker_pending_fetch_count() -> usize {
     FETCH_CALLBACKS.with(|callbacks| callbacks.borrow().len())
+}
+
+/// Request the next bounded chunk of a streamed fetch upload body.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_pull_request_body(id_ptr: *const u8, id_len: usize) -> i32 {
+    let Some(id) = (unsafe { parse_worker_request_id(id_ptr, id_len) }) else {
+        return 0;
+    };
+    net_traits::worker_request_body_command(
+        id.0.to_string(),
+        net_traits::WorkerRequestBodyCommand::Pull,
+    );
+    1
+}
+
+/// Cancel a streamed fetch upload body after the host request is aborted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_cancel_request_body(id_ptr: *const u8, id_len: usize) -> i32 {
+    let Some(id) = (unsafe { parse_worker_request_id(id_ptr, id_len) }) else {
+        return 0;
+    };
+    net_traits::worker_request_body_command(
+        id.0.to_string(),
+        net_traits::WorkerRequestBodyCommand::Cancel,
+    );
+    1
 }
 
 /// Incorporate redirect cookies before the Worker issues the next hop and

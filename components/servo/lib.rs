@@ -94,6 +94,10 @@ pub use paint_api::rendering_context::{
 // add it as an official API.
 #[doc(hidden)]
 pub use profile_traits;
+#[cfg(target_arch = "wasm32")]
+pub fn install_worker_request_body_stream_bridge() {
+    script::install_worker_request_body_stream_bridge();
+}
 // This should be replaced with an API on ServoBuilder.
 // See <https://github.com/servo/servo/issues/40950>.
 pub use resources;

@@ -9,7 +9,7 @@
 const RESPONSE_CHUNK_BYTES = 64 * 1024;
 // Fetch follows at most 20 redirects by specification.
 const MAX_REDIRECTS = 20;
-const WORKER_ABI_VERSION = 12;
+const WORKER_ABI_VERSION = 13;
 const REQUIRED_EXPORTS = Object.freeze([
   'servo_worker_process_redirect_cookies',
   'servo_worker_set_script_budget',
@@ -17,6 +17,8 @@ const REQUIRED_EXPORTS = Object.freeze([
   'servo_worker_evaluate_page_async',
   'servo_worker_poll_page_evaluation',
   'servo_worker_cancel_page_evaluation',
+  'servo_worker_pull_request_body',
+  'servo_worker_cancel_request_body',
   'servo_worker_check_cors_preflight',
   'servo_worker_media_video_frame',
   'servo_worker_media_audio_frame',
@@ -46,14 +48,15 @@ const WORKER_CAPABILITIES = Object.freeze({
     'font-registration', 'cpu-screenshots', 'local-session-storage',
     'request-animation-frame', 'websocket-transport',
     'indexeddb', 'cache-storage-lifecycle', 'script-operation-budget',
-    'history-traversal', 'screen-recording-frame-capture',
+    'history-traversal', 'screen-recording-frame-capture', 'streaming-request-bodies',
   ]),
   partial: Object.freeze({
-    fetch: 'Response bodies stream; request bodies are currently buffered. ' +
+    fetch: 'Response bodies and request uploads stream with pull-based backpressure. ' +
       'Non-credentialed cross-origin requests use CORS, with a preflight (one extra ' +
       'host subrequest, not cached) when required; preflighted requests do not ' +
       'follow redirects. Credentialed cross-origin requests require explicit ' +
-      'Access-Control-Allow-Origin and Access-Control-Allow-Credentials.',
+      'Access-Control-Allow-Origin and Access-Control-Allow-Credentials. ' +
+      'A streamed request body cannot be replayed across a body-preserving redirect.',
     cookies: 'document.cookie and Worker fetches use Servo’s RFC 6265 cookie ' +
       'jar. The Worker adapter can export and restore the complete jar, including ' +
       'HttpOnly cookies and attributes. Final and followed same-origin redirect ' +
@@ -91,7 +94,6 @@ const WORKER_CAPABILITIES = Object.freeze({
   unsupported: Object.freeze([
     'service-workers',
     'dedicated-shared-workers', 'webgl', 'webgpu', 'web-audio', 'synchronous-xhr',
-    'streaming-request-bodies',
   ]),
   unsupportedReasons: Object.freeze({
     'service-workers': 'Servo has a service-worker implementation, but this WASM port leaves it disabled. Its manager and service-worker globals use dedicated threads; Cloudflare Workers are single-threaded and do not expose the Web Worker API. Supporting it requires a cooperative service-worker scheduler plus durable registrations and fetch-event routing in the host.',
@@ -142,10 +144,19 @@ export function parseWorkerHostMessage(bytes) {
     }
     if (request.body !== null && request.body !== undefined) {
       const body = request.body?.worker_bytes;
+      const streamId = request.body?.worker_stream_id;
       if (body !== null && body !== undefined &&
           (!Array.isArray(body) ||
            !body.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255))) {
         throw new TypeError('Malformed Servo Worker request body');
+      }
+      if (streamId !== null && streamId !== undefined &&
+          (typeof streamId !== 'string' || !identifier(streamId))) {
+        throw new TypeError('Malformed Servo Worker request-body stream ID');
+      }
+      if ((body !== null && body !== undefined) ===
+          (streamId !== null && streamId !== undefined)) {
+        throw new TypeError('Servo Worker request body must contain bytes or a stream ID');
       }
     }
   } else if (message.kind === 'cancel') {
@@ -274,6 +285,20 @@ export async function createServoWorkerRuntime(wasmModule, {
         else if (message.kind === 'web_socket_connect') runtime.connectWebSocket(message);
         else if (message.kind === 'web_socket_action') runtime.webSocketAction(message);
       },
+      worker_fetch_body_chunk: (idPtr, idLen, bytesPtr, bytesLen) => {
+        const memory = new Uint8Array(runtime.instance.exports.memory.buffer);
+        const id = bytesToString(memory.subarray(idPtr, idPtr + idLen));
+        const bytes = memory.subarray(bytesPtr, bytesPtr + bytesLen).slice();
+        runtime.deliverRequestBodyChunk(id, bytes);
+      },
+      worker_fetch_body_done: (idPtr, idLen) => {
+        const memory = new Uint8Array(runtime.instance.exports.memory.buffer);
+        runtime.finishRequestBody(bytesToString(memory.subarray(idPtr, idPtr + idLen)));
+      },
+      worker_fetch_body_error: (idPtr, idLen) => {
+        const memory = new Uint8Array(runtime.instance.exports.memory.buffer);
+        runtime.failRequestBody(bytesToString(memory.subarray(idPtr, idPtr + idLen)));
+      },
       worker_media_command: (operation, playerId, value, ptr, len) => {
         const bytes = len ? new Uint8Array(runtime.instance.exports.memory.buffer, ptr, len).slice() : new Uint8Array();
         return runtime.dispatchMediaCommand(operation, playerId, value, bytes);
@@ -324,6 +349,7 @@ class ServoWorkerRuntime {
   #sessionSubrequestCount = 0;
   #inFlightFetches = new Set();
   #fetchControllers = new Map();
+  #requestBodyStreams = new Map();
   #responseStartedFetches = new Set();
   #fetchQueue = [];
   #webSockets = new Map();
@@ -486,6 +512,89 @@ class ServoWorkerRuntime {
     }
   }
 
+  #createRequestBodyStream(id) {
+    return new ReadableStream({
+      start: (controller) => {
+        if (this.#requestBodyStreams.has(id)) {
+          throw new Error('Duplicate Worker request-body stream ID');
+        }
+        this.#requestBodyStreams.set(id, { controller, waiter: null });
+      },
+      pull: (controller) => {
+        const stream = this.#requestBodyStreams.get(id);
+        if (!stream || stream.controller !== controller) {
+          throw new Error('Worker request-body stream is no longer active');
+        }
+        if (stream.waiter) return stream.waiter.promise;
+        let resolve;
+        let reject;
+        const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+        stream.waiter = { promise, resolve, reject };
+        try {
+          const idBytes = encoder.encode(id);
+          this.#withBytes([idBytes], ([buffer]) => {
+            if (this.instance.exports.servo_worker_pull_request_body(buffer.ptr, buffer.len) !== 1) {
+              throw new Error('Servo rejected a request-body pull');
+            }
+          });
+        } catch (error) {
+          stream.waiter = null;
+          reject(error);
+        }
+        return promise;
+      },
+      cancel: () => this.#cancelRequestBodyStream(id),
+    });
+  }
+
+  deliverRequestBodyChunk(id, bytes) {
+    const stream = this.#requestBodyStreams.get(id);
+    if (!stream) return;
+    try {
+      stream.controller.enqueue(bytes);
+      stream.waiter?.resolve();
+      stream.waiter = null;
+    } catch (error) {
+      this.#cancelRequestBodyStream(id);
+      this.#log(`Servo Worker request-body enqueue failed: ${error}`);
+    }
+    this.#notifyActivity();
+  }
+
+  finishRequestBody(id) {
+    const stream = this.#requestBodyStreams.get(id);
+    if (!stream) return;
+    this.#requestBodyStreams.delete(id);
+    try { stream.controller.close(); } catch {}
+    stream.waiter?.resolve();
+    this.#notifyActivity();
+  }
+
+  failRequestBody(id) {
+    const stream = this.#requestBodyStreams.get(id);
+    if (!stream) return;
+    this.#requestBodyStreams.delete(id);
+    try { stream.controller.error(new TypeError('Servo request-body stream failed')); } catch {}
+    stream.waiter?.resolve();
+    this.#notifyActivity();
+  }
+
+  #cancelRequestBodyStream(id) {
+    if (typeof id !== 'string') return;
+    const stream = this.#requestBodyStreams.get(id);
+    if (stream) {
+      this.#requestBodyStreams.delete(id);
+      stream.waiter?.resolve();
+    }
+    try {
+      const idBytes = encoder.encode(id);
+      this.#withBytes([idBytes], ([buffer]) =>
+        this.instance.exports.servo_worker_cancel_request_body(buffer.ptr, buffer.len));
+    } catch (error) {
+      this.#log(`Servo Worker request-body cancellation failed: ${error}`);
+    }
+  }
+
   #deliverError(requestId, message, responseStarted) {
     const id = encoder.encode(requestId);
     const detail = encoder.encode(String(message));
@@ -575,6 +684,7 @@ class ServoWorkerRuntime {
       this.#reserveSubrequest();
       const response = await this.#fetchImpl(url, {
         method, headers, body, redirect: 'manual', signal,
+        ...(body instanceof ReadableStream ? { duplex: 'half' } : {}),
       });
       const location = response.headers.get('location');
       if (![301, 302, 303, 307, 308].includes(response.status) || !location) {
@@ -585,6 +695,11 @@ class ServoWorkerRuntime {
       }
       try {
         if (mode === 'Error') throw new Error('Servo redirect mode forbids redirects');
+        const rewritesBody = (response.status === 303 && method !== 'HEAD' && method !== 'GET') ||
+          ((response.status === 301 || response.status === 302) && method === 'POST');
+        if (body instanceof ReadableStream && !rewritesBody) {
+          throw new Error('Worker cannot replay a streaming request body across this redirect');
+        }
         if (request.cors_preflight) {
           throw new Error('Redirects after a CORS preflight are not supported');
         }
@@ -613,8 +728,7 @@ class ServoWorkerRuntime {
         );
         headers.delete('cookie');
         if (cookieHeader !== null) headers.set('cookie', cookieHeader);
-        if ((response.status === 303 && method !== 'HEAD' && method !== 'GET') ||
-            ((response.status === 301 || response.status === 302) && method === 'POST')) {
+        if (rewritesBody) {
           method = 'GET';
           body = undefined;
           headers.delete('content-type');
@@ -635,14 +749,21 @@ class ServoWorkerRuntime {
     const signal = this.#fetchControllers.get(requestId)?.signal;
     let responseStarted = false;
     let fetchedResponse;
+    let requestBodyStreamId;
     try {
-      const body = request.body?.worker_bytes;
-      if (request.body != null && !Array.isArray(body)) {
-        throw new Error('Worker request-body streaming is not implemented');
+      const bodyBytes = request.body?.worker_bytes;
+      requestBodyStreamId = request.body?.worker_stream_id;
+      let body;
+      if (request.body != null && request.body !== undefined) {
+        if (Array.isArray(bodyBytes)) {
+          body = new Uint8Array(bodyBytes);
+        } else if (typeof requestBodyStreamId === 'string') {
+          body = this.#createRequestBodyStream(requestBodyStreamId);
+        } else {
+          throw new Error('Servo request body has neither bytes nor a stream ID');
+        }
       }
-      const fetched = await this.#fetchRequest(
-        request, body == null ? undefined : new Uint8Array(body), signal,
-      );
+      const fetched = await this.#fetchRequest(request, body, signal);
       const { response } = fetched;
       fetchedResponse = response;
       if (signal?.aborted) return;
@@ -717,6 +838,7 @@ class ServoWorkerRuntime {
       this.#notifyActivity();
       this.#log(`Servo fetch ${requestId} failed: ${error}`);
     } finally {
+      if (requestBodyStreamId) this.#cancelRequestBodyStream(requestBodyStreamId);
       // Header/size errors and aborts can happen before a reader is acquired.
       if (fetchedResponse?.body && !fetchedResponse.body.locked && !fetchedResponse.bodyUsed) {
         await fetchedResponse.body.cancel().catch(() => {});
@@ -731,7 +853,11 @@ class ServoWorkerRuntime {
 
   cancelFetches(requestIds) {
     const canceled = new Set(requestIds);
-    this.#fetchQueue = this.#fetchQueue.filter((request) => !canceled.has(request.id));
+    this.#fetchQueue = this.#fetchQueue.filter((request) => {
+      if (!canceled.has(request.id)) return true;
+      this.#cancelRequestBodyStream(request.body?.worker_stream_id);
+      return false;
+    });
     for (const id of canceled) this.#fetchControllers.get(id)?.abort();
   }
 
