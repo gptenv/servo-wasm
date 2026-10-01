@@ -12,6 +12,9 @@ const module = new WebAssembly.Module(wasm);
 const version = new WebAssembly.Instance(module, {
   env: {
     worker_fetch_request() {},
+    worker_fetch_body_chunk() {},
+    worker_fetch_body_done() {},
+    worker_fetch_body_error() {},
     worker_getrandom() { return 1; },
     worker_log_error() {},
     worker_media_command() { return 0; },
