@@ -364,6 +364,9 @@ pub unsafe extern "C" fn servo_worker_bootstrap(
     preferences.dom_indexeddb_enabled = true;
     preferences.dom_cache_storage_enabled = true;
     preferences.dom_storage_manager_api_enabled = true;
+    // `backdrop-filter` is gated behind `layout.unimplemented` in stylo; the
+    // Worker CPU renderer implements it (see worker_render.rs).
+    preferences.layout_unimplemented = true;
     let servo = ServoBuilder::default().preferences(preferences).build();
     let builder = WebViewBuilder::new(&servo, rendering_context.clone());
     let builder = builder.url(url);

@@ -1782,6 +1782,75 @@ test('screenshots apply a same-document SVG <mask> reference (mask-image: url(#i
     `a same-document mask reference must not fetch the page itself (fetched: ${JSON.stringify(fetched)})`);
 });
 
+test('screenshots keep sticky elements stuck while scrolled', async () => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 200,
+    height: 200,
+    fetchImpl: async () => new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <div style="height:2000px;background:rgb(0, 0, 255)">
+      <div style="position:sticky;top:10px;left:20px;width:100px;height:50px;background:rgb(255, 0, 0)"></div>
+    </div>
+    </body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const top = decodePng(await runtime.screenshot({ waitForResources: true }));
+  assert.deepEqual(top.pixel(70, 35), [255, 0, 0, 255], 'sticky box at its static position before scrolling');
+
+  runtime.evaluatePage('window.scrollTo(0, 500); window.scrollY');
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+  const scrolled = decodePng(await runtime.screenshot({ waitForResources: true }));
+  // The sticky box sticks 10px from the viewport top instead of scrolling away
+  // with its container (which would leave it at y=-500, off-screen).
+  assert.deepEqual(scrolled.pixel(70, 35), [255, 0, 0, 255], 'sticky box sticks to the viewport top while scrolled');
+  assert.deepEqual(scrolled.pixel(70, 100), [0, 0, 255, 255], 'content behind the sticky box scrolls normally');
+});
+
+test('screenshots apply backdrop-filter blur to the content behind an element', async () => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 200,
+    height: 100,
+    fetchImpl: async () => new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <div style="position:absolute;left:0;top:0;width:100px;height:100px;background:rgb(255, 0, 0)"></div>
+    <div style="position:absolute;left:100px;top:0;width:100px;height:100px;background:rgb(0, 0, 255)"></div>
+    <div style="position:absolute;left:50px;top:10px;width:100px;height:80px;backdrop-filter:blur(8px)"></div>
+    </body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const png = decodePng(await runtime.screenshot({ waitForResources: true }));
+  // Far from the red/blue boundary the backdrop is unaffected by the blur.
+  assert.deepEqual(png.pixel(20, 50), [255, 0, 0, 255], 'backdrop far left of the blur region is sharp');
+  assert.deepEqual(png.pixel(180, 50), [0, 0, 255, 255], 'backdrop far right of the blur region is sharp');
+  // At the boundary, inside the backdrop-filter region, the blur mixes the
+  // two sides; outside the region (above y=10) the edge stays sharp.
+  const [r, g, b] = png.pixel(100, 50);
+  assert.ok(r > 30 && b > 30, `blurred boundary mixes red and blue (got [${r}, ${g}, ${b}])`);
+  assert.deepEqual(png.pixel(100, 5), [255, 0, 0, 255], 'above the backdrop-filter region the edge is sharp');
+});
+
+test('screenshots apply clip-path polygon clips', async () => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 200,
+    height: 200,
+    fetchImpl: async () => new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <div style="position:absolute;left:10px;top:10px;width:100px;height:100px;background:rgb(255, 0, 0);
+      clip-path:polygon(50% 0%, 100% 100%, 0% 100%)"></div>
+    </body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const png = decodePng(await runtime.screenshot({ waitForResources: true }));
+  // Triangle with apex at (60, 10) and base along y=110 from x=10 to x=110.
+  assert.deepEqual(png.pixel(60, 50), [255, 0, 0, 255], 'inside the polygon is drawn');
+  assert.deepEqual(png.pixel(60, 100), [255, 0, 0, 255], 'inside near the base is drawn');
+  assert.deepEqual(png.pixel(20, 20), [255, 255, 255, 255], 'outside the polygon (top-left) is clipped away');
+  assert.deepEqual(png.pixel(100, 20), [255, 255, 255, 255], 'outside the polygon (top-right) is clipped away');
+});
+
 test('storage stays origin-isolated across navigation in one Worker instance', async () => {
   const runtime = await createServoWorkerRuntime(wasm, {
     fetchImpl: async () => new Response('unexpected network request', { status: 500 }),
