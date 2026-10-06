@@ -9,7 +9,7 @@
 const RESPONSE_CHUNK_BYTES = 64 * 1024;
 // Fetch follows at most 20 redirects by specification.
 const MAX_REDIRECTS = 20;
-const WORKER_ABI_VERSION = 13;
+const WORKER_ABI_VERSION = 14;
 const REQUIRED_EXPORTS = Object.freeze([
   'servo_worker_process_redirect_cookies',
   'servo_worker_set_script_budget',
@@ -28,6 +28,9 @@ const REQUIRED_EXPORTS = Object.freeze([
   'servo_worker_cookie_state_len',
   'servo_worker_cookie_state_ptr',
   'servo_worker_restore_cookie_state',
+  'servo_worker_storage_state_len',
+  'servo_worker_storage_state_ptr',
+  'servo_worker_restore_storage_state',
   'servo_worker_render_jpeg',
   'servo_worker_recording_frame_ptr',
   'servo_worker_recording_frame_len',
@@ -62,7 +65,9 @@ const WORKER_CAPABILITIES = Object.freeze({
       'HttpOnly cookies and attributes. Final and followed same-origin redirect ' +
       'cookies require Headers.getSetCookie() and the request credentials mode; ' +
       'complete SameSite context checks are missing.',
-    storage: 'Servo storage services are runtime-local; the Servo MCP host saves ' +
+    storage: 'Servo storage services are runtime-local. The Worker adapter can ' +
+      'export and restore complete localStorage and sessionStorage areas ' +
+      'across WASM instance recycles; the Servo MCP host additionally saves ' +
       'all localStorage and sessionStorage entries plus IndexedDB databases, ' +
       'schemas, and supported structured-clone values in the session Durable ' +
       'Object. Cache Storage is not persisted and its request/response operations ' +
@@ -1410,6 +1415,37 @@ class ServoWorkerRuntime {
     return this.#withBytes([data], ([buffer]) => {
       if (this.instance.exports.servo_worker_restore_cookie_state(buffer.ptr, buffer.len) !== 1) {
         throw new TypeError('Servo rejected the saved cookie jar');
+      }
+      return true;
+    });
+  }
+
+  /**
+   * Export one web-storage area's complete key/value data for snapshotting
+   * across WASM instance recycles. `kind` is 'local' (localStorage) or
+   * 'session' (sessionStorage). Restore a snapshot into a fresh instance with
+   * restoreStorageState() to keep storage alive across recycles.
+   */
+  exportStorageState(kind) {
+    const kindId = kind === 'local' ? 0 : kind === 'session' ? 1 : -1;
+    if (kindId < 0) throw new TypeError('Storage kind must be "local" or "session"');
+    const len = this.instance.exports.servo_worker_storage_state_len(kindId);
+    if (len < 0) throw new Error('Servo could not serialize web-storage state');
+    const ptr = this.instance.exports.servo_worker_storage_state_ptr();
+    return new Uint8Array(this.instance.exports.memory.buffer, ptr, len).slice();
+  }
+
+  /**
+   * Restore web-storage state previously returned by exportStorageState().
+   * Session restore targets the current webview, so call after bootstrap.
+   */
+  restoreStorageState(kind, bytes) {
+    const kindId = kind === 'local' ? 0 : kind === 'session' ? 1 : -1;
+    if (kindId < 0) throw new TypeError('Storage kind must be "local" or "session"');
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    return this.#withBytes([data], ([buffer]) => {
+      if (this.instance.exports.servo_worker_restore_storage_state(kindId, buffer.ptr, buffer.len) !== 1) {
+        throw new TypeError('Servo rejected the saved web-storage state');
       }
       return true;
     });
