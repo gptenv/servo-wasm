@@ -2128,9 +2128,9 @@ test('CORS preflight and simple POST follow Fetch and decide in the engine', asy
   runtime.loadHtml('<!doctype html><title>cors</title><script>document.cookie = "sid=1"</script>',
     { url: `${APP}/` });
   assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
-  const attempt = async (init, rt = runtime) => {
+  const attempt = async (init, rt = runtime, url = `${API}/data`) => {
     received = [];
-    const result = await rt.evaluate(`fetch(${JSON.stringify(`${API}/data`)}, ${init})` +
+    const result = await rt.evaluate(`fetch(${JSON.stringify(url)}, ${init})` +
       '.then((r) => r.text()).then((t) => "ok:" + t, (e) => "err:" + e.name)',
     { maxDurationMs: 10_000 });
     assert.equal(rt.trapped, null);
@@ -2201,23 +2201,25 @@ test('CORS preflight and simple POST follow Fetch and decide in the engine', asy
     ['a method that is not allowed', { status: 204, headers: allow({ 'access-control-allow-methods': 'GET, POST' }) }],
     ['a malformed Access-Control-Allow-Methods', { status: 204, headers: allow({ 'access-control-allow-methods': 'PU T' }) }],
   ];
-  for (const [name, preflight] of denied) {
+  for (const [index, [name, preflight]] of denied.entries()) {
     await t.test(`${name} denies the request before it is sent`, async () => {
       serve({ preflight });
-      assert.equal(await attempt('{ method: "PUT" }'), 'err:TypeError');
+      // A fresh URL per case: the preflight cache must not satisfy a request
+      // whose preflight would be denied.
+      assert.equal(await attempt('{ method: "PUT" }', runtime, `${API}/denied-${index}`), 'err:TypeError');
       assert.deepEqual(methods(), ['OPTIONS']);
     });
   }
 
   await t.test('a failed preflight request denies the request', async () => {
     respond = () => { throw new TypeError('network down'); };
-    assert.equal(await attempt('{ method: "PUT" }'), 'err:TypeError');
+    assert.equal(await attempt('{ method: "PUT" }', runtime, `${API}/denied-unreachable`), 'err:TypeError');
     assert.deepEqual(methods(), ['OPTIONS']);
   });
 
   await t.test('the actual response still needs Access-Control-Allow-Origin', async () => {
     serve({ preflight: { status: 204, headers: allow({ 'access-control-allow-methods': 'PUT' }) }, actual: {} });
-    assert.equal(await attempt('{ method: "PUT" }'), 'err:TypeError');
+    assert.equal(await attempt('{ method: "PUT" }', runtime, `${API}/denied-actual`), 'err:TypeError');
     assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
   });
 
@@ -2238,6 +2240,133 @@ test('CORS preflight and simple POST follow Fetch and decide in the engine', asy
     assert.equal(await attempt('{ method: "PUT" }', limited), 'err:TypeError');
     assert.deepEqual(methods(), ['OPTIONS']);
   });
+});
+
+test('successful CORS preflights are cached per Access-Control-Max-Age', async (t) => {
+  const APP = 'https://app.example';
+  const API = 'https://api.example';
+  let received = [];
+  let respond = () => new Response('ok');
+  const makeRuntime = (options = {}) => createServoWorkerRuntime(wasm, {
+    log: () => {},
+    ...options,
+    fetchImpl: async (input, init = {}) => {
+      const url = String(typeof input === 'string' ? input : input.url);
+      const headers = Object.fromEntries(new Headers(init.headers));
+      const request = { url, method: init.method ?? 'GET', headers };
+      received.push(request);
+      return respond(request);
+    },
+  });
+  const runtime = await makeRuntime();
+  runtime.loadHtml('<!doctype html><title>cors-cache</title>', { url: `${APP}/` });
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+  const attempt = async (url, init) => {
+    received = [];
+    const result = await runtime.evaluate(`fetch(${JSON.stringify(url)}, ${init})` +
+      '.then((r) => r.text()).then((t) => "ok:" + t, (e) => "err:" + e.name)',
+    { maxDurationMs: 10_000 });
+    assert.equal(runtime.trapped, null);
+    return result.Ok.String;
+  };
+  const allow = (extra = {}) => ({ 'access-control-allow-origin': APP, ...extra });
+  const serve = ({ preflight = { status: 204, headers: allow() }, actual = allow() } = {}) => {
+    respond = ({ method }) => method === 'OPTIONS'
+      ? new Response(null, { status: preflight.status, headers: preflight.headers })
+      : new Response('body', { headers: actual });
+  };
+  const methods = () => received.map(({ method }) => method);
+  const preflightHeaders = (extra = {}) => allow({
+    'access-control-allow-methods': 'PUT',
+    'access-control-max-age': '60',
+    ...extra,
+  });
+
+  await t.test('a second identical preflighted request skips the OPTIONS round-trip', async () => {
+    serve({ preflight: { status: 204, headers: preflightHeaders() } });
+    assert.equal(await attempt(`${API}/data`, '{ method: "PUT" }'), 'ok:body');
+    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
+    assert.equal(await attempt(`${API}/data`, '{ method: "PUT" }'), 'ok:body');
+    assert.deepEqual(methods(), ['PUT']);
+  });
+
+  await t.test('a different URL needs its own preflight', async () => {
+    serve({ preflight: { status: 204, headers: preflightHeaders() } });
+    assert.equal(await attempt(`${API}/other`, '{ method: "PUT" }'), 'ok:body');
+    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
+  });
+
+  await t.test('max-age zero disables caching', async () => {
+    serve({ preflight: { status: 204, headers: preflightHeaders({ 'access-control-max-age': '0' }) } });
+    assert.equal(await attempt(`${API}/zero`, '{ method: "PUT" }'), 'ok:body');
+    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
+    assert.equal(await attempt(`${API}/zero`, '{ method: "PUT" }'), 'ok:body');
+    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
+  });
+
+  await t.test('a missing max-age still caches briefly', async () => {
+    serve({ preflight: { status: 204, headers: allow({ 'access-control-allow-methods': 'PUT' }) } });
+    assert.equal(await attempt(`${API}/default-age`, '{ method: "PUT" }'), 'ok:body');
+    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
+    assert.equal(await attempt(`${API}/default-age`, '{ method: "PUT" }'), 'ok:body');
+    assert.deepEqual(methods(), ['PUT']);
+  });
+
+  await t.test('credentialed and non-credentialed preflights do not share entries', async () => {
+    serve({
+      preflight: { status: 204, headers: preflightHeaders({ 'access-control-allow-credentials': 'true' }) },
+      actual: allow({ 'access-control-allow-credentials': 'true' }),
+    });
+    assert.equal(await attempt(`${API}/cred`, '{ method: "PUT" }'), 'ok:body');
+    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
+    assert.equal(await attempt(`${API}/cred`, '{ method: "PUT" }'), 'ok:body');
+    assert.deepEqual(methods(), ['PUT']);
+    // The cached entry was granted without credentials, so a credentialed
+    // request must preflight again.
+    assert.equal(await attempt(`${API}/cred`, '{ method: "PUT", credentials: "include" }'), 'ok:body');
+    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
+    // ...but the credentialed entry then satisfies a repeat.
+    assert.equal(await attempt(`${API}/cred`, '{ method: "PUT", credentials: "include" }'), 'ok:body');
+    assert.deepEqual(methods(), ['PUT']);
+  });
+});
+
+test('redirects after a CORS preflight are followed', async (t) => {
+  const APP = 'https://app.example';
+  const API = 'https://api.example';
+  let received = [];
+  const runtime = await createServoWorkerRuntime(wasm, {
+    log: () => {},
+    fetchImpl: async (input, init = {}) => {
+      const url = String(typeof input === 'string' ? input : input.url);
+      const headers = Object.fromEntries(new Headers(init.headers));
+      const request = { url, method: init.method ?? 'GET', headers };
+      received.push(request);
+      if (request.method === 'OPTIONS') {
+        return new Response(null, { status: 204, headers: {
+          'access-control-allow-origin': APP,
+          'access-control-allow-methods': 'PUT',
+        } });
+      }
+      if (url === `${API}/redirect`) {
+        return new Response(null, { status: 307, headers: { location: `${API}/target` } });
+      }
+      return new Response('body', { headers: { 'access-control-allow-origin': APP } });
+    },
+  });
+  runtime.loadHtml('<!doctype html><title>cors-redirect</title>', { url: `${APP}/` });
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+  received = [];
+  const result = await runtime.evaluate(
+    `fetch(${JSON.stringify(`${API}/redirect`)}, { method: "PUT" })` +
+    '.then((r) => r.text()).then((t) => "ok:" + t, (e) => "err:" + e.name)',
+    { maxDurationMs: 10_000 });
+  assert.equal(runtime.trapped, null);
+  assert.equal(result.Ok.String, 'ok:body');
+  // One preflight for the initial URL, then the PUT and its same-origin
+  // 307 redirect target; the redirect needs no second preflight.
+  assert.deepEqual(received.map(({ method }) => method), ['OPTIONS', 'PUT', 'PUT']);
+  assert.equal(received[2].url, `${API}/target`);
 });
 
 test('APIs that would block or spawn threads fail explicitly instead of hanging or trapping', () => {
