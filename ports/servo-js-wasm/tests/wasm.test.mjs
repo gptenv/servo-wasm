@@ -53,7 +53,7 @@ test('host command parser rejects mismatched ABI and malformed bounded DTOs', ()
     headers: [['accept', [116, 101, 120, 116]]], body: null,
     destination: 'None', redirect_mode: 'Follow',
   };
-  const valid = { version: 13, kind: 'fetch', request };
+  const valid = { version: 14, kind: 'fetch', request };
   assert.deepEqual(parseWorkerHostMessage(hostCommand(valid)), valid);
   const preflighted = { ...valid, request: { ...request,
     cors_preflight: { method: 'PUT', headers: ['x-token'] } } };
@@ -68,13 +68,13 @@ test('host command parser rejects mismatched ABI and malformed bounded DTOs', ()
     { ...valid, request: { ...request, cors_preflight: { method: 'PUT\r\n', headers: [] } } },
     { ...valid, request: { ...request, cors_preflight: { method: 'PUT', headers: ['X-Upper'] } } },
     { ...valid, request: { ...request, cors_preflight: { method: 'PUT', headers: 'x-token' } } },
-    { version: 13, kind: 'cancel', request_ids: [''] },
-    { version: 13, kind: 'unrecognized' },
+    { version: 14, kind: 'cancel', request_ids: [''] },
+    { version: 14, kind: 'unrecognized' },
   ]) {
     assert.throws(() => parseWorkerHostMessage(hostCommand(malformed)));
   }
   const largeCommand = new TextEncoder().encode(JSON.stringify({
-    version: 13,
+    version: 14,
     kind: 'cancel',
     request_ids: ['x'.repeat(2 * 1024 * 1024)],
   }));
@@ -201,7 +201,7 @@ test('SpiderMonkey smoke export runs in wasm', () => {
 });
 
 test('Worker lifecycle exports are present and initially idle', () => {
-  assert.equal(instance.exports.servo_worker_abi_version(), 13);
+  assert.equal(instance.exports.servo_worker_abi_version(), 14);
   assert.equal(typeof instance.exports.servo_worker_evaluate_page_async, 'function');
   assert.equal(Number(instance.exports.servo_worker_poll_page_evaluation(1)), -1);
   assert.equal(typeof instance.exports.servo_worker_set_script_budget, 'function');
@@ -223,6 +223,16 @@ test('Worker lifecycle exports are present and initially idle', () => {
   new Uint8Array(instance.exports.memory.buffer, restorePointer, cookieState.byteLength).set(cookieState);
   assert.equal(instance.exports.servo_worker_restore_cookie_state(restorePointer, cookieState.byteLength), 1);
   instance.exports.servo_js_free(restorePointer, cookieState.byteLength);
+  assert.equal(typeof instance.exports.servo_worker_storage_state_len, 'function');
+  assert.equal(typeof instance.exports.servo_worker_storage_state_ptr, 'function');
+  assert.equal(typeof instance.exports.servo_worker_restore_storage_state, 'function');
+  for (const kind of [0, 1]) {
+    // No browser is bootstrapped on this raw instance, so no web-storage
+    // manager is registered yet and serialization must fail closed.
+    assert.equal(instance.exports.servo_worker_storage_state_len(kind), -1);
+  }
+  assert.equal(instance.exports.servo_worker_storage_state_len(7), -1);
+  assert.equal(instance.exports.servo_worker_restore_storage_state(7, 0, 0), 0);
   assert.equal(Number(instance.exports.servo_worker_pending_fetch_count()), 0);
   assert.equal(Number(instance.exports.servo_worker_reset()), 0);
 });
@@ -1256,6 +1266,39 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     assert.ok(savedCookies instanceof Uint8Array);
     assert.ok(savedCookies.byteLength > 0);
     assert.equal(runtime.restoreCookieState(savedCookies), true);
+  });
+
+  await t.test('web-storage areas can be exported and restored', async () => {
+    assert.equal(runtime.evaluatePage(`(() => {
+      localStorage.setItem('persist-me', 'local-value');
+      sessionStorage.setItem('persist-me', 'session-value');
+      return 1;
+    })()`), true);
+    await settle();
+    await checkPage('localStorage.getItem("persist-me") === "local-value"');
+    await checkPage('sessionStorage.getItem("persist-me") === "session-value"');
+    const saved = {};
+    for (const kind of ['local', 'session']) {
+      saved[kind] = runtime.exportStorageState(kind);
+      assert.ok(saved[kind] instanceof Uint8Array);
+      assert.ok(saved[kind].byteLength > 0);
+    }
+    // Wipe the live areas, then restore: the values must come back.
+    assert.equal(runtime.evaluatePage(`(() => {
+      localStorage.clear();
+      sessionStorage.clear();
+      return 1;
+    })()`), true);
+    await settle();
+    await checkPage('localStorage.getItem("persist-me") === null');
+    await checkPage('sessionStorage.getItem("persist-me") === null');
+    for (const kind of ['local', 'session']) {
+      assert.equal(runtime.restoreStorageState(kind, saved[kind]), true);
+    }
+    await checkPage('localStorage.getItem("persist-me") === "local-value"');
+    await checkPage('sessionStorage.getItem("persist-me") === "session-value"');
+    assert.throws(() => runtime.exportStorageState('indexeddb'), TypeError);
+    assert.throws(() => runtime.restoreStorageState('indexeddb', new Uint8Array([0])), TypeError);
   });
 
   await t.test('a frame request makes layout build a display list for the Worker renderer', async () => {

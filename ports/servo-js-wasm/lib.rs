@@ -65,6 +65,7 @@ thread_local! {
         RefCell::new(HashMap::new());
     static NEXT_PAGE_EVALUATION: Cell<u32> = const { Cell::new(0) };
     static WORKER_COOKIE_STATE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static WORKER_STORAGE_STATE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static PAGE_EVALUATION_RESULT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -108,7 +109,7 @@ struct WorkerRedirectCookies {
     set_cookies: Vec<String>,
 }
 
-const WORKER_ABI_VERSION: u32 = 13;
+const WORKER_ABI_VERSION: u32 = 14;
 
 /// The stable host-facing subset of a Servo request. Do not serialize
 /// RequestBuilder here: its internal fields are not an ABI contract.
@@ -1056,6 +1057,61 @@ pub unsafe extern "C" fn servo_worker_restore_cookie_state(ptr: *const u8, len: 
         unsafe { std::slice::from_raw_parts(ptr, len) }
     };
     i32::from(servo::restore_worker_cookie_storage(bytes).is_ok())
+}
+
+/// Refresh and return the serialized web-storage state byte length for one
+/// storage area: kind 0 is localStorage, kind 1 is sessionStorage. A negative
+/// return value means the kind is unknown or the area could not be serialized.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_storage_state_len(kind: u32) -> i32 {
+    let state = match servo::serialize_worker_webstorage(kind) {
+        Ok(state) => state,
+        Err(_) => return -1,
+    };
+    if state.len() > i32::MAX as usize {
+        return -1;
+    }
+    WORKER_STORAGE_STATE.with(|slot| *slot.borrow_mut() = state);
+    WORKER_STORAGE_STATE.with(|slot| slot.borrow().len() as i32)
+}
+
+/// Return the buffer filled by `servo_worker_storage_state_len`.
+#[unsafe(no_mangle)]
+pub extern "C" fn servo_worker_storage_state_ptr() -> *const u8 {
+    WORKER_STORAGE_STATE.with(|slot| slot.borrow().as_ptr())
+}
+
+/// Replace one complete web-storage area with a previously exported byte
+/// buffer: kind 0 is localStorage, kind 1 is sessionStorage. Session restore
+/// targets the current webview, so the browser must be bootstrapped first.
+///
+/// # Safety
+/// `ptr` must reference `len` readable bytes from the host.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn servo_worker_restore_storage_state(
+    kind: u32,
+    ptr: *const u8,
+    len: usize,
+) -> i32 {
+    if ptr.is_null() && len != 0 {
+        return 0;
+    }
+    let bytes = if len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    };
+    // Session storage is keyed by webview; restore into the current one.
+    let webview = if kind == 1 {
+        match BROWSER.with(|browser| browser.borrow().as_ref().map(|browser| browser.webview.id()))
+        {
+            Some(id) => Some(id),
+            None => return 0,
+        }
+    } else {
+        None
+    };
+    i32::from(servo::restore_worker_webstorage(kind, webview, bytes).is_ok())
 }
 
 unsafe fn parse_worker_request_id(ptr: *const u8, len: usize) -> Option<RequestId> {

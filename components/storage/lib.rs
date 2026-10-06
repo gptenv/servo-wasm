@@ -14,3 +14,5 @@ pub use client_storage::ClientStorageThreadFactory;
 pub(crate) use indexeddb::IndexedDBThreadFactory;
 pub use storage_thread::new_storage_threads;
 pub(crate) use webstorage::WebStorageThreadFactory;
+#[cfg(target_arch = "wasm32")]
+pub use webstorage::{restore_worker_webstorage, serialize_worker_webstorage};
