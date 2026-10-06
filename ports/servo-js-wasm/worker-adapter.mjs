@@ -52,10 +52,11 @@ const WORKER_CAPABILITIES = Object.freeze({
   ]),
   partial: Object.freeze({
     fetch: 'Response bodies and request uploads stream with pull-based backpressure. ' +
-      'Non-credentialed cross-origin requests use CORS, with a preflight (one extra ' +
-      'host subrequest, not cached) when required; preflighted requests do not ' +
-      'follow redirects. Credentialed cross-origin requests require explicit ' +
-      'Access-Control-Allow-Origin and Access-Control-Allow-Credentials. ' +
+      'Cross-origin requests use CORS, with a preflight (one extra host subrequest, ' +
+      'cached per Access-Control-Max-Age) when required; redirects after a preflight ' +
+      'are followed with CORS filtering on the final response. Credentialed ' +
+      'cross-origin requests require explicit Access-Control-Allow-Origin and ' +
+      'Access-Control-Allow-Credentials. ' +
       'A streamed request body cannot be replayed across a body-preserving redirect.',
     cookies: 'document.cookie and Worker fetches use Servo’s RFC 6265 cookie ' +
       'jar. The Worker adapter can export and restore the complete jar, including ' +
@@ -700,9 +701,12 @@ class ServoWorkerRuntime {
         if (body instanceof ReadableStream && !rewritesBody) {
           throw new Error('Worker cannot replay a streaming request body across this redirect');
         }
-        if (request.cors_preflight) {
-          throw new Error('Redirects after a CORS preflight are not supported');
-        }
+        // A redirect after a successful CORS preflight is followed without a
+        // second preflight: per Fetch, the preflight belongs to the initial
+        // request, and redirects are followed with CORS filtering. The engine
+        // still applies the CORS response check to the final response in
+        // servo_worker_begin_http_response, and cross-origin hops keep only
+        // ordinary content-negotiation headers with cookies recomputed below.
         if (redirects === MAX_REDIRECTS) throw new Error('Too many Worker redirects');
         const next = new URL(location, url);
         if (next.protocol !== 'http:' && next.protocol !== 'https:') {
