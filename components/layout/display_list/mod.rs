@@ -366,17 +366,18 @@ impl DisplayListBuilder<'_> {
         );
 
         let spatial_id = self.spatial_id(clip.parent_scroll_node_id);
-        let new_clip_id = if clip.radii.is_zero() {
-            self.wr().define_clip_rect(spatial_id, clip.rect)
-        } else {
-            self.wr().define_clip_rounded_rect(
+        let new_clip_id = match &clip.points {
+            // `clip-path: polygon()`; only produced on wasm32.
+            Some(points) => self.wr().define_clip_polygon(spatial_id, points),
+            None if clip.radii.is_zero() => self.wr().define_clip_rect(spatial_id, clip.rect),
+            None => self.wr().define_clip_rounded_rect(
                 spatial_id,
                 ComplexClipRegion {
                     rect: clip.rect,
                     radii: clip.radii,
                     mode: ClipMode::Clip,
                 },
-            )
+            ),
         };
 
         // WebRender has two different ways of expressing "no clip." ClipChainId::INVALID should be
@@ -414,6 +415,7 @@ impl DisplayListBuilder<'_> {
             rect,
             parent_scroll_node_id: state.spatial_id,
             parent_clip_id: state.clip_id,
+            points: None,
         }))
     }
 
@@ -436,6 +438,10 @@ impl DisplayListBuilder<'_> {
         let mix_blend_mode;
         let mut filters: Vec<_>;
         let mut stacking_context_flags = StackingContextFlags::empty();
+        // A non-empty backdrop filter is emitted as a `BackdropFilter` display
+        // item right after the stacking context is pushed; the layout rect is
+        // the fragment's border box (the backdrop region).
+        let mut backdrop_filter: Option<(units::LayoutRect, Vec<wr::FilterOp>)> = None;
         match &stacking_context.fragment {
             StackingContextFragments::Fragment(fragment) => {
                 let style = fragment.style();
@@ -459,6 +465,7 @@ impl DisplayListBuilder<'_> {
                 // actually need to create a stacking context, just avoid creating one.
                 if !is_blend_container
                     && effects.filter.0.is_empty()
+                    && effects.backdrop_filter.0.is_empty()
                     && effects.opacity == 1.0
                     && effects.mix_blend_mode == ComputedMixBlendMode::Normal
                     && !style.has_effective_transform_or_perspective(FragmentFlags::empty())
@@ -481,6 +488,30 @@ impl DisplayListBuilder<'_> {
                     filters.push(wr::FilterOp::Opacity(
                         effects.opacity.into(),
                         effects.opacity,
+                    ));
+                }
+
+                // A backdrop filter is not a stacking-context filter; it is
+                // emitted as its own display item after the stacking context
+                // is pushed, with the fragment's border box as the backdrop
+                // region. (The `layout.unimplemented` preference gates parsing
+                // of `backdrop-filter`; see ports/servo-js-wasm/lib.rs.)
+                if !effects.backdrop_filter.0.is_empty() {
+                    let with_style = fragment.with_style();
+                    let fragment_builder = BuilderForBoxFragment::new(
+                        &with_style,
+                        stacking_context.containing_block_origin,
+                    );
+                    backdrop_filter = Some((
+                        fragment_builder.border_rect,
+                        effects
+                            .backdrop_filter
+                            .0
+                            .iter()
+                            .map(|filter| {
+                                FilterToWebRender::to_webrender(filter, current_color)
+                            })
+                            .collect(),
                     ));
                 }
             },
@@ -530,6 +561,22 @@ impl DisplayListBuilder<'_> {
             stacking_context_flags,
             None, // snapshot
         );
+
+        // The backdrop filter applies to everything painted beneath this
+        // element, so its item goes first inside the stacking context, before
+        // the element's own background. `clip_rect` doubles as the backdrop
+        // region, which the Worker CPU renderer uses; native WebRender
+        // determines the region from the stacking context.
+        if let Some((backdrop_region, backdrop_filters)) = backdrop_filter {
+            let common = wr::CommonItemProperties {
+                clip_rect: backdrop_region,
+                spatial_id,
+                clip_chain_id: clip_chain_id.unwrap_or(wr::ClipChainId::INVALID),
+                flags: wr::PrimitiveFlags::empty(),
+            };
+            self.wr()
+                .push_backdrop_filter(&common, &backdrop_filters, &[]);
+        }
 
         true
     }
