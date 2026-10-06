@@ -125,7 +125,9 @@ impl StickyNodeInfo {
     /// sticky positioning from its ancestors.
     ///
     /// This is originally taken from WebRender `SpatialTree` implementation.
-    fn calculate_sticky_offset(
+    /// It is also used by the Worker CPU renderer (`worker_render`), which
+    /// applies sticky offsets when building its spatial tree.
+    pub fn calculate_sticky_offset(
         &self,
         viewport_scroll_offset: &LayoutVector2D,
         viewport_rect: &LayoutRect,
