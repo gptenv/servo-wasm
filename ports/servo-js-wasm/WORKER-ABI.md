@@ -410,9 +410,14 @@ wildcards do not authorize them. The actual response passes the same CORS check
 before cookies are accepted. Cookie sending applies SameSite and Secure rules.
 The preflight returns 1 when the actual request may be sent, and -1 after
 failing the request with a network error when it may not; the host must then
-not send it. Each preflight is a host subrequest and there is no preflight
-cache. Redirects of preflighted requests and cross-origin script-fetch
-redirects fail closed. The host's destination and SSRF policy
+not send it. Each preflight is a host subrequest. Successful preflights are
+cached engine-side per `Access-Control-Max-Age` (5 seconds when the header is
+absent or unparsable), so identical follow-up requests skip the OPTIONS
+round-trip; the actual response is still CORS-checked, so a cache hit can
+never widen access. Redirects of preflighted requests are followed without a
+second preflight — per Fetch, the preflight belongs to the initial request —
+with CORS filtering applied to the final response. Cross-origin script-fetch
+redirects still fail closed. The host's destination and SSRF policy
 must therefore cover every method, including preflights and cross-origin
 `POST`, `PUT` and `DELETE` requests; see `worker-operations.md`. Cookie support is partial as described above; general request-body
 streams are not implemented. Full Fetch redirect/manual-redirect behavior,
