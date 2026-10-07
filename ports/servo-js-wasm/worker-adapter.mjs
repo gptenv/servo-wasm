@@ -1261,11 +1261,11 @@ class ServoWorkerRuntime {
   }
 
   /**
-   * Pump queued work and wait for Worker fetches and browser timers to progress.
-   * With `networkIdleMs`, pending timers alone do not keep the page busy: once
-   * no fetch has been queued or in flight for that long, the page counts as
-   * settled (`{ settled: true, timersPending: true }`). Pages with recurring
-   * timers (carousels, analytics, polling) otherwise never settle.
+   * Pump queued work until the current cooperative scheduling quantum is
+   * drained. This deliberately does not wait for network idle or for every
+   * timer on the page: real web applications can keep both alive indefinitely.
+   * Use this for browser actions; use pumpUntilSettled only in low-level tests
+   * or callers that explicitly need quiescence.
    */
   async pumpUntilSettled({ maxDurationMs = Infinity, maxTurns = Infinity, until, networkIdleMs } = {}) {
     if (networkIdleMs !== undefined && (!Number.isFinite(networkIdleMs) || networkIdleMs < 0)) {
@@ -1291,97 +1291,63 @@ class ServoWorkerRuntime {
     }
   }
 
-  async #pumpUntilSettled(maxDurationMs, maxTurns, until, networkIdleMs, done) {
-    const startedAt = performance.now();
-    let turns = 0;
-    let quietTurns = 0;
-    let networkIdleSince = null;
-    let scriptsTerminated = 0;
-    while (turns < maxTurns && performance.now() - startedAt < maxDurationMs) {
-      turns++;
-      const activityVersion = this.#activityVersion;
-      const status = this.pumpStatus();
-      const { progressed } = status;
-      scriptsTerminated += status.scriptsTerminated;
-      // A caller waiting for one result stops as soon as it is available.
-      if (done?.()) return { settled: true, turns, scriptsTerminated };
-      await Promise.resolve();
-
-      if (progressed || this.#activityVersion !== activityVersion) {
-        quietTurns = 0;
-        // Timer-driven progress with the network idle still counts as idle.
-        if (networkIdleMs !== undefined && !this.#evaluationPending &&
-            this.#inFlightFetches.size === 0 && this.#fetchQueue.length === 0) {
-          networkIdleSince ??= performance.now();
-          if (!done && performance.now() - networkIdleSince >= networkIdleMs && (!until || until())) {
-            return { settled: true, turns, timersPending: true, scriptsTerminated };
-          }
-        } else {
-          networkIdleSince = null;
-        }
-        await this.#wait(0);
-        continue;
-      }
-
-      const timerDelay = this.nextTimerDelayMs();
-      if (this.#evaluationPending && this.instance.exports.servo_worker_page_result_len()) {
-        this.#evaluationPending = false;
-        this.#evaluationResultReady = true;
-      }
-      if (this.#evaluationPending) {
-        // An accepted evaluation has not produced its result yet. Its result
-        // can arrive after pumps that report no progress, so these turns are
-        // not evidence of quiescence; an exhausted budget reports unsettled.
-        quietTurns = 0;
-        await this.#wait(0);
-        continue;
-      }
-      if (this.#inFlightFetches.size === 0 && this.#fetchQueue.length === 0 &&
-          timerDelay === null) {
-        await this.#wait(0);
-        if (++quietTurns >= 8 && !done && (!until || until())) {
-          return { settled: true, turns, scriptsTerminated };
-        }
-        continue;
-      }
-      quietTurns = 0;
-
-      const now = performance.now();
-      let idleDeadline = null;
-      if (networkIdleMs !== undefined && this.#inFlightFetches.size === 0 && this.#fetchQueue.length === 0) {
-        networkIdleSince ??= now;
-        if (!done && now - networkIdleSince >= networkIdleMs && (!until || until())) {
-          return { settled: true, turns, timersPending: true, scriptsTerminated };
-        }
-        idleDeadline = networkIdleSince + networkIdleMs - now;
-      } else {
-        networkIdleSince = null;
-      }
-
-      const remaining = maxDurationMs - (now - startedAt);
-      if (remaining <= 0) break;
-      const controller = new AbortController();
-      const activity = this.#waitForActivity();
-      const waits = [...this.#inFlightFetches, activity.promise];
-      if (timerDelay !== null) waits.push(this.#wait(Math.min(timerDelay, remaining), controller.signal));
-      if (idleDeadline !== null) waits.push(this.#wait(Math.min(idleDeadline, remaining), controller.signal));
-      if (Number.isFinite(remaining)) waits.push(this.#wait(remaining, controller.signal));
-      try {
-        await Promise.race(waits);
-      } finally {
-        activity.cancel();
-        controller.abort();
-      }
+  async pumpCooperatively({ maxTurns = 2_000 } = {}) {
+    if (!Number.isSafeInteger(maxTurns) || maxTurns < 1) {
+      throw new RangeError('maxTurns must be a positive safe integer');
     }
-    return {
-      // Exhausting the caller's budget is not evidence of quiescence. Do not
-      // execute an extra unbudgeted pump or report success after a quiet gap.
-      settled: false,
-      turns,
-      scriptsTerminated,
-    };
+    if (this.#settling) throw new Error('A Servo pump operation is already running');
+    this.#settling = true;
+    try {
+      let turns = 0;
+      let scriptsTerminated = 0;
+      while (turns < maxTurns) {
+        turns++;
+        const activityVersion = this.#activityVersion;
+        const status = this.pumpStatus();
+        scriptsTerminated += status.scriptsTerminated;
+
+        // One pump turn is a scheduling quantum, not a page-wide "load
+        // complete" barrier. Network responses, timers, WebSockets, and other
+        // host events may legitimately remain pending. They will wake the
+        // runtime and be consumed by the next pump turn; none of them should
+        // make an otherwise usable tool call fail merely because the page is
+        // still busy.
+        if (status.progressed || this.#activityVersion !== activityVersion) {
+          await Promise.resolve();
+          continue;
+        }
+
+        const timerDelay = this.nextTimerDelayMs();
+        const immediateHostWork = this.#fetchQueue.length > 0 || timerDelay === 0;
+        if (!immediateHostWork) {
+          return {
+            ready: true,
+            turns,
+            scriptsTerminated,
+            pendingFetches: this.#inFlightFetches.size,
+            timersPending: timerDelay !== null,
+          };
+        }
+
+        await this.#wait(0);
+      }
+
+      // This is a cooperative scheduling guard, not a request timeout and
+      // never turns a still-live page into an error. A later browser action
+      // simply resumes pumping from the current state.
+      return {
+        ready: true,
+        turns,
+        scriptsTerminated,
+        pendingFetches: this.#inFlightFetches.size,
+        timersPending: this.nextTimerDelayMs() !== null,
+      };
+    } finally {
+      this.#settling = false;
+    }
   }
 
+  async #pumpUntilSettled(maxDurationMs, maxTurns, until, networkIdleMs, done) {
   reset() {
     this.#generation++;
     this.#evaluationPending = false;
