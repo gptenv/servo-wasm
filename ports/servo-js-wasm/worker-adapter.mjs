@@ -1348,6 +1348,89 @@ class ServoWorkerRuntime {
   }
 
   async #pumpUntilSettled(maxDurationMs, maxTurns, until, networkIdleMs, done) {
+    const startedAt = performance.now();
+    let turns = 0;
+    let quietTurns = 0;
+    let networkIdleSince = null;
+    let scriptsTerminated = 0;
+    while (turns < maxTurns && performance.now() - startedAt < maxDurationMs) {
+      turns++;
+      const activityVersion = this.#activityVersion;
+      const status = this.pumpStatus();
+      const { progressed } = status;
+      scriptsTerminated += status.scriptsTerminated;
+      if (done?.()) return { settled: true, turns, scriptsTerminated };
+      await Promise.resolve();
+
+      if (progressed || this.#activityVersion !== activityVersion) {
+        quietTurns = 0;
+        if (networkIdleMs !== undefined && !this.#evaluationPending &&
+            this.#inFlightFetches.size === 0 && this.#fetchQueue.length === 0) {
+          networkIdleSince ??= performance.now();
+          if (!done && performance.now() - networkIdleSince >= networkIdleMs && (!until || until())) {
+            return { settled: true, turns, timersPending: true, scriptsTerminated };
+          }
+        } else {
+          networkIdleSince = null;
+        }
+        await this.#wait(0);
+        continue;
+      }
+
+      const timerDelay = this.nextTimerDelayMs();
+      if (this.#evaluationPending && this.instance.exports.servo_worker_page_result_len()) {
+        this.#evaluationPending = false;
+        this.#evaluationResultReady = true;
+      }
+      if (this.#evaluationPending) {
+        quietTurns = 0;
+        await this.#wait(0);
+        continue;
+      }
+      if (this.#inFlightFetches.size === 0 && this.#fetchQueue.length === 0 &&
+          timerDelay === null) {
+        await this.#wait(0);
+        if (++quietTurns >= 8 && !done && (!until || until())) {
+          return { settled: true, turns, scriptsTerminated };
+        }
+        continue;
+      }
+      quietTurns = 0;
+
+      const now = performance.now();
+      let idleDeadline = null;
+      if (networkIdleMs !== undefined && this.#inFlightFetches.size === 0 && this.#fetchQueue.length === 0) {
+        networkIdleSince ??= now;
+        if (!done && now - networkIdleSince >= networkIdleMs && (!until || until())) {
+          return { settled: true, turns, timersPending: true, scriptsTerminated };
+        }
+        idleDeadline = networkIdleSince + networkIdleMs - now;
+      } else {
+        networkIdleSince = null;
+      }
+
+      const remaining = maxDurationMs - (now - startedAt);
+      if (remaining <= 0) break;
+      const controller = new AbortController();
+      const activity = this.#waitForActivity();
+      const waits = [...this.#inFlightFetches, activity.promise];
+      if (timerDelay !== null) waits.push(this.#wait(Math.min(timerDelay, remaining), controller.signal));
+      if (idleDeadline !== null) waits.push(this.#wait(Math.min(idleDeadline, remaining), controller.signal));
+      if (Number.isFinite(remaining)) waits.push(this.#wait(remaining, controller.signal));
+      try {
+        await Promise.race(waits);
+      } finally {
+        activity.cancel();
+        controller.abort();
+      }
+    }
+    return {
+      settled: false,
+      turns,
+      scriptsTerminated,
+    };
+  }
+
   reset() {
     this.#generation++;
     this.#evaluationPending = false;
