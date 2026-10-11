@@ -220,8 +220,28 @@ impl PaintTraversalHandler for HitTest<'_> {
 
 impl Clip {
     fn contains(&self, point: LayoutPoint) -> bool {
+        if let Some(points) = &self.points {
+            return point_in_polygon(point, points);
+        }
         rounded_rect_contains_point(self.rect, &self.radii, point)
     }
+}
+
+/// Even-odd point-in-polygon test, for `clip-path: polygon()` clips.
+fn point_in_polygon(point: LayoutPoint, points: &[LayoutPoint]) -> bool {
+    let mut inside = false;
+    let mut j = points.len().max(1) - 1;
+    for i in 0..points.len() {
+        let (pi, pj) = (&points[i], &points[j]);
+        if (pi.y > point.y) != (pj.y > point.y) {
+            let intersect_x = pi.x + (point.y - pi.y) / (pj.y - pi.y) * (pj.x - pi.x);
+            if point.x < intersect_x {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
 }
 
 impl Fragment {

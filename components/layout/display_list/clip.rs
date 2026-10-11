@@ -45,6 +45,11 @@ pub(crate) struct Clip {
     pub rect: LayoutRect,
     pub parent_scroll_node_id: ScrollTreeNodeId,
     pub parent_clip_id: ClipId,
+    /// Vertices of a `clip-path: polygon()` clip, in layout space. `None`
+    /// for rect and rounded-rect clips. Only populated on wasm32, where the
+    /// Worker CPU renderer implements polygon clips; other targets ignore
+    /// polygon clip paths.
+    pub points: Option<Vec<LayoutPoint>>,
 }
 
 /// A simple vector of [`Clip`] that is built during `StackingContextTree` construction.
@@ -72,6 +77,28 @@ impl StackingContextTreeClipStore {
             rect,
             parent_scroll_node_id,
             parent_clip_id,
+            points: None,
+        });
+        id
+    }
+
+    /// Add a `clip-path: polygon()` clip. The points are resolved against
+    /// `layout_box` and stored in layout space.
+    pub(crate) fn add_polygon(
+        &mut self,
+        points: Vec<LayoutPoint>,
+        rect: LayoutRect,
+        parent_scroll_node_id: ScrollTreeNodeId,
+        parent_clip_id: ClipId,
+    ) -> ClipId {
+        let id = ClipId(self.0.len());
+        self.0.push(Clip {
+            id,
+            radii: BorderRadius::zero(),
+            rect,
+            parent_scroll_node_id,
+            parent_clip_id,
+            points: Some(points),
         });
         id
     }
@@ -107,7 +134,41 @@ impl StackingContextTreeClipStore {
                         parent_scroll_node_id,
                         parent_clip_chain_id,
                     ),
-                BasicShape::Polygon(_) | BasicShape::PathOrShape(_) => None,
+                // `clip-path: polygon()` is only lowered on wasm32, where the
+                // Worker CPU renderer implements polygon clips. Other targets
+                // keep the historical behavior of ignoring the clip.
+                BasicShape::Polygon(ref polygon) => {
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        let points: Vec<LayoutPoint> = polygon
+                            .coordinates
+                            .iter()
+                            .map(|coord| {
+                                let x = coord.0.resolve(Length::new(layout_rect.width())).px();
+                                let y = coord.1.resolve(Length::new(layout_rect.height())).px();
+                                LayoutPoint::new(layout_rect.min.x + x, layout_rect.min.y + y)
+                            })
+                            .collect();
+                        // A degenerate polygon clips everything away; treat it
+                        // as no clip rather than emitting an empty path.
+                        if points.len() < 3 {
+                            None
+                        } else {
+                            Some(self.add_polygon(
+                                points,
+                                layout_rect,
+                                parent_scroll_node_id,
+                                parent_clip_chain_id,
+                            ))
+                        }
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        let _ = polygon;
+                        None
+                    }
+                },
+                BasicShape::PathOrShape(_) => None,
             }
         } else {
             Some(self.add(

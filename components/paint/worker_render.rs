@@ -6,12 +6,12 @@
 //! renderer, so this interprets the display lists captured in
 //! [`crate::worker_frame`] with `vello_cpu`, the rasterizer canvas 2D uses.
 //!
-//! Supported: the spatial tree (2D transforms, scroll offsets; sticky frames at
-//! their static positions), rect and rounded-rect clips, rectangles, text,
-//! images (stretched and repeated), borders (all styles, radii for uniform
-//! solid borders), lines, linear/radial gradients, box and text shadows,
-//! stacking-context opacity, blend modes and filters, and iframes. 3D
-//! transforms are drawn flattened.
+//! Supported: the spatial tree (2D transforms, scroll offsets, sticky frames at
+//! their scroll-adjusted positions), rect, rounded-rect and polygon clips,
+//! rectangles, text, images (stretched and repeated), borders (all styles,
+//! radii for uniform solid borders), lines, linear/radial gradients, box and
+//! text shadows, stacking-context opacity, blend modes, element filters,
+//! backdrop filters, and iframes. 3D transforms are drawn flattened.
 
 use std::cell::RefCell;
 use std::io::Write;
@@ -20,7 +20,7 @@ use std::sync::Arc;
 use flate2::{Compress, Compression, FlushCompress};
 use image::codecs::jpeg::JpegEncoder;
 
-use paint_api::display_list::{ScrollTree, SpatialTreeNodeInfo};
+use paint_api::display_list::{ScrollTree, SpatialTreeNodeInfo, StickyNodeInfo};
 use pixels::{Multiply, transform_inplace};
 use rustc_hash::FxHashMap;
 use vello_common::filter_effects::{EdgeMode, Filter, FilterFunction, FilterPrimitive};
@@ -31,7 +31,7 @@ use vello_cpu::peniko::{
     self, BlendMode, Color, ColorStop, Compose, Extend, Gradient, ImageQuality, ImageSampler, Mix,
 };
 use vello_cpu::{Glyph, Mask, Pixmap, RenderContext, RenderSettings, Resources};
-use webrender_api::units::{LayoutRect, LayoutSize, LayoutTransform};
+use webrender_api::units::{LayoutPoint, LayoutRect, LayoutSize, LayoutTransform, LayoutVector2D};
 use webrender_api::{
     AlphaType, BorderDetails, BorderRadius, BorderSide, BorderStyle, BoxShadowClipMode,
     BuiltDisplayList, ClipChainId, ClipId, ClipMode, ColorF, DisplayItem, ExtendMode, FilterOp,
@@ -327,6 +327,10 @@ pub(crate) fn render_jpeg(
 enum ClipShape {
     Rect(LayoutRect),
     RoundedRect(LayoutRect, BorderRadius),
+    /// A `clip-path: polygon()` clip. Points are in layout space, in the
+    /// clip's spatial node's coordinate system; the polygon is closed
+    /// implicitly when rasterized.
+    Polygon(Vec<LayoutPoint>),
     /// One `mask-image` layer (an image or a gradient), whose alpha (or,
     /// with `luminance`, its luminance) masks content; applied only to
     /// stacking contexts, as a mask layer combined with the layers below it
@@ -445,11 +449,14 @@ impl<'a> Renderer<'a> {
             let offset = match scrolling.get(&index) {
                 // A full-page capture shows the document from its top.
                 Some(_) if full_page && index == 1 => Default::default(),
-                Some((offset, _)) => *offset,
+                Some((offset, _, _)) => *offset,
                 None => Default::default(),
             };
             parent * Affine::translate((-offset.x as f64, -offset.y as f64))
         };
+        // Parent spatial node index by node index, to find the scroll frame
+        // containing a sticky frame.
+        let mut parents: FxHashMap<usize, usize> = FxHashMap::default();
         // Nodes 0 and 1 are the implicit root reference frame and root scroll node.
         self.spatial_nodes.insert((pipeline, 0), base);
         self.spatial_nodes.insert((pipeline, 1), scrolled(1, base));
@@ -466,6 +473,10 @@ impl<'a> Renderer<'a> {
                     };
                     let origin =
                         Affine::translate((descriptor.origin.x as f64, descriptor.origin.y as f64));
+                    parents.insert(
+                        descriptor.reference_frame.id.0,
+                        descriptor.parent_spatial_id.0,
+                    );
                     self.spatial_nodes.insert(
                         (pipeline, descriptor.reference_frame.id.0),
                         parent * origin * transform,
@@ -474,13 +485,22 @@ impl<'a> Renderer<'a> {
                 SpatialTreeItem::ScrollFrame(descriptor) => {
                     let parent = self.node(pipeline, descriptor.parent_space.0);
                     let index = descriptor.scroll_frame_id.0;
+                    parents.insert(index, descriptor.parent_space.0);
                     self.spatial_nodes
                         .insert((pipeline, index), scrolled(index, parent));
                 },
                 SpatialTreeItem::StickyFrame(descriptor) => {
                     let parent = self.node(pipeline, descriptor.parent_spatial_id.0);
-                    self.spatial_nodes
-                        .insert((pipeline, descriptor.id.0), parent);
+                    parents.insert(descriptor.id.0, descriptor.parent_spatial_id.0);
+                    // Offset sticky frames with the scroll position; without
+                    // this they render at their static positions in scrolled
+                    // captures.
+                    let offset =
+                        sticky_offset_for_frame(&descriptor, &scrolling, &parents, full_page);
+                    self.spatial_nodes.insert(
+                        (pipeline, descriptor.id.0),
+                        parent * Affine::translate((offset.x as f64, offset.y as f64)),
+                    );
                 },
                 SpatialTreeItem::Invalid => {},
             }
@@ -559,6 +579,26 @@ impl<'a> Renderer<'a> {
                 DisplayItem::ClipChain(chain) => {
                     let clip_ids = item.clip_chain_items().iter().collect();
                     self.clip_chains.insert(chain.id, (chain.parent, clip_ids));
+                },
+                DisplayItem::PolygonClip(clip) => {
+                    // Points arrive via the SetPoints marker, like the mask
+                    // layers of `ImageMaskClip`. A degenerate polygon clips
+                    // everything away; skip it instead of pushing an empty
+                    // path.
+                    let points: Vec<LayoutPoint> = item.points().iter().collect();
+                    if points.len() >= 3 {
+                        self.clips.insert(
+                            clip.id,
+                            Clip {
+                                spatial: (pipeline, clip.spatial_id.0),
+                                shape: ClipShape::Polygon(points),
+                            },
+                        );
+                    }
+                },
+                DisplayItem::BackdropFilter(backdrop) => {
+                    let filters: Vec<FilterOp> = item.filters().iter().collect();
+                    self.backdrop_filter(pipeline, &backdrop.common, &filters);
                 },
                 DisplayItem::PushStackingContext(push) => {
                     let filters: Vec<FilterOp> = item.filters().iter().collect();
@@ -807,6 +847,25 @@ impl<'a> Renderer<'a> {
                 },
                 ClipShape::RoundedRect(rect, radii) => {
                     transform * rounded_rect_of(rect, &radii).to_path(0.1)
+                },
+                ClipShape::Polygon(points) => {
+                    let mut outline = points.iter();
+                    let Some(first) = outline.next() else {
+                        continue;
+                    };
+                    let mut path = BezPath::new();
+                    path.move_to(transform.transform_point(kurbo::Point::new(
+                        first.x as f64,
+                        first.y as f64,
+                    )));
+                    for point in outline {
+                        path.line_to(transform.transform_point(kurbo::Point::new(
+                            point.x as f64,
+                            point.y as f64,
+                        )));
+                    }
+                    path.close_path();
+                    path
                 },
                 ClipShape::ImageMask { .. } => continue,
             };
@@ -1430,6 +1489,161 @@ impl<'a> Renderer<'a> {
             self.context.pop_layer();
         }
     }
+
+    /// Apply a backdrop filter: the item marks a region whose already-painted
+    /// backdrop (everything beneath the element) is filtered in place, then
+    /// painting continues on top of it. This snapshots the current canvas,
+    /// filters the region in a temporary context, and paints it back,
+    /// following the offscreen pattern of `pop_stacking_context`.
+    ///
+    /// The filtered region is the item's `clip_rect`, which layout sets to
+    /// the element's border box, in the item's spatial node space. Like other
+    /// sampling effects (blur, shadows), a region touching a render-strip
+    /// boundary can show a faint seam; see `STRIP_HEIGHT`.
+    fn backdrop_filter(
+        &mut self,
+        pipeline: PipelineId,
+        common: &webrender_api::CommonItemProperties,
+        filters: &[FilterOp],
+    ) {
+        let transform = self.node(pipeline, common.spatial_id.0);
+        let (effects, matrix) = lower_filters(filters, transform);
+        if effects.is_empty() && matrix.is_none() {
+            return;
+        }
+        let region = transform
+            .transform_rect_bbox(rect_of(common.clip_rect))
+            .intersect(self.device_rect);
+        let (width, height) = (self.context.width(), self.context.height());
+        let x0 = region.x0.floor().max(0.0) as u16;
+        let y0 = region.y0.floor().max(0.0) as u16;
+        let x1 = (region.x1.ceil() as i64).clamp(x0 as i64, width as i64) as u16;
+        let y1 = (region.y1.ceil() as i64).clamp(y0 as i64, height as i64) as u16;
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        let (region_width, region_height) = (x1 - x0, y1 - y0);
+
+        // Snapshot the backdrop painted so far.
+        self.context.flush();
+        let mut backdrop = Pixmap::new(width, height);
+        self.context.render(&mut backdrop, &mut self.resources);
+        let backdrop = Arc::new(backdrop);
+
+        // Filter the region in a temporary context sized to the region, so a
+        // full-page capture does not pay a canvas-sized offscreen buffer per
+        // backdrop-filter element (see `image_masks` for the same tradeoff).
+        let settings = RenderSettings {
+            level: vello_cpu::Level::try_detect().unwrap_or(vello_cpu::Level::baseline()),
+            num_threads: 0,
+        };
+        let mut filtered_context = RenderContext::new_with(region_width, region_height, settings);
+        filtered_context.set_paint(vello_cpu::Image {
+            image: vello_cpu::ImageSource::Pixmap(backdrop),
+            sampler: ImageSampler {
+                x_extend: Extend::Pad,
+                y_extend: Extend::Pad,
+                quality: ImageQuality::Medium,
+                alpha: 1.0,
+            },
+        });
+        // Sample the region out of the full-canvas snapshot.
+        filtered_context.set_paint_transform(Affine::translate(-(x0 as f64), -(y0 as f64)));
+        filtered_context.set_transform(Affine::IDENTITY);
+        let layers = effects.len();
+        for effect in effects.into_iter().rev() {
+            filtered_context.push_filter_layer(effect);
+        }
+        filtered_context.fill_rect(&Rect::new(
+            0.0,
+            0.0,
+            region_width as f64,
+            region_height as f64,
+        ));
+        for _ in 0..layers {
+            filtered_context.pop_layer();
+        }
+        filtered_context.reset_paint_transform();
+        filtered_context.flush();
+        let mut filtered = Pixmap::new(region_width, region_height);
+        filtered_context.render(&mut filtered, &mut self.resources);
+        if let Some(matrix) = matrix {
+            apply_color_matrix(&mut filtered, &matrix);
+        }
+
+        // Paint the filtered region back, clipped to the item's clip chain.
+        let clips = self.clip_layers(
+            pipeline,
+            common.clip_chain_id,
+            None,
+            common.spatial_id.0,
+            common.clip_rect,
+        );
+        self.context.set_transform(Affine::IDENTITY);
+        self.context.set_paint(vello_cpu::Image {
+            image: vello_cpu::ImageSource::Pixmap(Arc::new(filtered)),
+            sampler: ImageSampler {
+                x_extend: Extend::Pad,
+                y_extend: Extend::Pad,
+                quality: ImageQuality::Medium,
+                alpha: 1.0,
+            },
+        });
+        self.context
+            .set_paint_transform(Affine::translate((x0 as f64, y0 as f64)));
+        self.context
+            .fill_rect(&Rect::new(x0 as f64, y0 as f64, x1 as f64, y1 as f64));
+        self.context.reset_paint_transform();
+        for _ in 0..clips {
+            self.context.pop_layer();
+        }
+    }
+}
+
+/// Lower filter ops to vello filter effects and an optional color matrix,
+/// using the same lowering `push_stacking_context` applies to element
+/// filters. `Opacity` is left out: for backdrops it belongs to the
+/// element's own stacking context, not the filtered backdrop.
+fn lower_filters(filters: &[FilterOp], transform: Affine) -> (Vec<Filter>, Option<ColorMatrix>) {
+    let mut effects = Vec::new();
+    let mut matrix: Option<ColorMatrix> = None;
+    for filter in filters {
+        let step = match *filter {
+            FilterOp::Blur(width, height) => {
+                // Blur scales with the element's transform.
+                let scale = transform.as_coeffs()[0].hypot(transform.as_coeffs()[1]) as f32;
+                effects.push(Filter::from_function(FilterFunction::Blur {
+                    radius: width.max(height) * scale,
+                }));
+                None
+            },
+            FilterOp::DropShadow(shadow) => {
+                effects.push(Filter::from_primitive(FilterPrimitive::DropShadow {
+                    dx: shadow.offset.x,
+                    dy: shadow.offset.y,
+                    std_deviation: shadow.blur_radius / 2.0,
+                    color: color_of(shadow.color),
+                    edge_mode: EdgeMode::None,
+                }));
+                None
+            },
+            FilterOp::Brightness(amount) => Some(brightness_matrix(amount)),
+            FilterOp::Contrast(amount) => Some(contrast_matrix(amount)),
+            FilterOp::Grayscale(amount) => Some(saturate_matrix(1.0 - amount.clamp(0.0, 1.0))),
+            FilterOp::Saturate(amount) => Some(saturate_matrix(amount)),
+            FilterOp::HueRotate(degrees) => Some(hue_rotate_matrix(degrees)),
+            FilterOp::Invert(amount) => Some(invert_matrix(amount.clamp(0.0, 1.0))),
+            FilterOp::Sepia(amount) => Some(sepia_matrix(amount.clamp(0.0, 1.0))),
+            _ => None,
+        };
+        if let Some(step) = step {
+            matrix = Some(match matrix {
+                Some(previous) => multiply(&step, &previous),
+                None => step,
+            });
+        }
+    }
+    (effects, matrix)
 }
 
 fn reference_transform(binding: &ReferenceTransformBinding) -> Affine {
@@ -1637,17 +1851,59 @@ fn pixmap_of(image: &worker_frame::WorkerImage, alpha_type: AlphaType) -> Option
 /// Scroll offset and content size of each scrolling spatial node, by index.
 fn scroll_nodes(
     scroll_tree: &ScrollTree,
-) -> FxHashMap<usize, (webrender_api::units::LayoutVector2D, LayoutSize)> {
+) -> FxHashMap<usize, (LayoutVector2D, LayoutSize, LayoutRect)> {
     scroll_tree
         .nodes
         .iter()
         .filter_map(|node| match (&node.info, node.webrender_id) {
-            (SpatialTreeNodeInfo::Scroll(info), Some(id)) => {
-                Some((id.0, (info.offset, info.content_rect.size())))
-            },
+            (SpatialTreeNodeInfo::Scroll(info), Some(id)) => Some((
+                id.0,
+                (info.offset, info.content_rect.size(), info.clip_rect),
+            )),
             _ => None,
         })
         .collect()
+}
+
+/// Compute the sticky offset for a sticky frame at the current scroll
+/// position, via [`StickyNodeInfo::calculate_sticky_offset`] (WebRender's
+/// algorithm). The containing scroller is found by walking up the spatial
+/// tree; its Servo scroll offset is negated to match WebRender's convention
+/// (negative when scrolled). For full-page captures the root scroller is
+/// treated as unscrolled, matching the scroll handling in
+/// [`Renderer::build_spatial_tree`], so sticky elements render at their
+/// natural positions.
+fn sticky_offset_for_frame(
+    descriptor: &webrender_api::StickyFrameDescriptor,
+    scrolling: &FxHashMap<usize, (LayoutVector2D, LayoutSize, LayoutRect)>,
+    parents: &FxHashMap<usize, usize>,
+    full_page: bool,
+) -> LayoutVector2D {
+    let mut scroller = descriptor.parent_spatial_id.0;
+    loop {
+        if scrolling.contains_key(&scroller) {
+            break;
+        }
+        match parents.get(&scroller) {
+            Some(&parent) if parent != scroller => scroller = parent,
+            _ => return LayoutVector2D::zero(),
+        }
+    }
+    let Some(&(offset, _, viewport)) = scrolling.get(&scroller) else {
+        return LayoutVector2D::zero();
+    };
+    let scroll_offset = if full_page && scroller == 1 {
+        LayoutVector2D::zero()
+    } else {
+        -offset
+    };
+    StickyNodeInfo {
+        frame_rect: descriptor.bounds,
+        margins: descriptor.margins,
+        vertical_offset_bounds: descriptor.vertical_offset_bounds,
+        horizontal_offset_bounds: descriptor.horizontal_offset_bounds,
+    }
+    .calculate_sticky_offset(&scroll_offset, &viewport)
 }
 
 fn corner_radius(size: LayoutSize) -> f64 {
