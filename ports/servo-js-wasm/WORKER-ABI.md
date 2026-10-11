@@ -1,8 +1,9 @@
-# Raw Worker ABI, version 13
+# Raw Worker ABI, version 14
 
 The JavaScript adapter and WASM artifact are a matched pair. The adapter checks
-`servo_worker_abi_version() === 13` and checks that every export it requires
-(redirect-cookie processing, the script budget, correlated evaluation, and cookie-state export/import) is present before
+`servo_worker_abi_version() === 14` and checks that every export it requires
+(redirect-cookie processing, the script budget, correlated evaluation, cookie-state export/import,
+and web-storage snapshot/restore) is present before
 running constructors or bootstrap. Rebuild
 the artifact whenever the interface or serialized request representation changes.
 This is a project-internal protocol, not an MCP protocol or a stable upstream Servo API.
@@ -23,10 +24,10 @@ Exactly nine function imports exist, all in `env`:
 | `worker_unix_time_now_ns()` | Return Unix-epoch nanoseconds as a JavaScript `bigint`. |
 | `worker_media_command(operation, player_id, value, ptr, len)` | Copy a media-player command synchronously; schedule parsing, decoding and callbacks asynchronously after returning to Wasm. |
 
-The fetch import carries `{version:13, kind:"fetch", request:...}`,
-`{version:13, kind:"cancel", request_ids:[...]}`,
-`{version:13, kind:"web_socket_connect", request_id, url, protocols}`, or
-`{version:13, kind:"web_socket_action", request_id, action}`. IDs serialize as
+The fetch import carries `{version:14, kind:"fetch", request:...}`,
+`{version:14, kind:"cancel", request_ids:[...]}`,
+`{version:14, kind:"web_socket_connect", request_id, url, protocols}`, or
+`{version:14, kind:"web_socket_action", request_id, action}`. IDs serialize as
 UUID strings. The WebSocket commands use the Worker's `WebSocket` host API; the
 adapter reports open, message, close and error events through the
 `servo_worker_websocket_*` exports and forwards page send/close actions to the
@@ -86,6 +87,20 @@ its byte length, or a negative value if serialization fails;
 export. The host must copy them before calling another export that could refresh
 the buffer. `servo_worker_restore_cookie_state(ptr, len)` replaces the complete
 jar and returns 1 on success or 0 if the bytes are invalid.
+
+Web-storage snapshots follow the same pattern per storage area:
+`servo_worker_storage_state_len(kind)` refreshes the serialized state for kind
+0 (localStorage) or kind 1 (sessionStorage) and returns its byte length, or a
+negative value when the kind is unknown or serialization fails;
+`servo_worker_storage_state_ptr()` points to those bytes until the next
+storage-state export, with the same host copy discipline as the cookie buffer.
+`servo_worker_restore_storage_state(kind, ptr, len)` replaces the complete
+area and returns 1 on success or 0 if the kind is unknown, the bytes are
+invalid, or (for sessionStorage) no browser is bootstrapped yet: session
+restore targets the current webview. The snapshot is a versioned
+postcard-encoded map of ascii-serialized origins to key/value pairs; session
+data is merged across webviews, which is exact for the port's single webview
+per instance.
 
 Screen recording uses `servo_worker_render_jpeg(max_width, max_height, quality)`
 after a render request and pump. The host copies the JPEG from

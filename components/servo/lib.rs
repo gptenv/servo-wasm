@@ -141,6 +141,8 @@ pub use crate::webview_delegate::{
 pub use net::resource_thread::{
     WorkerFetchHandler, attach_worker_cookies, pump_worker_fetches, set_worker_fetch_handler,
 };
+#[cfg(target_arch = "wasm32")]
+pub use storage::{restore_worker_webstorage, serialize_worker_webstorage};
 
 /// Run cooperative Worker services such as storage between browser turns.
 pub fn pump_worker_services() {
