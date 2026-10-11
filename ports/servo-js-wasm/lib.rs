@@ -1,5 +1,7 @@
 //! Executable SpiderMonkey probe for the Cloudflare Worker wasm target.
 
+mod preflight_cache;
+
 use bytes::Bytes;
 use dpi::PhysicalSize;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, header};
@@ -51,6 +53,8 @@ use servo_default_resources as _;
 use servo_base::generic_channel::{self, GenericCallback, GenericReceiver, TryReceiveError};
 use servo_base::id::BrowsingContextId;
 
+use crate::preflight_cache::{PreflightCache, preflight_max_age_secs};
+
 thread_local! {
     static FETCH_CALLBACKS: RefCell<HashMap<RequestId, WorkerFetchEntry>> =
         RefCell::new(HashMap::new());
@@ -67,6 +71,11 @@ thread_local! {
     static WORKER_COOKIE_STATE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static WORKER_STORAGE_STATE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static PAGE_EVALUATION_RESULT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// Successful CORS preflights, keyed by origin and URL and expiring per
+    /// Access-Control-Max-Age, so repeat preflighted requests skip the
+    /// OPTIONS round-trip.
+    static PREFLIGHT_CACHE: RefCell<PreflightCache> =
+        const { RefCell::new(PreflightCache::new()) };
 }
 
 // Defined by the Worker build of mozjs_sys (js/src/vm/WorkerScriptBudget.h).
@@ -99,6 +108,9 @@ struct WorkerFetchEntry {
     accepts_cookies: bool,
     cookie_origin: ImmutableOrigin,
     response_started: bool,
+    /// URL the preflight decision (if any) was made for; keys the
+    /// CORS-preflight cache on success.
+    url: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -1363,6 +1375,7 @@ fn install_fetch_adapter() {
                             accepts_cookies,
                             cookie_origin: request.url.origin(),
                             response_started: false,
+                            url: request.url.url().as_str().to_owned(),
                         },
                     );
                 });
@@ -1493,10 +1506,28 @@ fn worker_response_visibility(
         .iter()
         .map(|name| name.as_str().to_owned())
         .collect();
-    let preflight = (request.use_cors_preflight
+    let credentials = request.credentials_mode == CredentialsMode::Include;
+    let needs_preflight = request.use_cors_preflight
         || request.unsafe_request
-            && (!is_cors_safelisted_method(&request.method) || !unsafe_headers.is_empty()))
-    .then(|| WorkerCorsPreflight {
+            && (!is_cors_safelisted_method(&request.method) || !unsafe_headers.is_empty());
+    // A cached preflight result skips the OPTIONS round-trip: the adapter
+    // simply omits `cors_preflight` from the host command. The actual
+    // response is still CORS-checked, so a hit can never widen access.
+    let cached_preflight = needs_preflight
+        && PREFLIGHT_CACHE.with(|cache| {
+            // SAFETY: `worker_monotonic_now_ns` is one of the nine required
+            // `env` imports; the adapter always provides it.
+            let now_ns = unsafe { host_monotonic_now_ns() };
+            cache.borrow_mut().allows(
+                &origin,
+                request.url.url().as_str(),
+                credentials,
+                request.method.as_str(),
+                &unsafe_headers,
+                now_ns,
+            )
+        });
+    let preflight = (needs_preflight && !cached_preflight).then(|| WorkerCorsPreflight {
         method: request.method.as_str().to_owned(),
         unsafe_headers,
         non_wildcard_headers: request
@@ -1505,9 +1536,9 @@ fn worker_response_visibility(
             .filter(|name| is_cors_non_wildcard_request_header_name(name))
             .map(|name| name.as_str().to_owned())
             .collect(),
-        credentials: request.credentials_mode == CredentialsMode::Include,
+        credentials,
     });
-    if preflight.is_none()
+    if !needs_preflight
         && request.method != Method::GET
         && request.method != Method::HEAD
         && request.method != Method::POST
@@ -1576,6 +1607,7 @@ fn queue_worker_fetch(mut request: RequestBuilder, mut callback: net_traits::Box
                 accepts_cookies,
                 cookie_origin: request.url.origin(),
                 response_started: false,
+                url: request.url.url().as_str().to_owned(),
             },
         );
     });
@@ -1992,14 +2024,40 @@ pub unsafe extern "C" fn servo_worker_check_cors_preflight(
                 origin,
                 preflight: Some(preflight),
                 ..
-            } => Some(check_cors_preflight(origin, preflight, status, &headers)),
+            } => {
+                let result = check_cors_preflight(origin, preflight, status, &headers);
+                Some((result, origin.clone(), entry.url.clone(), preflight.clone()))
+            },
             _ => None,
         }
     });
     match decision {
         None => 0,
-        Some(Ok(())) => 1,
-        Some(Err(error)) => {
+        Some((Ok(()), origin, url, preflight)) => {
+            // Record the successful preflight so identical follow-up requests
+            // skip the OPTIONS round-trip until Access-Control-Max-Age lapses.
+            let max_age_secs = preflight_max_age_secs(
+                headers
+                    .get(header::ACCESS_CONTROL_MAX_AGE)
+                    .and_then(|value| value.to_str().ok()),
+            );
+            PREFLIGHT_CACHE.with(|cache| {
+                // SAFETY: `worker_monotonic_now_ns` is one of the nine required
+                // `env` imports; the adapter always provides it.
+                let now_ns = unsafe { host_monotonic_now_ns() };
+                cache.borrow_mut().store(
+                    origin,
+                    url,
+                    preflight.credentials,
+                    preflight.method,
+                    &preflight.unsafe_headers,
+                    max_age_secs,
+                    now_ns,
+                );
+            });
+            1
+        },
+        Some((Err(error), ..)) => {
             complete_worker_fetch_error(request_id, error);
             -1
         },
