@@ -132,7 +132,7 @@ impl SqliteEngine {
             // FIXME(arihant2math): this fails occasionally
             let _ = connection.execute(stmt, ());
         }
-        create::create_tables(&connection)?;
+        create::create_tables(connection)?;
         // From https://w3c.github.io/IndexedDB/#database-version:
         // "When a database is first created, its version is 0 (zero)."
         connection.execute(
