@@ -75,7 +75,7 @@ thread_local! {
     /// Access-Control-Max-Age, so repeat preflighted requests skip the
     /// OPTIONS round-trip.
     static PREFLIGHT_CACHE: RefCell<PreflightCache> =
-        const { RefCell::new(PreflightCache::new()) };
+        RefCell::new(PreflightCache::new());
 }
 
 // Defined by the Worker build of mozjs_sys (js/src/vm/WorkerScriptBudget.h).
