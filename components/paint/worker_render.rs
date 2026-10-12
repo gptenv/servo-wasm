@@ -79,7 +79,7 @@ pub(crate) fn stream_png_begin(full_page: bool) -> Result<Vec<u8>, String> {
         let scale = info.viewport_details.hidpi_scale_factor.get();
         let mut size = info.viewport_details.size;
         if full_page {
-            if let Some((_, content)) = scroll_nodes(&info.scroll_tree).get(&1) {
+            if let Some((_, _, content)) = scroll_nodes(&info.scroll_tree).get(&1) {
                 size.width = size.width.max(content.width);
                 size.height = size.height.max(content.height);
             }
@@ -215,7 +215,7 @@ pub(crate) fn render_png(full_page: bool) -> Result<Vec<u8>, String> {
         let scale = info.viewport_details.hidpi_scale_factor.get();
         let mut size = info.viewport_details.size;
         if full_page {
-            if let Some((_, content)) = scroll_nodes(&info.scroll_tree).get(&1) {
+            if let Some((_, _, content)) = scroll_nodes(&info.scroll_tree).get(&1) {
                 size.width = size.width.max(content.width);
                 size.height = size.height.max(content.height);
             }
@@ -854,12 +854,12 @@ impl<'a> Renderer<'a> {
                         continue;
                     };
                     let mut path = BezPath::new();
-                    path.move_to(transform.transform_point(kurbo::Point::new(
+                    path.move_to(transform * kurbo::Point::new(
                         first.x as f64,
                         first.y as f64,
                     )));
                     for point in outline {
-                        path.line_to(transform.transform_point(kurbo::Point::new(
+                        path.line_to(transform * kurbo::Point::new(
                             point.x as f64,
                             point.y as f64,
                         )));
@@ -1548,7 +1548,7 @@ impl<'a> Renderer<'a> {
             },
         });
         // Sample the region out of the full-canvas snapshot.
-        filtered_context.set_paint_transform(Affine::translate(-(x0 as f64), -(y0 as f64)));
+        filtered_context.set_paint_transform(Affine::translate((-(x0 as f64), -(y0 as f64))));
         filtered_context.set_transform(Affine::IDENTITY);
         let layers = effects.len();
         for effect in effects.into_iter().rev() {
