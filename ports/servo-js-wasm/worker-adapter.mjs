@@ -1327,7 +1327,7 @@ class ServoWorkerRuntime {
         }
 
         const timerDelay = this.nextTimerDelayMs();
-        const immediateHostWork = this.#fetchQueue.length > 0 || timerDelay === 0;
+        const immediateHostWork = this.#fetchQueue.length > 0 || this.#inFlightFetches.size > 0 || timerDelay === 0;
         if (!immediateHostWork) {
           return {
             ready: true,
@@ -1591,6 +1591,11 @@ class ServoWorkerRuntime {
    * set `waitForResources` when a settled snapshot is specifically needed.
    */
   async screenshotStream({ maxDurationMs = Infinity, maxPasses = Infinity, fullPage = false, networkIdleMs = 500, waitForResources = false } = {}) {
+    if (this.#screenshotStreamActive) {
+      throw new Error('A screenshot stream is already active on this runtime');
+    }
+    this.#screenshotStreamActive = true;
+    try {
     // A frame can start loads (CSS background images, web fonts, canvas
     // frames) that only a later frame shows; repeat until a frame adds none.
     const exports = this.instance.exports;
@@ -1615,7 +1620,10 @@ class ServoWorkerRuntime {
         throw new Error('Servo has not been bootstrapped');
       }
       if (waitForResources) {
-        await this.pumpUntilSettled({ maxDurationMs: remainingMs, networkIdleMs });
+        const wait = await this.pumpUntilSettled({ maxDurationMs: remainingMs, networkIdleMs });
+        if (!wait.settled) {
+          throw new Error('Screenshot resource wait exhausted its time/turn budget before settling');
+        }
       } else {
         this.pump();
         await Promise.resolve();
@@ -1629,12 +1637,11 @@ class ServoWorkerRuntime {
       }
       if (!waitForResources) break;
     }
-    if (this.#screenshotStreamActive) {
-      throw new Error('A screenshot stream is already active on this runtime');
+    if (waitForResources && quietPasses < 2) {
+      throw new Error('Screenshot resource wait exhausted its pass budget before settling');
     }
     const length = exports.servo_worker_stream_png_begin(fullPage ? 1 : 0);
     if (!length) throw new Error('Servo could not start the PNG stream (see the host log)');
-    this.#screenshotStreamActive = true;
     const copyResult = (length) => {
       const ptr = exports.servo_worker_frame_png_ptr();
       return new Uint8Array(exports.memory.buffer, ptr, length).slice();
@@ -1663,6 +1670,10 @@ class ServoWorkerRuntime {
         this.#screenshotStreamActive = false;
       },
     });
+    } catch (error) {
+      this.#screenshotStreamActive = false;
+      throw error;
+    }
   }
 
   /** The WebAssembly.RuntimeError that made this runtime unusable, if any. */
