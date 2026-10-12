@@ -325,7 +325,7 @@ where
                 proxy: _,
                 origin,
             } => {
-                let result = self.engine.has_cache(origin.clone(), &cache_name);
+                let result = self.engine.has_cache(origin, &cache_name);
                 if callback
                     .send(CacheStorageThreadResponse::HasCacheResult(
                         result.map_err(|e| format!("{:?}", e)),
@@ -343,7 +343,7 @@ where
             } => {
                 let result = self
                     .engine
-                    .open_cache(origin.clone(), cache_name.clone(), &proxy);
+                    .open_cache(origin, cache_name.clone(), &proxy);
                 if callback
                     .send(CacheStorageThreadResponse::OpenCacheResult {
                         result: result.map_err(|e| format!("{:?}", e)),
@@ -370,7 +370,7 @@ where
                 callback,
                 origin,
             } => {
-                let result = self.engine.keys(origin.clone(), &cache_name);
+                let result = self.engine.keys(origin, &cache_name);
                 if callback
                     .send(CacheStorageThreadResponse::KeysResult(
                         result.map_err(|e| format!("{:?}", e)),
@@ -388,7 +388,7 @@ where
             } => {
                 let result = self
                     .engine
-                    .delete_cache(origin.clone(), &cache_name, &proxy);
+                    .delete_cache(origin, &cache_name, &proxy);
                 if callback
                     .send(CacheStorageThreadResponse::DeleteCacheResult(
                         result.map_err(|e| format!("{:?}", e)),
