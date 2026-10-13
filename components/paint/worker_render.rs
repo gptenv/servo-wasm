@@ -1396,8 +1396,9 @@ impl<'a> Renderer<'a> {
                 FilterOp::Blur(width, height) => {
                     // Blur scales with the element's transform.
                     let scale = transform.as_coeffs()[0].hypot(transform.as_coeffs()[1]) as f32;
-                    effects.push(Filter::from_function(FilterFunction::Blur {
-                        radius: width.max(height) * scale,
+                    effects.push(Filter::from_primitive(FilterPrimitive::GaussianBlur {
+                        std_deviation: width.max(height) * scale,
+                        edge_mode: EdgeMode::None,
                     }));
                     None
                 },
@@ -1612,9 +1613,10 @@ fn lower_filters(filters: &[FilterOp], transform: Affine) -> (Vec<Filter>, Optio
             FilterOp::Blur(width, height) => {
                 // Blur scales with the element's transform.
                 let scale = transform.as_coeffs()[0].hypot(transform.as_coeffs()[1]) as f32;
-                effects.push(Filter::from_function(FilterFunction::Blur {
-                    radius: width.max(height) * scale,
-                }));
+                effects.push(Filter::from_primitive(FilterPrimitive::GaussianBlur {
+                        std_deviation: width.max(height) * scale,
+                        edge_mode: EdgeMode::None,
+                    }));
                 None
             },
             FilterOp::DropShadow(shadow) => {
