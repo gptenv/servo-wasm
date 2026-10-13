@@ -23,7 +23,7 @@ use image::codecs::jpeg::JpegEncoder;
 use paint_api::display_list::{ScrollTree, SpatialTreeNodeInfo, StickyNodeInfo};
 use pixels::{Multiply, transform_inplace};
 use rustc_hash::FxHashMap;
-use vello_common::filter_effects::{EdgeMode, Filter, FilterFunction, FilterPrimitive};
+use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_cpu::kurbo::{
     self, Affine, BezPath, Cap, Rect, RoundedRect, RoundedRectRadii, Shape, Stroke,
 };
