@@ -1055,7 +1055,8 @@ impl Servo {
             opts.temporary_storage,
         );
 
-        let _constellation = create_constellation(
+        #[allow(unused_variables)]
+        let constellation = create_constellation(
             embedder_to_constellation_receiver,
             &paint.borrow(),
             embedder_proxy,
