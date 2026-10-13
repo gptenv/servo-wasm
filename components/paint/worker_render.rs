@@ -1548,7 +1548,7 @@ impl<'a> Renderer<'a> {
             },
         });
         // Sample the region out of the full-canvas snapshot.
-        filtered_context.set_paint_transform(Affine::translate(-(x0 as f64), -(y0 as f64)));
+        filtered_context.set_paint_transform(Affine::translate((-(x0 as f64), -(y0 as f64))));
         filtered_context.set_transform(Affine::IDENTITY);
         let layers = effects.len();
         for effect in effects.into_iter().rev() {
