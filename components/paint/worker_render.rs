@@ -862,7 +862,7 @@ impl<'a> Renderer<'a> {
                         path.line_to(transform * kurbo::Point::new(
                             point.x as f64,
                             point.y as f64,
-                        )));
+                        ));
                     }
                     path.close_path();
                     path
