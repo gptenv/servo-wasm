@@ -1397,9 +1397,9 @@ impl<'a> Renderer<'a> {
                     // Blur scales with the element's transform.
                     let scale = transform.as_coeffs()[0].hypot(transform.as_coeffs()[1]) as f32;
                     effects.push(Filter::from_primitive(FilterPrimitive::GaussianBlur {
-                    std_deviation: width.max(height) * scale,
-                    edge_mode: EdgeMode::None,
-                }));
+                        std_deviation: width.max(height) * scale,
+                        edge_mode: EdgeMode::None,
+                    }));
                     None
                 },
                 FilterOp::DropShadow(shadow) => {
