@@ -1548,23 +1548,19 @@ impl<'a> Renderer<'a> {
                 alpha: 1.0,
             },
         });
-        // Sample the region out of the full-canvas snapshot.
-        filtered_context.set_paint_transform(Affine::translate((-(x0 as f64), -(y0 as f64))));
-        filtered_context.set_transform(Affine::IDENTITY);
+        // Translate the full-canvas snapshot into the region-sized context.
+        // Keep the paint transform at identity so source pixels stay aligned
+        // with the same device coordinates used by the original canvas.
+        filtered_context.set_transform(Affine::translate((-(x0 as f64), -(y0 as f64))));
         let layers = effects.len();
         for effect in effects.into_iter().rev() {
             filtered_context.push_filter_layer(effect);
         }
-        filtered_context.fill_rect(&Rect::new(
-            0.0,
-            0.0,
-            region_width as f64,
-            region_height as f64,
-        ));
+        filtered_context.fill_rect(&self.device_rect);
         for _ in 0..layers {
             filtered_context.pop_layer();
         }
-        filtered_context.reset_paint_transform();
+        filtered_context.set_transform(Affine::IDENTITY);
         filtered_context.flush();
         let mut filtered = Pixmap::new(region_width, region_height);
         filtered_context.render(&mut filtered, &mut self.resources);
