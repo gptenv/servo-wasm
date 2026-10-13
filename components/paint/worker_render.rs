@@ -857,7 +857,7 @@ impl<'a> Renderer<'a> {
                     path.move_to(transform * kurbo::Point::new(
                         first.x as f64,
                         first.y as f64,
-                    )));
+                    ));
                     for point in outline {
                         path.line_to(transform * kurbo::Point::new(
                             point.x as f64,
