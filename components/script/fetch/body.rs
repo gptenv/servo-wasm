@@ -2,10 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#[cfg(target_arch = "wasm32")]
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::rc::Rc;
-use std::{cell::RefCell, fs, ptr, slice, str};
+#[cfg(target_arch = "wasm32")]
+use std::cell::RefCell;
+use std::{fs, ptr, slice, str};
 
 use encoding_rs::{Encoding, UTF_8};
 use http::HeaderMap;
