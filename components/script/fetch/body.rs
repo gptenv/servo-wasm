@@ -2,10 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#[cfg(target_arch = "wasm32")]
+use std::cell::RefCell;
+#[cfg(target_arch = "wasm32")]
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::rc::Rc;
-use std::{cell::RefCell, fs, ptr, slice, str};
+use std::{fs, ptr, slice, str};
 
 use encoding_rs::{Encoding, UTF_8};
 use http::HeaderMap;
@@ -89,7 +92,7 @@ pub fn install_worker_request_body_stream_bridge() {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn register_worker_request_body_stream(stream: &DomRoot<ReadableStream>) -> String {
+fn register_worker_request_body_stream(stream: &ReadableStream) -> String {
     let id = net_traits::request::RequestId::default().0.to_string();
     let task_source = stream
         .global()
@@ -100,7 +103,7 @@ fn register_worker_request_body_stream(stream: &DomRoot<ReadableStream>) -> Stri
         streams.borrow_mut().insert(
             id.clone(),
             WorkerRequestBodyStream {
-                stream: Trusted::new(&**stream),
+                stream: Trusted::new(stream),
                 task_source,
                 reader_acquired: false,
                 read_pending: false,

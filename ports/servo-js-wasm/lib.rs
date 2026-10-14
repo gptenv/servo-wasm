@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 //! Executable SpiderMonkey probe for the Cloudflare Worker wasm target.
 
 mod preflight_cache;
@@ -22,9 +26,8 @@ use net_traits::request::{
 use net_traits::response::ResponseInit;
 use net_traits::{
     FetchMetadata, FetchResponseMsg, FilteredMetadata, Metadata, NetworkError, ResourceFetchTiming,
-    ResourceTimingType,
+    ResourceTimingType, set_worker_fetch_cancel_handler, set_worker_fetch_request_handler,
 };
-use net_traits::{set_worker_fetch_cancel_handler, set_worker_fetch_request_handler};
 use profile_traits::generic_callback::GenericCallback as ProfileGenericCallback;
 use servo::{
     Code, DevicePoint, InputEvent, Key, KeyState, KeyboardEvent, Location, Modifiers, MouseButton,
@@ -75,7 +78,7 @@ thread_local! {
     /// Access-Control-Max-Age, so repeat preflighted requests skip the
     /// OPTIONS round-trip.
     static PREFLIGHT_CACHE: RefCell<PreflightCache> =
-        const { RefCell::new(PreflightCache::new()) };
+        RefCell::new(PreflightCache::new());
 }
 
 // Defined by the Worker build of mozjs_sys (js/src/vm/WorkerScriptBudget.h).

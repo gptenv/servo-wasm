@@ -347,7 +347,7 @@ impl XMLHttpRequestMethods<crate::DomTypeHolder> for XMLHttpRequest {
         if let Some(window) = global.downcast::<Window>()
             && !window.Document().is_fully_active()
         {
-            return Err(Error::InvalidState(None));
+            return Err(Error::InvalidState(Some("The associated document is not fully active".into())));
         }
 
         // Step 5
@@ -455,7 +455,7 @@ impl XMLHttpRequestMethods<crate::DomTypeHolder> for XMLHttpRequest {
         // Step 1: If this’s state is not opened, then throw an "InvalidStateError" DOMException.
         // Step 2: If this’s send() flag is set, then throw an "InvalidStateError" DOMException.
         if self.ready_state.get() != XMLHttpRequestState::Opened || self.send_flag.get() {
-            return Err(Error::InvalidState(None));
+            return Err(Error::InvalidState(Some("XMLHttpRequest must be opened and not sending".into())));
         }
 
         // Step 3: Normalize value.

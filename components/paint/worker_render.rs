@@ -79,7 +79,7 @@ pub(crate) fn stream_png_begin(full_page: bool) -> Result<Vec<u8>, String> {
         let scale = info.viewport_details.hidpi_scale_factor.get();
         let mut size = info.viewport_details.size;
         if full_page {
-            if let Some((_, content)) = scroll_nodes(&info.scroll_tree).get(&1) {
+            if let Some((_, content, _)) = scroll_nodes(&info.scroll_tree).get(&1) {
                 size.width = size.width.max(content.width);
                 size.height = size.height.max(content.height);
             }
@@ -215,7 +215,7 @@ pub(crate) fn render_png(full_page: bool) -> Result<Vec<u8>, String> {
         let scale = info.viewport_details.hidpi_scale_factor.get();
         let mut size = info.viewport_details.size;
         if full_page {
-            if let Some((_, content)) = scroll_nodes(&info.scroll_tree).get(&1) {
+            if let Some((_, content, _)) = scroll_nodes(&info.scroll_tree).get(&1) {
                 size.width = size.width.max(content.width);
                 size.height = size.height.max(content.height);
             }
@@ -854,15 +854,15 @@ impl<'a> Renderer<'a> {
                         continue;
                     };
                     let mut path = BezPath::new();
-                    path.move_to(transform.transform_point(kurbo::Point::new(
+                    path.move_to(transform * kurbo::Point::new(
                         first.x as f64,
                         first.y as f64,
-                    )));
+                    ));
                     for point in outline {
-                        path.line_to(transform.transform_point(kurbo::Point::new(
+                        path.line_to(transform * kurbo::Point::new(
                             point.x as f64,
                             point.y as f64,
-                        )));
+                        ));
                     }
                     path.close_path();
                     path
@@ -1530,14 +1530,16 @@ impl<'a> Renderer<'a> {
         self.context.render(&mut backdrop, &mut self.resources);
         let backdrop = Arc::new(backdrop);
 
-        // Filter the region in a temporary context sized to the region, so a
-        // full-page capture does not pay a canvas-sized offscreen buffer per
-        // backdrop-filter element (see `image_masks` for the same tradeoff).
+        // Filter in device space. Keeping the full-canvas snapshot in its
+        // original coordinate system avoids resampling/translation ambiguity
+        // and, importantly, gives blur kernels access to pixels on both sides
+        // of the backdrop region's edges. Only the element's region is painted
+        // back below, so pixels outside it remain unchanged.
         let settings = RenderSettings {
             level: vello_cpu::Level::try_detect().unwrap_or(vello_cpu::Level::baseline()),
             num_threads: 0,
         };
-        let mut filtered_context = RenderContext::new_with(region_width, region_height, settings);
+        let mut filtered_context = RenderContext::new_with(width, height, settings);
         filtered_context.set_paint(vello_cpu::Image {
             image: vello_cpu::ImageSource::Pixmap(backdrop),
             sampler: ImageSampler {
@@ -1547,31 +1549,28 @@ impl<'a> Renderer<'a> {
                 alpha: 1.0,
             },
         });
-        // Sample the region out of the full-canvas snapshot.
-        filtered_context.set_paint_transform(Affine::translate(-(x0 as f64), -(y0 as f64)));
         filtered_context.set_transform(Affine::IDENTITY);
         let layers = effects.len();
         for effect in effects.into_iter().rev() {
             filtered_context.push_filter_layer(effect);
         }
-        filtered_context.fill_rect(&Rect::new(
-            0.0,
-            0.0,
-            region_width as f64,
-            region_height as f64,
-        ));
+        filtered_context.fill_rect(&self.device_rect);
         for _ in 0..layers {
             filtered_context.pop_layer();
         }
-        filtered_context.reset_paint_transform();
         filtered_context.flush();
-        let mut filtered = Pixmap::new(region_width, region_height);
+        let mut filtered = Pixmap::new(width, height);
         filtered_context.render(&mut filtered, &mut self.resources);
         if let Some(matrix) = matrix {
             apply_color_matrix(&mut filtered, &matrix);
         }
 
         // Paint the filtered region back, clipped to the item's clip chain.
+        // Clip paths in clip_layers are already transformed into device space.
+        // Reset the previous display item's transform before pushing them, or a
+        // translated sibling can apply its transform a second time and move the
+        // filtered backdrop out of the element's actual bounds.
+        self.context.set_transform(Affine::IDENTITY);
         let clips = self.clip_layers(
             pipeline,
             common.clip_chain_id,
@@ -1579,7 +1578,6 @@ impl<'a> Renderer<'a> {
             common.spatial_id.0,
             common.clip_rect,
         );
-        self.context.set_transform(Affine::IDENTITY);
         self.context.set_paint(vello_cpu::Image {
             image: vello_cpu::ImageSource::Pixmap(Arc::new(filtered)),
             sampler: ImageSampler {
@@ -1589,8 +1587,9 @@ impl<'a> Renderer<'a> {
                 alpha: 1.0,
             },
         });
-        self.context
-            .set_paint_transform(Affine::translate((x0 as f64, y0 as f64)));
+        // The filtered image is still in device space, so its source and
+        // destination coordinates match directly.
+        self.context.reset_paint_transform();
         self.context
             .fill_rect(&Rect::new(x0 as f64, y0 as f64, x1 as f64, y1 as f64));
         self.context.reset_paint_transform();

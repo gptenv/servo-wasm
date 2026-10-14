@@ -97,7 +97,7 @@ pub(crate) fn throw_dom_exception(cx: &mut JSContext, global: &GlobalScope, resu
                 log::error!("JavaScript binding operation failed without a pending exception");
                 throw_type_error(
                     cx,
-                    &c"JavaScript operation failed without a pending exception".to_owned(),
+                    c"JavaScript operation failed without a pending exception",
                 );
             }
         },

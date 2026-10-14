@@ -579,7 +579,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       return socket;
     },
   });
-  assert.equal(runtime.capabilities().abiVersion, 13);
+  assert.equal(runtime.capabilities().abiVersion, 14);
   assert.ok(runtime.capabilities().supported.includes('script-operation-budget'));
   assert.ok(runtime.capabilities().supported.includes('cpu-screenshots'));
   assert.ok(runtime.capabilities().partial.cookies);

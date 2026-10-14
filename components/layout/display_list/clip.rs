@@ -84,6 +84,7 @@ impl StackingContextTreeClipStore {
 
     /// Add a `clip-path: polygon()` clip. The points are resolved against
     /// `layout_box` and stored in layout space.
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn add_polygon(
         &mut self,
         points: Vec<LayoutPoint>,

@@ -35,10 +35,14 @@ linker = "lld-link.exe"
 # entropy"). See the wasm_getrandom module in components/shared/net/lib.rs
 # for the actual host-import implementation this activates.
 rustflags = [
-  "--cfg", "getrandom_backend=\"custom\"",
-  "-C", "link-arg=--stack-first",
-  "-C", "link-arg=-z",
-  "-C", "link-arg=stack-size=4194304",
+    "--cfg",
+    "getrandom_backend=\"custom\"",
+    "-C",
+    "link-arg=--stack-first",
+    "-C",
+    "link-arg=-z",
+    "-C",
+    "link-arg=stack-size=4194304",
 ]
 
 [env]

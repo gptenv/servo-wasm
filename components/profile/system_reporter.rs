@@ -63,6 +63,7 @@ pub fn collect_reports(request: ReporterRequest) {
 }
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[allow(unsafe_code)] // The mallinfo FFI is required for Linux system-heap reporting.
 unsafe extern "C" {
     fn mallinfo() -> struct_mallinfo;
 }
@@ -83,6 +84,7 @@ pub struct struct_mallinfo {
 }
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[allow(unsafe_code)] // Calling mallinfo is the unsafe boundary for this FFI.
 fn system_heap_info() -> SystemHeapInfo {
     let info: struct_mallinfo = unsafe { mallinfo() };
 

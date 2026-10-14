@@ -4288,8 +4288,8 @@ impl FetchResponseListener for HTMLMediaElementFetchListener {
             .and_then(|metadata| metadata.headers.as_ref())
             .and_then(|headers| headers.get(&header::CONTENT_TYPE))
             .and_then(|value| value.to_str().ok());
-        if let Some(content_type) = content_type {
-            if let Err(error) = element
+        if let Some(content_type) = content_type &&
+            let Err(error) = element
                 .player
                 .borrow()
                 .as_ref()
@@ -4297,9 +4297,8 @@ impl FetchResponseListener for HTMLMediaElementFetchListener {
                 .lock()
                 .unwrap()
                 .set_content_type(content_type.to_owned())
-            {
-                warn!("Could not set player content type {:?}", error);
-            }
+        {
+            warn!("Could not set player content type {:?}", error);
         }
 
         if let Some(metadata) = metadata.as_ref() &&
