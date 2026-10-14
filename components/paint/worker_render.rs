@@ -1572,6 +1572,11 @@ impl<'a> Renderer<'a> {
         }
 
         // Paint the filtered region back, clipped to the item's clip chain.
+        // Clip paths in clip_layers are already transformed into device space.
+        // Reset the previous display item's transform before pushing them, or a
+        // translated sibling can apply its transform a second time and move the
+        // filtered backdrop out of the element's actual bounds.
+        self.context.set_transform(Affine::IDENTITY);
         let clips = self.clip_layers(
             pipeline,
             common.clip_chain_id,
@@ -1579,7 +1584,6 @@ impl<'a> Renderer<'a> {
             common.spatial_id.0,
             common.clip_rect,
         );
-        self.context.set_transform(Affine::IDENTITY);
         self.context.set_paint(vello_cpu::Image {
             image: vello_cpu::ImageSource::Pixmap(Arc::new(filtered)),
             sampler: ImageSampler {
