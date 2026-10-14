@@ -1547,10 +1547,10 @@ impl<'a> Renderer<'a> {
                 alpha: 1.0,
             },
         });
-        // Sample the region out of the full-canvas snapshot.
-        // Paint transforms are inverted by Vello when encoding an image: move the
-        // full-canvas backdrop right/down so its pixel (x0, y0) lands at local (0, 0).
-        filtered_context.set_paint_transform(Affine::translate((-(x0 as f64), -(y0 as f64))));
+        // Sample the region out of the full-canvas snapshot. Paint transforms
+        // are inverted by Vello when encoding an image, so translate the paint
+        // positively to sample source pixel (x0, y0) at local pixel (0, 0).
+        filtered_context.set_paint_transform(Affine::translate((x0 as f64, y0 as f64)));
         filtered_context.set_transform(Affine::IDENTITY);
         let layers = effects.len();
         for effect in effects.into_iter().rev() {
@@ -1595,8 +1595,8 @@ impl<'a> Renderer<'a> {
                 alpha: 1.0,
             },
         });
-        self.context
-            .set_paint_transform(Affine::translate((x0 as f64, y0 as f64)));
+        // Place filtered pixel (0, 0) at the backdrop's device-space origin.
+        self.context.set_paint_transform(Affine::translate((-(x0 as f64), -(y0 as f64))));
         self.context
             .fill_rect(&Rect::new(x0 as f64, y0 as f64, x1 as f64, y1 as f64));
         self.context.reset_paint_transform();
