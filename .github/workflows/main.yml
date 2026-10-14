@@ -69,7 +69,7 @@ jobs:
 
   build-result:
     name: Result
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: always()
     # needs all build to detect cancellation
     needs:
