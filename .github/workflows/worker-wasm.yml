@@ -94,7 +94,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: worker-wasm-production
+          # v2 invalidates the cache created before workspace crate artifacts were included.
+          key: worker-wasm-production-v2
+          cache-workspace-crates: true
 
       - name: Build the production Worker artifact incrementally
         env:
