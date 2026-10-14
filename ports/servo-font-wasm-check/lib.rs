@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 //! Runtime verification for the wasm32 glyph backend added to our
 //! `wr_glyph_rasterizer` fork (see docs/wasm-rendering.md). `cargo check`
 //! only proves the code type-checks; this crate actually instantiates
