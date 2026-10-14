@@ -1530,14 +1530,16 @@ impl<'a> Renderer<'a> {
         self.context.render(&mut backdrop, &mut self.resources);
         let backdrop = Arc::new(backdrop);
 
-        // Filter the region in a temporary context sized to the region, so a
-        // full-page capture does not pay a canvas-sized offscreen buffer per
-        // backdrop-filter element (see `image_masks` for the same tradeoff).
+        // Filter in device space. Keeping the full-canvas snapshot in its
+        // original coordinate system avoids resampling/translation ambiguity
+        // and, importantly, gives blur kernels access to pixels on both sides
+        // of the backdrop region's edges. Only the element's region is painted
+        // back below, so pixels outside it remain unchanged.
         let settings = RenderSettings {
             level: vello_cpu::Level::try_detect().unwrap_or(vello_cpu::Level::baseline()),
             num_threads: 0,
         };
-        let mut filtered_context = RenderContext::new_with(region_width, region_height, settings);
+        let mut filtered_context = RenderContext::new_with(width, height, settings);
         filtered_context.set_paint(vello_cpu::Image {
             image: vello_cpu::ImageSource::Pixmap(backdrop),
             sampler: ImageSampler {
@@ -1547,27 +1549,17 @@ impl<'a> Renderer<'a> {
                 alpha: 1.0,
             },
         });
-        // Sample the region out of the full-canvas snapshot. Paint transforms
-        // are inverted by Vello when encoding an image, so translate the paint
-        // positively to sample source pixel (x0, y0) at local pixel (0, 0).
-        filtered_context.set_paint_transform(Affine::translate((x0 as f64, y0 as f64)));
         filtered_context.set_transform(Affine::IDENTITY);
         let layers = effects.len();
         for effect in effects.into_iter().rev() {
             filtered_context.push_filter_layer(effect);
         }
-        filtered_context.fill_rect(&Rect::new(
-            0.0,
-            0.0,
-            region_width as f64,
-            region_height as f64,
-        ));
+        filtered_context.fill_rect(&self.device_rect);
         for _ in 0..layers {
             filtered_context.pop_layer();
         }
-        filtered_context.reset_paint_transform();
         filtered_context.flush();
-        let mut filtered = Pixmap::new(region_width, region_height);
+        let mut filtered = Pixmap::new(width, height);
         filtered_context.render(&mut filtered, &mut self.resources);
         if let Some(matrix) = matrix {
             apply_color_matrix(&mut filtered, &matrix);
@@ -1595,8 +1587,9 @@ impl<'a> Renderer<'a> {
                 alpha: 1.0,
             },
         });
-        // Place filtered pixel (0, 0) at the backdrop's device-space origin.
-        self.context.set_paint_transform(Affine::translate((-(x0 as f64), -(y0 as f64))));
+        // The filtered image is still in device space, so its source and
+        // destination coordinates match directly.
+        self.context.reset_paint_transform();
         self.context
             .fill_rect(&Rect::new(x0 as f64, y0 as f64, x1 as f64, y1 as f64));
         self.context.reset_paint_transform();
