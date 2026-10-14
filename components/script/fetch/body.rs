@@ -92,7 +92,7 @@ pub fn install_worker_request_body_stream_bridge() {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn register_worker_request_body_stream(stream: &DomRoot<ReadableStream>) -> String {
+fn register_worker_request_body_stream(stream: &ReadableStream) -> String {
     let id = net_traits::request::RequestId::default().0.to_string();
     let task_source = stream
         .global()
@@ -103,7 +103,7 @@ fn register_worker_request_body_stream(stream: &DomRoot<ReadableStream>) -> Stri
         streams.borrow_mut().insert(
             id.clone(),
             WorkerRequestBodyStream {
-                stream: Trusted::new(&**stream),
+                stream: Trusted::new(stream),
                 task_source,
                 reader_acquired: false,
                 read_pending: false,
