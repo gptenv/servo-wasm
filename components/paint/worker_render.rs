@@ -1548,6 +1548,8 @@ impl<'a> Renderer<'a> {
             },
         });
         // Sample the region out of the full-canvas snapshot.
+        // Paint transforms are inverted by Vello when encoding an image: move the
+        // full-canvas backdrop right/down so its pixel (x0, y0) lands at local (0, 0).
         filtered_context.set_paint_transform(Affine::translate((-(x0 as f64), -(y0 as f64))));
         filtered_context.set_transform(Affine::IDENTITY);
         let layers = effects.len();
