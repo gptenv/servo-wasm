@@ -3,11 +3,11 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #[cfg(target_arch = "wasm32")]
+use std::cell::RefCell;
+#[cfg(target_arch = "wasm32")]
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::rc::Rc;
-#[cfg(target_arch = "wasm32")]
-use std::cell::RefCell;
 use std::{fs, ptr, slice, str};
 
 use encoding_rs::{Encoding, UTF_8};
