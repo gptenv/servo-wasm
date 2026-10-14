@@ -707,6 +707,7 @@ impl ComputedValuesExt for ComputedValues {
             || !matches!(overflow.y, Overflow::Visible | Overflow::Clip)
             || effects.opacity < 1.0
             || !effects.filter.0.is_empty()
+            || !effects.backdrop_filter.0.is_empty()
             || !effects.clip.is_auto()
             || self.get_svg().clip_path != ClipPath::None
             || self.has_mask_image()
@@ -830,7 +831,7 @@ impl ComputedValuesExt for ComputedValues {
         // From <https://www.w3.org/TR/filter-effects-1/#FilterProperty>
         // > A computed value of other than `none` results in the creation of a stacking context
         // Note `will-change: filter` is handled above by `STACKING_CONTEXT_UNCONDITIONAL`.
-        if !effects.filter.0.is_empty() {
+        if !effects.filter.0.is_empty() || !effects.backdrop_filter.0.is_empty() {
             return true;
         }
 
