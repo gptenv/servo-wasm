@@ -1508,6 +1508,7 @@ impl<'a> Renderer<'a> {
     ) {
         let transform = self.node(pipeline, common.spatial_id.0);
         let (effects, matrix) = lower_filters(filters, transform);
+        eprintln!("WORKER_BACKDROP_DIAG filters={filters:?} effects={} matrix={} region={:?}", effects.len(), matrix.is_some(), common.clip_rect);
         if effects.is_empty() && matrix.is_none() {
             return;
         }
