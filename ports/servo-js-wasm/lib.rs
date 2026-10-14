@@ -26,9 +26,8 @@ use net_traits::request::{
 use net_traits::response::ResponseInit;
 use net_traits::{
     FetchMetadata, FetchResponseMsg, FilteredMetadata, Metadata, NetworkError, ResourceFetchTiming,
-    ResourceTimingType,
+    ResourceTimingType, set_worker_fetch_cancel_handler, set_worker_fetch_request_handler,
 };
-use net_traits::{set_worker_fetch_cancel_handler, set_worker_fetch_request_handler};
 use profile_traits::generic_callback::GenericCallback as ProfileGenericCallback;
 use servo::{
     Code, DevicePoint, InputEvent, Key, KeyState, KeyboardEvent, Location, Modifiers, MouseButton,
