@@ -333,13 +333,17 @@ export async function createServoWorkerRuntime(wasmModule, {
   // Establish the initial browsing context before callers can queue loads.
   // A native embedder's LoadUrl requires that context to exist; returning
   // immediately after bootstrap makes an immediate load race its creation.
-  if (!runtime.bootstrap(width, height, 'about:blank')) {
+  if (!runtime.bootstrap(width, height, url)) {
     throw new Error("Servo Worker bootstrap failed");
   }
-  const bootstrapStatus = await runtime.pumpUntilSettled();
-  if (!bootstrapStatus.settled) throw new Error('Servo Worker initial document did not settle');
-  if (url !== 'about:blank' && !runtime.loadPage(url)) {
-    throw new Error('Servo Worker initial navigation was rejected');
+  // A blank bootstrap can settle completely. For a real URL, only pump
+  // cooperatively: waiting for full quiescence would hang on pages with
+  // timers, WebSockets, or long-lived requests.
+  if (url === 'about:blank') {
+    const bootstrapStatus = await runtime.pumpUntilSettled();
+    if (!bootstrapStatus.settled) throw new Error('Servo Worker initial document did not settle');
+  } else {
+    await runtime.pumpCooperatively({ maxTurns: 2_000 });
   }
   return runtime;
 }
