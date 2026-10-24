@@ -909,6 +909,19 @@ impl<'a> Renderer<'a> {
             return None;
         }
         let (width, height) = (self.context.width(), self.context.height());
+        #[cfg(target_arch = "wasm32")]
+        {
+            let message = format!(
+                "Worker backdrop trace: filters={}, gaussian={:?}, rect=({}, {}, {}, {}), canvas={}x{}",
+                filters.len(), gaussian_sigma,
+                region.x0, region.y0, region.x1, region.y1, width, height,
+            );
+            unsafe extern "C" {
+                #[link_name = "worker_log_error"]
+                fn worker_backdrop_trace(ptr: *const u8, len: usize);
+            }
+            unsafe { worker_backdrop_trace(message.as_ptr(), message.len()) };
+        }
         let mut combined: Vec<u8> = vec![0; width as usize * height as usize];
         let mut is_bottom = true;
         for (spatial, id) in shapes.into_iter().rev() {
@@ -1550,6 +1563,20 @@ impl<'a> Renderer<'a> {
                     .copy_from_slice(blurred.as_raw());
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        if width > 100 && height > 50 {
+            let i = (50 * usize::from(width) + 100) * 4;
+            let message = format!(
+                "Worker backdrop trace: blurred source pixel(100,50)={:?}",
+                &backdrop.data_as_u8_slice()[i..i + 4],
+            );
+            unsafe extern "C" {
+                #[link_name = "worker_log_error"]
+                fn worker_backdrop_trace(ptr: *const u8, len: usize);
+            }
+            unsafe { worker_backdrop_trace(message.as_ptr(), message.len()) };
+        }
+
         let backdrop = Arc::new(backdrop);
 
         // Filter in device space. Keeping the full-canvas snapshot in its
@@ -1583,6 +1610,19 @@ impl<'a> Renderer<'a> {
         filtered_context.flush();
         let mut filtered = Pixmap::new(width, height);
         filtered_context.render(&mut filtered, &mut self.resources);
+        #[cfg(target_arch = "wasm32")]
+        if width > 100 && height > 50 {
+            let i = (50 * usize::from(width) + 100) * 4;
+            let message = format!(
+                "Worker backdrop trace: re-rendered pixel(100,50)={:?}",
+                &filtered.data_as_u8_slice()[i..i + 4],
+            );
+            unsafe extern "C" {
+                #[link_name = "worker_log_error"]
+                fn worker_backdrop_trace(ptr: *const u8, len: usize);
+            }
+            unsafe { worker_backdrop_trace(message.as_ptr(), message.len()) };
+        }
         if let Some(matrix) = matrix {
             apply_color_matrix(&mut filtered, &matrix);
         }
