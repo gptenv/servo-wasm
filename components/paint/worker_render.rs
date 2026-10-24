@@ -19,7 +19,6 @@ use std::sync::Arc;
 
 use flate2::{Compress, Compression, FlushCompress};
 use image::codecs::jpeg::JpegEncoder;
-
 use paint_api::display_list::{ScrollTree, SpatialTreeNodeInfo, StickyNodeInfo};
 use pixels::{Multiply, transform_inplace};
 use rustc_hash::FxHashMap;
@@ -548,8 +547,8 @@ impl<'a> Renderer<'a> {
                 DisplayItem::ImageMaskClip(clip) => {
                     let rect = clip.image_mask.rect;
                     // Zero (WebRender's `Default`) means "one tile spanning `rect`".
-                    let tile_size = if clip.image_mask.tile_size.width > 0.0
-                        && clip.image_mask.tile_size.height > 0.0
+                    let tile_size = if clip.image_mask.tile_size.width > 0.0 &&
+                        clip.image_mask.tile_size.height > 0.0
                     {
                         clip.image_mask.tile_size
                     } else {
@@ -854,15 +853,9 @@ impl<'a> Renderer<'a> {
                         continue;
                     };
                     let mut path = BezPath::new();
-                    path.move_to(transform * kurbo::Point::new(
-                        first.x as f64,
-                        first.y as f64,
-                    ));
+                    path.move_to(transform * kurbo::Point::new(first.x as f64, first.y as f64));
                     for point in outline {
-                        path.line_to(transform * kurbo::Point::new(
-                            point.x as f64,
-                            point.y as f64,
-                        ));
+                        path.line_to(transform * kurbo::Point::new(point.x as f64, point.y as f64));
                     }
                     path.close_path();
                     path
@@ -976,8 +969,8 @@ impl<'a> Renderer<'a> {
                                     let context = RenderContext::new_with(bw, bh, settings);
                                     let parent = std::mem::replace(&mut self.context, context);
                                     self.context.set_transform(offset);
-                                    let extend = if tile_size.width < rect.width()
-                                        || tile_size.height < rect.height()
+                                    let extend = if tile_size.width < rect.width() ||
+                                        tile_size.height < rect.height()
                                     {
                                         Extend::Repeat
                                     } else {
@@ -1120,8 +1113,8 @@ impl<'a> Renderer<'a> {
         if tile.width <= 0.0 || tile.height <= 0.0 || image_width == 0.0 || image_height == 0.0 {
             return;
         }
-        let paint_transform = Affine::translate((bounds.min.x as f64, bounds.min.y as f64))
-            * Affine::scale_non_uniform(
+        let paint_transform = Affine::translate((bounds.min.x as f64, bounds.min.y as f64)) *
+            Affine::scale_non_uniform(
                 tile.width as f64 / image_width,
                 tile.height as f64 / image_height,
             );
@@ -1815,9 +1808,9 @@ fn gradient_paint(
             );
             paint.stops = stops;
             paint.extend = extend_of(g.extend_mode);
-            let squash = Affine::translate(center.to_vec2())
-                * Affine::scale_non_uniform(1.0, (g.radius.height / radius) as f64)
-                * Affine::translate(-center.to_vec2());
+            let squash = Affine::translate(center.to_vec2()) *
+                Affine::scale_non_uniform(1.0, (g.radius.height / radius) as f64) *
+                Affine::translate(-center.to_vec2());
             Some((paint, squash))
         },
         MaskGradient::Conic(g) => {
@@ -1940,9 +1933,9 @@ fn corner_radius(size: LayoutSize) -> f64 {
 
 /// The area a box shadow can paint.
 fn shadow_extent(shadow: &webrender_api::BoxShadowDisplayItem) -> LayoutRect {
-    let reach = shadow.spread_radius.abs()
-        + shadow.blur_radius * 1.5
-        + shadow.offset.x.abs().max(shadow.offset.y.abs());
+    let reach = shadow.spread_radius.abs() +
+        shadow.blur_radius * 1.5 +
+        shadow.offset.x.abs().max(shadow.offset.y.abs());
     shadow.box_bounds.inflate(reach, reach)
 }
 

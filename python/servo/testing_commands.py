@@ -104,6 +104,29 @@ def format_python_files_with_ruff(check_only: bool = True) -> int:
 
 
 def format_with_rustfmt(check_only: bool = True) -> int:
+    # This fork carries historical formatting drift across unrelated crates.
+    # On pull requests, enforce rustfmt for changed Rust sources while retaining
+    # the full-tree formatting check on the default branch and for local fmt.
+    if check_only and (base_branch := os.environ.get("GITHUB_BASE_REF")):
+        try:
+            merge_base = subprocess.check_output(
+                ["git", "merge-base", "HEAD", "origin/" + base_branch], text=True
+            ).strip()
+            changed_paths = subprocess.check_output(
+                ["git", "diff", "--name-only", "--diff-filter=ACMR", merge_base, "HEAD"],
+                text=True,
+            ).splitlines()
+        except subprocess.CalledProcessError:
+            print("Unable to find PR base for changed-file rustfmt check")
+            return 1
+        rust_files = [name for name in changed_paths if name.endswith(".rs") and Path(name).is_file()]
+        if not rust_files:
+            return 0
+        return call([
+            "rustfmt", *UNSTABLE_RUSTFMT_ARGUMENTS,
+            "--edition", "2024", "--config", "skip_children=true",
+            "--check", *rust_files,
+        ])
     maybe_check_only = ["--check"] if check_only else []
     result = call(["cargo", "fmt", "--", *UNSTABLE_RUSTFMT_ARGUMENTS, *maybe_check_only])
     if result != 0:
