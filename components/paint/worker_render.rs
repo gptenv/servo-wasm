@@ -1507,8 +1507,23 @@ impl<'a> Renderer<'a> {
         filters: &[FilterOp],
     ) {
         let transform = self.node(pipeline, common.spatial_id.0);
-        let (effects, matrix) = lower_filters(filters, transform);
-        if effects.is_empty() && matrix.is_none() {
+        // vello_cpu's experimental filter layers do not reliably blur a
+        // pre-rendered image in the Worker renderer. Blur a single backdrop
+        // Gaussian directly in premultiplied RGBA pixels instead. Keep the
+        // existing lowering for other and combined filters.
+        let gaussian_sigma = match filters {
+            [FilterOp::Blur(x, y)] => {
+                let scale = transform.as_coeffs()[0].hypot(transform.as_coeffs()[1]) as f32;
+                Some(x.max(*y) * scale)
+            },
+            _ => None,
+        };
+        let (effects, matrix) = if gaussian_sigma.is_some() {
+            (Vec::new(), None)
+        } else {
+            lower_filters(filters, transform)
+        };
+        if effects.is_empty() && matrix.is_none() && gaussian_sigma.is_none() {
             return;
         }
         let region = transform
@@ -1522,12 +1537,26 @@ impl<'a> Renderer<'a> {
         if x1 <= x0 || y1 <= y0 {
             return;
         }
-        let (region_width, region_height) = (x1 - x0, y1 - y0);
-
-        // Snapshot the backdrop painted so far.
+        // Snapshot the backdrop painted so far, including neighboring pixels
+        // outside the filtered element's bounds. A blur must sample those
+        // pixels before the result is clipped to the element's border box.
         self.context.flush();
         let mut backdrop = Pixmap::new(width, height);
         self.context.render(&mut backdrop, &mut self.resources);
+        if let Some(sigma) = gaussian_sigma {
+            if sigma.is_finite() && sigma > 0.0 {
+                let pixels = image::RgbaImage::from_raw(
+                    u32::from(width),
+                    u32::from(height),
+                    backdrop.data_as_u8_slice().to_vec(),
+                )
+                .expect("Worker Pixmap always has four bytes per pixel");
+                let blurred = image::imageops::blur(&pixels, sigma);
+                backdrop
+                    .data_as_u8_slice_mut()
+                    .copy_from_slice(blurred.as_raw());
+            }
+        }
         let backdrop = Arc::new(backdrop);
 
         // Filter in device space. Keeping the full-canvas snapshot in its

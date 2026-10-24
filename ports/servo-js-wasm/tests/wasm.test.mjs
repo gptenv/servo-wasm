@@ -1367,6 +1367,29 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   });
 });
 
+test('Worker adapter bootstraps a requested URL rather than remaining at about:blank', async () => {
+  const requests = [];
+  const runtime = await createServoWorkerRuntime(wasm, {
+    url: 'https://bootstrap.example/initial',
+    width: 160,
+    height: 100,
+    fetchImpl: async (url) => {
+      requests.push(String(url));
+      return new Response('<!doctype html><title>Bootstrapped page</title><body>ready</body>', {
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      });
+    },
+  });
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 3_000 })).settled, true);
+  assert.equal(runtime.evaluatePage('JSON.stringify({url: location.href, title: document.title})'), true);
+  await runtime.pumpCooperatively({ maxTurns: 200 });
+  assert.deepEqual(JSON.parse(runtime.pageResult().Ok.String), {
+    url: 'https://bootstrap.example/initial',
+    title: 'Bootstrapped page',
+  });
+  assert.ok(requests.includes('https://bootstrap.example/initial'), JSON.stringify(requests));
+});
+
 test('host subrequest budget counts redirects and separates invocation from session caps', async () => {
   const requests = [];
   let discardedRedirectBody = false;
