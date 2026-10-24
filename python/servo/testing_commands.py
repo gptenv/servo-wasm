@@ -119,14 +119,23 @@ def format_with_rustfmt(check_only: bool = True) -> int:
         except subprocess.CalledProcessError:
             print("Unable to find PR base for changed-file rustfmt check")
             return 1
-        rust_files = [name for name in changed_paths if name.endswith(".rs") and Path(name).is_file()]
+        rust_files = [
+            name for name in changed_paths if name.endswith(".rs") and Path(name).is_file()
+        ]
         if not rust_files:
             return 0
-        return call([
-            "rustfmt", *UNSTABLE_RUSTFMT_ARGUMENTS,
-            "--edition", "2024", "--config", "skip_children=true",
-            "--check", *rust_files,
-        ])
+        return call(
+            [
+                "rustfmt",
+                *UNSTABLE_RUSTFMT_ARGUMENTS,
+                "--edition",
+                "2024",
+                "--config",
+                "skip_children=true",
+                "--check",
+                *rust_files,
+            ]
+        )
     maybe_check_only = ["--check"] if check_only else []
     result = call(["cargo", "fmt", "--", *UNSTABLE_RUSTFMT_ARGUMENTS, *maybe_check_only])
     if result != 0:
