@@ -1381,9 +1381,10 @@ test('Worker adapter bootstraps a requested URL rather than remaining at about:b
     },
   });
   assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 3_000 })).settled, true);
-  assert.equal(runtime.evaluatePage('JSON.stringify({url: location.href, title: document.title})'), true);
-  await runtime.pumpCooperatively({ maxTurns: 200 });
-  assert.deepEqual(JSON.parse(runtime.pageResult().Ok.String), {
+  const evaluation = await runtime.evaluate('JSON.stringify({url: location.href, title: document.title})', {
+    maxDurationMs: 3_000,
+  });
+  assert.deepEqual(JSON.parse(evaluation.Ok.String), {
     url: 'https://bootstrap.example/initial',
     title: 'Bootstrapped page',
   });
