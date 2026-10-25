@@ -1388,7 +1388,7 @@ test('Worker adapter bootstraps a requested URL rather than remaining at about:b
     url: 'https://bootstrap.example/initial',
     title: 'Bootstrapped page',
   });
-  assert.ok(requests.includes('https://bootstrap.example/initial'), JSON.stringify(requests));
+  assert.ok(requests.some((request) => request === 'https://bootstrap.example/initial'), JSON.stringify(requests));
 });
 
 test('host subrequest budget counts redirects and separates invocation from session caps', async () => {
