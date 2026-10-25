@@ -1544,7 +1544,16 @@ impl<'a> Renderer<'a> {
                     backdrop.data_as_u8_slice().to_vec(),
                 )
                 .expect("Worker Pixmap always has four bytes per pixel");
-                let blurred = image::imageops::blur(&pixels, sigma);
+                // Gaussian blur clamps samples at the outer image edge. A
+                // transparent backdrop must stay transparent outside the
+                // element instead of being extended into the blurred result.
+                let alpha = pixels.pixels().map(|pixel| pixel.0[3]).collect::<Vec<_>>();
+                let mut blurred = image::imageops::blur(&pixels, sigma);
+                for (pixel, alpha) in blurred.pixels_mut().zip(alpha) {
+                    if alpha == 0 {
+                        *pixel = image::Rgba([0, 0, 0, 0]);
+                    }
+                }
                 backdrop
                     .data_as_u8_slice_mut()
                     .copy_from_slice(blurred.as_raw());
