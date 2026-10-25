@@ -1,3 +1,5 @@
+import { navigationIdentity, waitForNavigationCommit, waitForPageReadiness } from './page-readiness.mjs';
+
 /*
  * Cloudflare Worker host adapter for servo_js_wasm.
  *
@@ -242,6 +244,7 @@ export async function createServoWorkerRuntime(wasmModule, {
   scriptBudget = 0,
   mediaHost = null,
   onActivity = () => {},
+  readiness = {},
 } = {}) {
   if (!(maxResponseBytes === Infinity ||
       (Number.isSafeInteger(maxResponseBytes) && maxResponseBytes >= 0))) {
@@ -343,7 +346,12 @@ export async function createServoWorkerRuntime(wasmModule, {
     const bootstrapStatus = await runtime.pumpUntilSettled();
     if (!bootstrapStatus.settled) throw new Error('Servo Worker initial document did not settle');
   } else {
-    await runtime.pumpCooperatively({ maxTurns: 2_000 });
+    const commit = await runtime.waitForNavigationCommit(
+      { url: 'about:blank', timeOrigin: null }, { maxDurationMs: readiness.maxDurationMs ?? 10000 },
+    );
+    if (!commit.committed) throw new Error('Servo Worker initial navigation did not commit: ' + commit.url);
+    const ready = await runtime.waitForPageReady(readiness);
+    if (!ready.ready) throw new Error('Servo Worker initial document was not ready: ' + ready.reason);
   }
   return runtime;
 }
@@ -1005,6 +1013,51 @@ class ServoWorkerRuntime {
     }
   }
 
+  /** Return network activity visible to both Servo and its Worker fetch adapter. */
+  networkActivity() {
+    return this.#inFlightFetches.size + this.#fetchQueue.length + this.pendingFetchCount();
+  }
+
+  /** Observe navigation commits, including reloads of the same URL. */
+  async navigationIdentity(maxDurationMs = 1500) {
+    return navigationIdentity(this, maxDurationMs);
+  }
+
+  async waitForNavigationCommit(before, options = {}) {
+    return waitForNavigationCommit(this, before, options);
+  }
+
+  /** Wait for DOM quiet across open shadow roots and same-origin frames. */
+  async waitForPageReady(options = {}) {
+    return waitForPageReadiness(this, options);
+  }
+
+  /** Asynchronous navigation that waits for a committed and ready document. */
+  async navigate(url, readiness = {}) {
+    const before = await this.navigationIdentity();
+    if (!this.loadPage(url)) throw new Error('Servo rejected the requested URL');
+    const commit = await this.waitForNavigationCommit(before, {
+      maxDurationMs: readiness.maxDurationMs ?? 10000,
+    });
+    if (!commit.committed) throw new Error('Navigation did not commit: ' + commit.url);
+    const ready = await this.waitForPageReady(readiness);
+    if (!ready.ready) throw new Error('Document readiness timed out: ' + ready.reason);
+    return ready;
+  }
+
+  /** Navigate to a supplied HTML document and await its readiness. */
+  async navigateHtml(html, { url = 'https://servo-inline.invalid/', readiness = {} } = {}) {
+    const before = await this.navigationIdentity();
+    if (!this.loadHtml(html, { url })) throw new Error('Servo rejected supplied HTML');
+    const commit = await this.waitForNavigationCommit(before, {
+      maxDurationMs: readiness.maxDurationMs ?? 10000,
+    });
+    if (!commit.committed) throw new Error('Inline document did not commit: ' + commit.url);
+    const ready = await this.waitForPageReady(readiness);
+    if (!ready.ready) throw new Error('Inline document readiness timed out: ' + ready.reason);
+    return ready;
+  }
+
   loadPage(url) {
     const [ptr, len] = this.#write(url);
     try {
@@ -1542,9 +1595,13 @@ class ServoWorkerRuntime {
   }
 
   /** Capture a compressed viewport frame for host-side MP4 recording. */
-  async captureRecordingFrame({ maxWidth = 960, maxHeight = 540, quality = 70 } = {}) {
+  async captureRecordingFrame({ maxWidth = 960, maxHeight = 540, quality = 70, readiness } = {}) {
     if (this.#screenshotStreamActive) {
       throw new Error('A screenshot stream is already active on this runtime');
+    }
+    if (readiness !== undefined) {
+      const ready = await this.waitForPageReady(readiness);
+      if (!ready.ready) throw new Error('Recording frame readiness timed out');
     }
     const exports = this.instance.exports;
     if (exports.servo_worker_request_frame() !== 1) {
@@ -1594,12 +1651,16 @@ class ServoWorkerRuntime {
    * The default captures the current frame without waiting for network idle;
    * set `waitForResources` when a settled snapshot is specifically needed.
    */
-  async screenshotStream({ maxDurationMs = Infinity, maxPasses = Infinity, fullPage = false, networkIdleMs = 500, waitForResources = false } = {}) {
+  async screenshotStream({ maxDurationMs = Infinity, maxPasses = Infinity, fullPage = false, networkIdleMs = 500, waitForResources = false, readiness } = {}) {
     if (this.#screenshotStreamActive) {
       throw new Error('A screenshot stream is already active on this runtime');
     }
     this.#screenshotStreamActive = true;
     try {
+    if (readiness !== undefined) {
+      const ready = await this.waitForPageReady(readiness);
+      if (!ready.ready) throw new Error('Screenshot document readiness timed out');
+    }
     // A frame can start loads (CSS background images, web fonts, canvas
     // frames) that only a later frame shows; repeat until a frame adds none.
     const exports = this.instance.exports;
