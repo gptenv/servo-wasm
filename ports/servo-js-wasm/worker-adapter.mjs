@@ -193,7 +193,7 @@ export async function waitForPageReadiness(runtime, options = {}) {
   }
 
   const token = '__servoWorkerReadiness' + (++nextObserverId);
-  const needDom = config.strategy !== 'networkidle';
+  const needDom = config.strategy !== 'networkidle' || config.selector !== undefined;
   const script = '(' + installDocumentObserver.toString() + ')(' + JSON.stringify(token) + ')';
   let installed = false;
   let status = null;
@@ -223,7 +223,7 @@ export async function waitForPageReadiness(runtime, options = {}) {
         ));
       }
       const elapsedMs = performance.now() - started;
-      const loaded = status?.readyState !== 'loading';
+      const loaded = status !== null && status.readyState !== 'loading';
       const matched = config.selector === undefined || status?.selectorMatched === true;
       const observer = status?.observerSupported === true;
       const quiet = observer && (status?.quietForMs ?? 0) >= config.quietMs;
@@ -231,7 +231,7 @@ export async function waitForPageReadiness(runtime, options = {}) {
       let reason = null;
       if (config.strategy === 'load' && status?.readyState === 'complete' && matched) {
         reason = 'load';
-      } else if (config.strategy === 'networkidle' && networkQuiet && elapsedMs >= config.networkIdleMs) {
+      } else if (config.strategy === 'networkidle' && networkQuiet && elapsedMs >= config.networkIdleMs && matched) {
         reason = 'networkidle';
       } else if (config.strategy === 'domquiet' && loaded && matched) {
         if (quiet) reason = 'domquiet';
