@@ -106,8 +106,11 @@ export function installDocumentObserver(token) {
 
   function snapshot(selector) {
     let matched = selector === undefined;
+    if (selector !== undefined) {
+      try { if (document.querySelector(selector)) matched = true; }
+      catch { /* A detached document or restricted query should not prevent traversal. */ }
+    }
     try {
-      if (selector !== undefined && document.querySelector(selector)) matched = true;
       walk(document, selector === undefined ? null : (element) => {
         if (matched) return;
         try { if (element.matches(selector)) matched = true; } catch { /* Invalid selector. */ }

@@ -99,6 +99,9 @@ test('observer traverses open shadow roots and same-origin iframe documents', ()
   const element = (id, localName = 'div', children = []) => ({
     id, localName, children,
     matches(selector) { return selector === '#' + id; },
+    querySelector(selector) {
+      return this.querySelectorAll('*').find((child) => child.matches(selector)) ?? null;
+    },
     querySelectorAll() {
       const flattened = [];
       const visit = (node) => {
