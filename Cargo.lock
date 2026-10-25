@@ -3920,7 +3920,7 @@ dependencies = [
 [[package]]
 name = "html5ever"
 version = "0.40.1"
-source = "git+https://github.com/gptenv/html5ever-wasm.git?rev=21c3d6fdd9d4f059b68b46ddb38040f4acd22206#21c3d6fdd9d4f059b68b46ddb38040f4acd22206"
+source = "git+https://github.com/gptenv/html5ever-wasm.git?branch=main#21c3d6fdd9d4f059b68b46ddb38040f4acd22206"
 dependencies = [
  "log",
  "markup5ever",
@@ -4996,7 +4996,7 @@ dependencies = [
 [[package]]
 name = "libsqlite3-sys"
 version = "0.36.0"
-source = "git+https://github.com/gptenv/rusqlite-wasm.git?branch=master#eb59f0c921deb61df63cbe230d74c53f635b9bc4"
+source = "git+https://github.com/gptenv/rusqlite-wasm.git?branch=master#44d65168ab35c964dc22840bfe795becdc15b52b"
 dependencies = [
  "cc",
  "pkg-config",
@@ -5142,7 +5142,7 @@ dependencies = [
 [[package]]
 name = "markup5ever"
 version = "0.40.1"
-source = "git+https://github.com/gptenv/html5ever-wasm.git?rev=21c3d6fdd9d4f059b68b46ddb38040f4acd22206#21c3d6fdd9d4f059b68b46ddb38040f4acd22206"
+source = "git+https://github.com/gptenv/html5ever-wasm.git?branch=main#21c3d6fdd9d4f059b68b46ddb38040f4acd22206"
 dependencies = [
  "log",
  "tendril",
@@ -7614,7 +7614,7 @@ dependencies = [
 [[package]]
 name = "rusqlite"
 version = "0.38.0"
-source = "git+https://github.com/gptenv/rusqlite-wasm.git?branch=master#eb59f0c921deb61df63cbe230d74c53f635b9bc4"
+source = "git+https://github.com/gptenv/rusqlite-wasm.git?branch=master#44d65168ab35c964dc22840bfe795becdc15b52b"
 dependencies = [
  "bitflags 2.13.2",
  "fallible-iterator",
@@ -7920,7 +7920,7 @@ dependencies = [
 [[package]]
 name = "selectors"
 version = "0.40.0"
-source = "git+https://github.com/gptenv/stylo-wasm?rev=dbf13d73cd45cd70db71f8e99f33b87d9f0e5086#dbf13d73cd45cd70db71f8e99f33b87d9f0e5086"
+source = "git+https://github.com/gptenv/stylo-wasm?branch=main#220ac2c96093ffeee475fc86a4a4db600087102c"
 dependencies = [
  "bitflags 2.13.2",
  "cssparser",
@@ -9804,7 +9804,7 @@ dependencies = [
 [[package]]
 name = "servo_arc"
 version = "0.4.3"
-source = "git+https://github.com/gptenv/stylo-wasm?rev=dbf13d73cd45cd70db71f8e99f33b87d9f0e5086#dbf13d73cd45cd70db71f8e99f33b87d9f0e5086"
+source = "git+https://github.com/gptenv/stylo-wasm?branch=main#220ac2c96093ffeee475fc86a4a4db600087102c"
 dependencies = [
  "serde",
  "stable_deref_trait",
@@ -10307,7 +10307,7 @@ dependencies = [
 [[package]]
 name = "stylo"
 version = "0.21.0"
-source = "git+https://github.com/gptenv/stylo-wasm?rev=dbf13d73cd45cd70db71f8e99f33b87d9f0e5086#dbf13d73cd45cd70db71f8e99f33b87d9f0e5086"
+source = "git+https://github.com/gptenv/stylo-wasm?branch=main#220ac2c96093ffeee475fc86a4a4db600087102c"
 dependencies = [
  "app_units",
  "arrayvec",
@@ -10363,7 +10363,7 @@ dependencies = [
 [[package]]
 name = "stylo_atoms"
 version = "0.21.0"
-source = "git+https://github.com/gptenv/stylo-wasm?rev=dbf13d73cd45cd70db71f8e99f33b87d9f0e5086#dbf13d73cd45cd70db71f8e99f33b87d9f0e5086"
+source = "git+https://github.com/gptenv/stylo-wasm?branch=main#220ac2c96093ffeee475fc86a4a4db600087102c"
 dependencies = [
  "string_cache",
  "string_cache_codegen",
@@ -10372,7 +10372,7 @@ dependencies = [
 [[package]]
 name = "stylo_derive"
 version = "0.21.0"
-source = "git+https://github.com/gptenv/stylo-wasm?rev=dbf13d73cd45cd70db71f8e99f33b87d9f0e5086#dbf13d73cd45cd70db71f8e99f33b87d9f0e5086"
+source = "git+https://github.com/gptenv/stylo-wasm?branch=main#220ac2c96093ffeee475fc86a4a4db600087102c"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -10384,7 +10384,7 @@ dependencies = [
 [[package]]
 name = "stylo_dom"
 version = "0.21.0"
-source = "git+https://github.com/gptenv/stylo-wasm?rev=dbf13d73cd45cd70db71f8e99f33b87d9f0e5086#dbf13d73cd45cd70db71f8e99f33b87d9f0e5086"
+source = "git+https://github.com/gptenv/stylo-wasm?branch=main#220ac2c96093ffeee475fc86a4a4db600087102c"
 dependencies = [
  "bitflags 2.13.2",
  "stylo_malloc_size_of",
@@ -10393,7 +10393,7 @@ dependencies = [
 [[package]]
 name = "stylo_malloc_size_of"
 version = "0.21.0"
-source = "git+https://github.com/gptenv/stylo-wasm?rev=dbf13d73cd45cd70db71f8e99f33b87d9f0e5086#dbf13d73cd45cd70db71f8e99f33b87d9f0e5086"
+source = "git+https://github.com/gptenv/stylo-wasm?branch=main#220ac2c96093ffeee475fc86a4a4db600087102c"
 dependencies = [
  "app_units",
  "cssparser",
@@ -10411,7 +10411,7 @@ dependencies = [
 [[package]]
 name = "stylo_static_prefs"
 version = "0.21.0"
-source = "git+https://github.com/gptenv/stylo-wasm?rev=dbf13d73cd45cd70db71f8e99f33b87d9f0e5086#dbf13d73cd45cd70db71f8e99f33b87d9f0e5086"
+source = "git+https://github.com/gptenv/stylo-wasm?branch=main#220ac2c96093ffeee475fc86a4a4db600087102c"
 dependencies = [
  "toml 1.1.6+spec-1.1.0",
 ]
@@ -10419,7 +10419,7 @@ dependencies = [
 [[package]]
 name = "stylo_traits"
 version = "0.21.0"
-source = "git+https://github.com/gptenv/stylo-wasm?rev=dbf13d73cd45cd70db71f8e99f33b87d9f0e5086#dbf13d73cd45cd70db71f8e99f33b87d9f0e5086"
+source = "git+https://github.com/gptenv/stylo-wasm?branch=main#220ac2c96093ffeee475fc86a4a4db600087102c"
 dependencies = [
  "app_units",
  "bitflags 2.13.2",
@@ -10624,7 +10624,7 @@ dependencies = [
 [[package]]
 name = "tendril"
 version = "0.5.1"
-source = "git+https://github.com/gptenv/html5ever-wasm.git?rev=21c3d6fdd9d4f059b68b46ddb38040f4acd22206#21c3d6fdd9d4f059b68b46ddb38040f4acd22206"
+source = "git+https://github.com/gptenv/html5ever-wasm.git?branch=main#21c3d6fdd9d4f059b68b46ddb38040f4acd22206"
 dependencies = [
  "encoding_rs",
  "new_debug_unreachable",
@@ -10851,7 +10851,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 [[package]]
 name = "to_shmem"
 version = "0.5.0"
-source = "git+https://github.com/gptenv/stylo-wasm?rev=dbf13d73cd45cd70db71f8e99f33b87d9f0e5086#dbf13d73cd45cd70db71f8e99f33b87d9f0e5086"
+source = "git+https://github.com/gptenv/stylo-wasm?branch=main#220ac2c96093ffeee475fc86a4a4db600087102c"
 dependencies = [
  "cssparser",
  "servo_arc",
@@ -10864,7 +10864,7 @@ dependencies = [
 [[package]]
 name = "to_shmem_derive"
 version = "0.1.0"
-source = "git+https://github.com/gptenv/stylo-wasm?rev=dbf13d73cd45cd70db71f8e99f33b87d9f0e5086#dbf13d73cd45cd70db71f8e99f33b87d9f0e5086"
+source = "git+https://github.com/gptenv/stylo-wasm?branch=main#220ac2c96093ffeee475fc86a4a4db600087102c"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -11882,7 +11882,7 @@ dependencies = [
 [[package]]
 name = "web_atoms"
 version = "0.3.0"
-source = "git+https://github.com/gptenv/html5ever-wasm.git?rev=21c3d6fdd9d4f059b68b46ddb38040f4acd22206#21c3d6fdd9d4f059b68b46ddb38040f4acd22206"
+source = "git+https://github.com/gptenv/html5ever-wasm.git?branch=main#21c3d6fdd9d4f059b68b46ddb38040f4acd22206"
 dependencies = [
  "phf 0.14.0",
  "phf_codegen",
@@ -12938,7 +12938,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 [[package]]
 name = "xml5ever"
 version = "0.40.1"
-source = "git+https://github.com/gptenv/html5ever-wasm.git?rev=21c3d6fdd9d4f059b68b46ddb38040f4acd22206#21c3d6fdd9d4f059b68b46ddb38040f4acd22206"
+source = "git+https://github.com/gptenv/html5ever-wasm.git?branch=main#21c3d6fdd9d4f059b68b46ddb38040f4acd22206"
 dependencies = [
  "log",
  "markup5ever",
