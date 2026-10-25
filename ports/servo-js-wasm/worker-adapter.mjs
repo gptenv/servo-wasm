@@ -16,7 +16,7 @@ const DEFAULT_READINESS = Object.freeze({
 const STRATEGIES = new Set(['none', 'commit', 'load', 'domquiet', 'networkidle']);
 let nextObserverId = 0;
 
-function normalizeReadiness(options = {}) {
+export function normalizeReadiness(options = {}) {
   if (options === null || typeof options !== 'object' || Array.isArray(options)) {
     throw new TypeError('Page readiness options must be an object');
   }
@@ -185,7 +185,7 @@ async function waitForNavigationCommit(runtime, before, { maxDurationMs = 10000 
  * On engines without MutationObserver, network-idle is the fallback. On
  * continuously mutating pages, network-idle is a bounded fallback as well.
  */
-async function waitForPageReadiness(runtime, options = {}) {
+export async function waitForPageReadiness(runtime, options = {}) {
   const config = normalizeReadiness(options);
   const started = performance.now();
   if (config.strategy === 'none' || config.strategy === 'commit') {
