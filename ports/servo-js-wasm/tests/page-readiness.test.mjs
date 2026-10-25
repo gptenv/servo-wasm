@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeReadiness, waitForPageReadiness } from '../worker-adapter.mjs';
+import { installDocumentObserver, normalizeReadiness, waitForPageReadiness } from '../worker-adapter.mjs';
 
 const status = (overrides = {}) => ({
   observerSupported: true,
@@ -79,4 +79,65 @@ test('none and commit modes perform no page evaluations', async () => {
   assert.equal((await waitForPageReadiness(runtime, { strategy: 'none' })).ready, true);
   assert.equal((await waitForPageReadiness(runtime, { strategy: 'commit' })).ready, true);
   assert.deepEqual(runtime.calls, []);
+});
+
+
+test('observer traverses open shadow roots and same-origin iframe documents', () => {
+  const saved = Object.fromEntries(['document', 'location', 'MutationObserver']
+    .map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  const watched = [];
+  const disconnected = [];
+  const callbacks = [];
+  class TestObserver {
+    constructor(callback) { callbacks.push(callback); }
+    observe(root, options) {
+      watched.push({ root, options });
+    }
+    takeRecords() { return []; }
+    disconnect() { disconnected.push(this); }
+  }
+  const element = (id, localName = 'div', children = []) => ({
+    id, localName, children,
+    matches(selector) { return selector === '#' + id; },
+    querySelectorAll() {
+      const flattened = [];
+      const visit = (node) => {
+        flattened.push(node);
+        for (const nested of node.children ?? []) visit(nested);
+      };
+      for (const child of children) visit(child);
+      return flattened;
+    },
+  });
+  const shadowRoot = element('shadowRoot', 'shadow', [element('shadow-target')]);
+  const frameRoot = element('frameRoot', 'document', [element('frame-target')]);
+  const host = element('host');
+  host.shadowRoot = shadowRoot;
+  const frame = element('frame', 'iframe');
+  frame.contentDocument = frameRoot;
+  const main = element('main', 'document', [host, frame]);
+  main.readyState = 'complete';
+  const token = '__servoTestObserver';
+  try {
+    globalThis.document = main;
+    globalThis.location = { href: 'https://example.com' };
+    globalThis.MutationObserver = TestObserver;
+    const initial = JSON.parse(installDocumentObserver(token));
+    assert.equal(initial.observerSupported, true);
+    assert.equal(initial.observedRoots, 3);
+    assert.ok(watched.every(({ options }) => options.subtree && options.characterData && options.attributes));
+    assert.equal(JSON.parse(globalThis[token].snapshot('#shadow-target')).selectorMatched, true);
+    assert.equal(JSON.parse(globalThis[token].snapshot('#frame-target')).selectorMatched, true);
+    callbacks[0]([]);
+    assert.ok(JSON.parse(globalThis[token].snapshot()).mutations > initial.mutations);
+    globalThis[token].dispose();
+    assert.equal(disconnected.length, 3);
+    assert.equal(globalThis[token], undefined);
+  } finally {
+    globalThis[token]?.dispose();
+    for (const [name, desc] of Object.entries(saved)) {
+      if (desc) Object.defineProperty(globalThis, name, desc);
+      else delete globalThis[name];
+    }
+  }
 });

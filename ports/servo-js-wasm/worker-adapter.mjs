@@ -54,7 +54,7 @@ async function hostDelay(ms) {
 }
 
 /** Runs in the page realm. This function is serialized, not executed in the host. */
-function installDocumentObserver(token) {
+export function installDocumentObserver(token) {
   const previous = globalThis[token];
   if (previous && typeof previous.dispose === 'function') previous.dispose();
 
