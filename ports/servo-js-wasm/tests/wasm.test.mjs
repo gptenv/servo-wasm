@@ -1895,7 +1895,8 @@ test('screenshots apply backdrop-filter blur to the content behind an element', 
   // two sides; outside the region (above y=10) the edge stays sharp.
   const [r, g, b] = png.pixel(100, 50);
   assert.ok(r > 30 && b > 30, `blurred boundary mixes red and blue (got [${r}, ${g}, ${b}])`);
-  assert.deepEqual(png.pixel(100, 5), [255, 0, 0, 255], 'above the backdrop-filter region the edge is sharp');
+  assert.deepEqual(png.pixel(99, 5), [255, 0, 0, 255], 'red side of the edge stays sharp above the backdrop-filter region');
+  assert.deepEqual(png.pixel(100, 5), [0, 0, 255, 255], 'blue side of the edge stays sharp above the backdrop-filter region');
 });
 
 test('screenshots apply clip-path polygon clips', async () => {
