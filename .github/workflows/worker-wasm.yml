@@ -50,7 +50,11 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Change Mirror Priorities
+        uses: ./.github/actions/apt-mirrors
+
       - name: Install Servo build dependencies
+        timeout-minutes: 30
         run: |
           sudo apt update
           sudo apt install --yes clang-19
@@ -97,6 +101,8 @@ jobs:
           # v2 invalidates the cache created before workspace crate artifacts were included.
           key: worker-wasm-production-v2
           cache-workspace-crates: true
+          # Preserve the expensive build even if a later integration check fails.
+          cache-on-failure: true
 
       - name: Build the production Worker artifact incrementally
         env:
