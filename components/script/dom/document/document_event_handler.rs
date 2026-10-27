@@ -116,10 +116,10 @@ impl ClickCountingInfo {
         // Calculate distance between this click and the previous click.
         let line = point_in_frame - previous_point;
         let distance = (line.dot(line) as f64).sqrt();
-        if previous_button != button
-            || (CrossProcessInstant::now() - previous_time).whole_nanoseconds()
-                > double_click_timeout.as_nanos() as i128
-            || distance > double_click_distance_threshold as f64
+        if previous_button != button ||
+            (CrossProcessInstant::now() - previous_time).whole_nanoseconds() >
+                double_click_timeout.as_nanos() as i128 ||
+            distance > double_click_distance_threshold as f64
         {
             self.count = 0;
             self.time = None;

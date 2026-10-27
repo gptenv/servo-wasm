@@ -103,8 +103,8 @@ impl Response {
         // Metadata failure, an abort, and a terminal network error can race.
         // Only a readable stream may transition to errored; preserve the
         // original error (and never reopen a canceled or completed stream).
-        if let Some(body) = self.fetch_body_stream.get()
-            && body.is_readable()
+        if let Some(body) = self.fetch_body_stream.get() &&
+            body.is_readable()
         {
             body.error_native(cx, error);
         }
@@ -451,8 +451,8 @@ fn initialize_response(
 
         // 6.3 If body’s type is non-null and response’s header list does not contain `Content-Type`,
         // then append (`Content-Type`, body’s type) to response’s header list.
-        if let Some(content_type_contents) = &body.content_type
-            && !response
+        if let Some(content_type_contents) = &body.content_type &&
+            !response
                 .Headers(cx)
                 .Has(ByteString::new(b"Content-Type".to_vec()))
                 .unwrap()
@@ -544,8 +544,8 @@ impl Response {
         // Note, are these two actually mutually exclusive?
         if let Some(stream_consumer) = self.stream_consumer.borrow().as_ref() {
             stream_consumer.consume_chunk(&chunk);
-        } else if let Some(body) = self.fetch_body_stream.get()
-            && body.is_readable()
+        } else if let Some(body) = self.fetch_body_stream.get() &&
+            body.is_readable()
         {
             body.enqueue_native(cx, chunk.to_vec());
         }

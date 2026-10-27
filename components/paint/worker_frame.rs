@@ -233,8 +233,8 @@ pub(crate) fn update_images(updates: impl IntoIterator<Item = paint_api::ImageUp
         let images = &mut resources.borrow_mut().images;
         for update in updates {
             match update {
-                ImageUpdate::AddImage(key, descriptor, data, _)
-                | ImageUpdate::UpdateImage(key, descriptor, data, _) => match data {
+                ImageUpdate::AddImage(key, descriptor, data, _) |
+                ImageUpdate::UpdateImage(key, descriptor, data, _) => match data {
                     SerializableImageData::Raw(bytes) => {
                         images.insert(
                             key,

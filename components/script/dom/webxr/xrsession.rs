@@ -521,8 +521,8 @@ impl XRSession {
         clip_planes.update(near, far);
         let top = *render_state
             .GetInlineVerticalFieldOfView()
-            .expect("IVFOV should be non null for inline sessions")
-            / 2.;
+            .expect("IVFOV should be non null for inline sessions") /
+            2.;
         let top = near * top.tan() as f32;
         let bottom = top;
         let left = top * size.width as f32 / size.height as f32;
@@ -676,8 +676,8 @@ impl XRSessionMethods<crate::DomTypeHolder> for XRSession {
             return Err(Error::InvalidState(None));
         }
         // Step 3:
-        if let Some(Some(ref layer)) = init.baseLayer
-            && Dom::from_ref(layer.session()) != Dom::from_ref(self)
+        if let Some(Some(ref layer)) = init.baseLayer &&
+            Dom::from_ref(layer.session()) != Dom::from_ref(self)
         {
             return Err(Error::InvalidState(None));
         }
@@ -843,8 +843,8 @@ impl XRSessionMethods<crate::DomTypeHolder> for XRSession {
         // XXXManishearth reject based on session type
         // https://github.com/immersive-web/webxr/blob/master/spatial-tracking-explainer.md#practical-usage-guidelines
 
-        if !self.is_immersive()
-            && (ty == XRReferenceSpaceType::Bounded_floor || ty == XRReferenceSpaceType::Unbounded)
+        if !self.is_immersive() &&
+            (ty == XRReferenceSpaceType::Bounded_floor || ty == XRReferenceSpaceType::Unbounded)
         {
             p.reject_error(cx, Error::NotSupported(None));
             return p;
@@ -856,8 +856,8 @@ impl XRSessionMethods<crate::DomTypeHolder> for XRSession {
                 p.reject_error(cx, Error::NotSupported(None))
             },
             ty => {
-                if ty != XRReferenceSpaceType::Viewer
-                    && (!self.is_immersive() || ty != XRReferenceSpaceType::Local)
+                if ty != XRReferenceSpaceType::Viewer &&
+                    (!self.is_immersive() || ty != XRReferenceSpaceType::Local)
                 {
                     let s = ty.as_str();
                     if !self
@@ -1046,9 +1046,9 @@ impl XRSessionMethods<crate::DomTypeHolder> for XRSession {
             let session = self.session.borrow();
             let supported_frame_rates = session.supported_frame_rates();
 
-            if self.mode == XRSessionMode::Inline
-                || supported_frame_rates.is_empty()
-                || self.ended.get()
+            if self.mode == XRSessionMode::Inline ||
+                supported_frame_rates.is_empty() ||
+                self.ended.get()
             {
                 promise.reject_error(cx, Error::InvalidState(None));
                 return promise;

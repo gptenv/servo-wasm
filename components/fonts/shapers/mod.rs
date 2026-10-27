@@ -12,12 +12,12 @@ use euclid::default::Point2D;
 use fonts_traits::FontFaceRuleInfo;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use harfbuzz::Shaper;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use harfrust::Shaper;
 use read_fonts::types::Tag;
 use rustc_hash::FxHashMap;
 use style::computed_values::font_variant_position::T as FontVariantPosition;
 use style::values::computed::{FontVariantEastAsian, FontVariantLigatures, FontVariantNumeric};
-#[cfg(target_arch = "wasm32")]
-pub(crate) use harfrust::Shaper;
 
 use crate::{
     AFRC, CALT, CLIG, CWSH, DLIG, FRAC, FWID, GlyphId, HIST, HLIG, JP04, JP78, JP83, JP90, KERN,

@@ -15,8 +15,7 @@ use log::{debug, error};
 use malloc_size_of_derive::MallocSizeOf;
 use servo_base::text::Utf32CodeUnits;
 
-use crate::GlyphShapingResult;
-use crate::{ShapedGlyph, ShapingOptions};
+use crate::{GlyphShapingResult, ShapedGlyph, ShapingOptions};
 
 /// GlyphEntry is a port of Gecko's CompressedGlyph scheme for storing glyph data compactly.
 ///
@@ -293,8 +292,8 @@ impl ShapedText {
             // this glyph corresponds to. More than one glyph can share a cluster.
             let glyph_cluster = shaped_glyph.string_byte_offset;
 
-            if let Some(previous_character_offset) = previous_character_offset
-                && previous_character_offset == glyph_cluster
+            if let Some(previous_character_offset) = previous_character_offset &&
+                previous_character_offset == glyph_cluster
             {
                 glyph_store.add_glyph_for_current_character(&shaped_glyph, options);
                 continue;
@@ -472,10 +471,9 @@ impl ShapedText {
 
 impl ShapedGlyph {
     fn can_be_simple_glyph(&self) -> bool {
-        is_simple_glyph_id(self.glyph_id)
-            && is_simple_advance(self.advance)
-            && self
-                .offset
+        is_simple_glyph_id(self.glyph_id) &&
+            is_simple_advance(self.advance) &&
+            self.offset
                 .is_none_or(|offset| offset == Default::default())
     }
 
@@ -687,8 +685,8 @@ impl ShapedTextSlicer {
         for glyph in iterator {
             // When glyphs span two character slices, prioritize the first slice and also
             // ensure that glyphs that span zero characters are also included there.
-            if self.current_character_offset >= desired_character_offset
-                && glyph.character_count().0 > 0
+            if self.current_character_offset >= desired_character_offset &&
+                glyph.character_count().0 > 0
             {
                 break;
             }

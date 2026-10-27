@@ -153,14 +153,17 @@ impl PlatformFontMethods for PlatformFont {
                 (decoration.thickness, decoration.offset)
             },
             // OpenType's suggested default for Roman fonts, as the FreeType backend does.
-            _ => (underline_size, em_size * 409.0 / 2048.0 + 0.5 * underline_size),
+            _ => (
+                underline_size,
+                em_size * 409.0 / 2048.0 + 0.5 * underline_size,
+            ),
         };
 
         FontMetrics {
             underline_size: Au::from_f32_px(underline_size),
-            underline_offset: Au::from_f32_px(underline.map_or(-underline_size, |decoration| {
-                decoration.offset
-            })),
+            underline_offset: Au::from_f32_px(
+                underline.map_or(-underline_size, |decoration| decoration.offset),
+            ),
             strikeout_size: Au::from_f32_px(strikeout_size),
             strikeout_offset: Au::from_f32_px(strikeout_offset),
             leading: Au::from_f32_px(metrics.leading),

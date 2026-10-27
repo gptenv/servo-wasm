@@ -36,9 +36,9 @@ use script_bindings::codegen::InheritTypes::{
     ElementTypeId, HTMLElementTypeId, HTMLMediaElementTypeId, NodeTypeId,
 };
 use script_bindings::weakref::WeakRef;
-use servo_base::monotonic_instant::Instant;
 use servo_base::generic_channel::{self, GenericCallback, GenericSharedMemory};
 use servo_base::id::WebViewId;
+use servo_base::monotonic_instant::Instant;
 use servo_config::pref;
 use servo_media::player::audio::AudioRenderer;
 use servo_media::player::video::{VideoFrame, VideoFrameRenderer};

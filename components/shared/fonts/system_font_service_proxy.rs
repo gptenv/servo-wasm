@@ -164,8 +164,7 @@ impl SystemFontServiceProxy {
 
         process_worker_font_service();
         let Ok(templates) = response_port.recv() else {
-            let font_thread_has_closed =
-                self.sender.send(SystemFontServiceMessage::Ping).is_err();
+            let font_thread_has_closed = self.sender.send(SystemFontServiceMessage::Ping).is_err();
             assert!(
                 font_thread_has_closed,
                 "Failed to receive a response from live font cache"

@@ -68,10 +68,10 @@ impl PreflightCache {
         // Per the standard, an entry granted with credentials matches any
         // request, while an entry granted without credentials never satisfies
         // a credentialed request.
-        entry.expires_ns > now_ns
-            && entry.origin == origin
-            && entry.url == url
-            && (entry.credentials || !credentials)
+        entry.expires_ns > now_ns &&
+            entry.origin == origin &&
+            entry.url == url &&
+            (entry.credentials || !credentials)
     }
 
     fn prune(&mut self, now_ns: u64) {
@@ -92,8 +92,8 @@ impl PreflightCache {
     ) -> bool {
         self.prune(now_ns);
         let method_hit = self.entries.iter().any(|entry| {
-            Self::entry_matches(entry, origin, url, credentials, now_ns)
-                && entry.method_or_header == MethodOrHeader::Method(method.to_owned())
+            Self::entry_matches(entry, origin, url, credentials, now_ns) &&
+                entry.method_or_header == MethodOrHeader::Method(method.to_owned())
         });
         if !method_hit {
             return false;
@@ -101,8 +101,8 @@ impl PreflightCache {
         headers.iter().all(|header| {
             let header = header.to_ascii_lowercase();
             self.entries.iter().any(|entry| {
-                Self::entry_matches(entry, origin, url, credentials, now_ns)
-                    && entry.method_or_header == MethodOrHeader::Header(header.clone())
+                Self::entry_matches(entry, origin, url, credentials, now_ns) &&
+                    entry.method_or_header == MethodOrHeader::Header(header.clone())
             })
         })
     }
@@ -133,20 +133,21 @@ impl PreflightCache {
         );
         // Refresh rather than duplicate: drop live entries this store supersedes.
         self.entries.retain(|entry| {
-            !(entry.origin == origin
-                && entry.url == url
-                && entry.credentials == credentials
-                && keys.contains(&entry.method_or_header))
+            !(entry.origin == origin &&
+                entry.url == url &&
+                entry.credentials == credentials &&
+                keys.contains(&entry.method_or_header))
         });
-        self.entries.extend(keys.into_iter().map(|method_or_header| {
-            PreflightCacheEntry {
-                origin: origin.clone(),
-                url: url.clone(),
-                credentials,
-                method_or_header,
-                expires_ns,
-            }
-        }));
+        self.entries.extend(
+            keys.into_iter()
+                .map(|method_or_header| PreflightCacheEntry {
+                    origin: origin.clone(),
+                    url: url.clone(),
+                    credentials,
+                    method_or_header,
+                    expires_ns,
+                }),
+        );
         // Bound memory: evict the earliest-expiring entries first.
         while self.entries.len() > MAX_ENTRIES {
             let oldest = self

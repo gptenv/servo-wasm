@@ -98,7 +98,10 @@ impl SVGSVGElement {
     /// in a wrapper document, and works even when this `<svg>` never gets a
     /// box of its own (e.g. a `display: none` icon sprite sheet), since
     /// nothing here depends on layout having asked for it.
-    pub(crate) fn serialized_subtree_source(&self, cx: &mut js::context::JSContext) -> Option<String> {
+    pub(crate) fn serialized_subtree_source(
+        &self,
+        cx: &mut js::context::JSContext,
+    ) -> Option<String> {
         let document_fragment = self.owner_document().CreateDocumentFragment(cx);
         let cloned_node = Node::clone(
             cx,
@@ -118,14 +121,16 @@ impl SVGSVGElement {
 
         self.process_use_elements(cx, &cloned_node);
 
-        let xml_source = cloned_node.xml_serialize(TraversalScope::IncludeNode).ok()?;
+        let xml_source = cloned_node
+            .xml_serialize(TraversalScope::IncludeNode)
+            .ok()?;
         Some(xml_source.into())
     }
 
     fn process_use_elements(&self, cx: &mut JSContext, root_node: &Node) {
         for node in root_node.traverse_preorder(ShadowIncluding::No) {
-            if let Some(element) = node.downcast::<Element>()
-                && element.local_name() == &local_name!("use")
+            if let Some(element) = node.downcast::<Element>() &&
+                element.local_name() == &local_name!("use")
             {
                 self.process_single_use_element(cx, element, root_node)
             }

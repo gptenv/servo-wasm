@@ -15,8 +15,8 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use net_traits::blob_url_store::{BlobBuf, BlobURLStoreError, UrlWithBlobClaim, parse_blob_url};
 use net_traits::CoreResourceMsg;
+use net_traits::blob_url_store::{BlobBuf, BlobURLStoreError, UrlWithBlobClaim, parse_blob_url};
 use net_traits::filemanager_thread::{
     FileManagerThreadError, FileManagerThreadMsg, FileTokenCheck, GetTokenForFileReply,
     ReadFileProgress, RelativePos,
@@ -58,7 +58,12 @@ pub(crate) fn set_resource_sender(sender: GenericSender<CoreResourceMsg>) {
 pub(crate) fn handle(message: FileManagerThreadMsg) {
     match message {
         FileManagerThreadMsg::ReadFile(sender, id, origin) => {
-            match read(&id, &FileTokenCheck::NotRequired, &origin, RelativePos::full_range()) {
+            match read(
+                &id,
+                &FileTokenCheck::NotRequired,
+                &origin,
+                RelativePos::full_range(),
+            ) {
                 Ok(buf) => {
                     let _ = sender.send(Ok(ReadFileProgress::Meta(buf)));
                     let _ = sender.send(Ok(ReadFileProgress::EOF));

@@ -13,15 +13,15 @@ pub mod cross_process_instant;
 pub mod generic_channel;
 #[macro_use]
 pub mod id;
+pub mod monotonic_instant;
 pub mod print_tree;
 mod rope;
 pub mod text;
 pub mod threadboost;
 pub mod threadpool;
-pub mod monotonic_instant;
+mod unicode_block;
 pub mod worker_services;
 pub mod worker_trace;
-mod unicode_block;
 
 use std::fs::File;
 use std::io::{BufWriter, Read};

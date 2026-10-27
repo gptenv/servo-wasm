@@ -100,6 +100,10 @@ pub fn install_worker_request_body_stream_bridge() {
 }
 // This should be replaced with an API on ServoBuilder.
 // See <https://github.com/servo/servo/issues/40950>.
+#[cfg(target_arch = "wasm32")]
+pub use net::resource_thread::{
+    WorkerFetchHandler, attach_worker_cookies, pump_worker_fetches, set_worker_fetch_handler,
+};
 pub use resources;
 pub use servo_base::generic_channel::GenericSender;
 pub use servo_base::id::WebViewId;
@@ -112,6 +116,8 @@ pub use servo_geometry::{
 #[doc(hidden)]
 pub use servo_tracing;
 pub use servo_url::ServoUrl;
+#[cfg(target_arch = "wasm32")]
+pub use storage::{restore_worker_webstorage, serialize_worker_webstorage};
 pub use style::Zero;
 pub use style_traits::CSSPixel;
 pub use webrender_api::units::{
@@ -137,12 +143,6 @@ pub use crate::webview_delegate::{
     InputMethodControl, NavigationRequest, PermissionRequest, PromptDialog, SelectElement,
     SimpleDialog, WebResourceLoad, WebViewDelegate,
 };
-#[cfg(target_arch = "wasm32")]
-pub use net::resource_thread::{
-    WorkerFetchHandler, attach_worker_cookies, pump_worker_fetches, set_worker_fetch_handler,
-};
-#[cfg(target_arch = "wasm32")]
-pub use storage::{restore_worker_webstorage, serialize_worker_webstorage};
 
 /// Run cooperative Worker services such as storage between browser turns.
 pub fn pump_worker_services() {

@@ -171,25 +171,25 @@ impl ThreadPool {
         return;
         #[cfg(not(target_arch = "wasm32"))]
         {
-        let mut rounds = 0;
-        loop {
-            rounds += 1;
-            {
-                let state = self.state.lock().unwrap();
-                let still_active = state.active_workers();
+            let mut rounds = 0;
+            loop {
+                rounds += 1;
+                {
+                    let state = self.state.lock().unwrap();
+                    let still_active = state.active_workers();
 
-                if still_active == 0 || rounds == 10 {
-                    if still_active > 0 {
-                        debug!(
-                            "Exiting ThreadPool with {:?} still working(should be zero)",
-                            still_active
-                        );
+                    if still_active == 0 || rounds == 10 {
+                        if still_active > 0 {
+                            debug!(
+                                "Exiting ThreadPool with {:?} still working(should be zero)",
+                                still_active
+                            );
+                        }
+                        break;
                     }
-                    break;
                 }
+                thread::sleep(Duration::from_millis(100));
             }
-            thread::sleep(Duration::from_millis(100));
-        }
         }
     }
 }

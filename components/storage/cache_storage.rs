@@ -341,9 +341,7 @@ where
                 proxy,
                 origin,
             } => {
-                let result = self
-                    .engine
-                    .open_cache(origin, cache_name.clone(), &proxy);
+                let result = self.engine.open_cache(origin, cache_name.clone(), &proxy);
                 if callback
                     .send(CacheStorageThreadResponse::OpenCacheResult {
                         result: result.map_err(|e| format!("{:?}", e)),
@@ -386,9 +384,7 @@ where
                 proxy,
                 origin,
             } => {
-                let result = self
-                    .engine
-                    .delete_cache(origin, &cache_name, &proxy);
+                let result = self.engine.delete_cache(origin, &cache_name, &proxy);
                 if callback
                     .send(CacheStorageThreadResponse::DeleteCacheResult(
                         result.map_err(|e| format!("{:?}", e)),

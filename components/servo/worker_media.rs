@@ -144,9 +144,9 @@ impl Backend for WorkerMediaBackend {
         let callbacks = player.lock().unwrap().callbacks.clone();
         let flags = {
             let callbacks = callbacks.lock().unwrap();
-            u32::from(callbacks.video_renderer.is_some())
-                | (u32::from(callbacks.audio_renderer.is_some()) << 1)
-                | (u32::from(stream_type == StreamType::Seekable) << 2)
+            u32::from(callbacks.video_renderer.is_some()) |
+                (u32::from(callbacks.audio_renderer.is_some()) << 1) |
+                (u32::from(stream_type == StreamType::Seekable) << 2)
         };
         if command(MEDIA_CREATE, id, f64::from(flags), &[]) != 0 {
             log::error!("The Worker host rejected media player creation");
@@ -202,20 +202,20 @@ impl Backend for WorkerMediaBackend {
             .to_ascii_lowercase();
         if matches!(
             mime.as_str(),
-            "audio/mp4"
-                | "audio/mpeg"
-                | "audio/ogg"
-                | "audio/wav"
-                | "audio/wave"
-                | "audio/x-wav"
-                | "audio/webm"
-                | "audio/flac"
-                | "audio/aac"
-                | "video/mp4"
-                | "video/webm"
-                | "video/ogg"
-                | "video/quicktime"
-                | "video/x-matroska"
+            "audio/mp4" |
+                "audio/mpeg" |
+                "audio/ogg" |
+                "audio/wav" |
+                "audio/wave" |
+                "audio/x-wav" |
+                "audio/webm" |
+                "audio/flac" |
+                "audio/aac" |
+                "video/mp4" |
+                "video/webm" |
+                "video/ogg" |
+                "video/quicktime" |
+                "video/x-matroska"
         ) {
             SupportsMediaType::Maybe
         } else {

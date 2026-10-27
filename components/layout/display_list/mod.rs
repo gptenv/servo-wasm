@@ -463,15 +463,15 @@ impl DisplayListBuilder<'_> {
 
                 // WebRender only uses the stacking context to apply certain effects. If we don't
                 // actually need to create a stacking context, just avoid creating one.
-                if !is_blend_container
-                    && effects.filter.0.is_empty()
-                    && effects.backdrop_filter.0.is_empty()
-                    && effects.opacity == 1.0
-                    && effects.mix_blend_mode == ComputedMixBlendMode::Normal
-                    && !style.has_effective_transform_or_perspective(FragmentFlags::empty())
-                    && style.get_svg().clip_path == ComputedClipPath::None
-                    && !style.has_mask_image()
-                    && transform_style == TransformStyle::Flat
+                if !is_blend_container &&
+                    effects.filter.0.is_empty() &&
+                    effects.backdrop_filter.0.is_empty() &&
+                    effects.opacity == 1.0 &&
+                    effects.mix_blend_mode == ComputedMixBlendMode::Normal &&
+                    !style.has_effective_transform_or_perspective(FragmentFlags::empty()) &&
+                    style.get_svg().clip_path == ComputedClipPath::None &&
+                    !style.has_mask_image() &&
+                    transform_style == TransformStyle::Flat
                 {
                     return false;
                 }
@@ -508,9 +508,7 @@ impl DisplayListBuilder<'_> {
                             .backdrop_filter
                             .0
                             .iter()
-                            .map(|filter| {
-                                FilterToWebRender::to_webrender(filter, current_color)
-                            })
+                            .map(|filter| FilterToWebRender::to_webrender(filter, current_color))
                             .collect(),
                     ));
                 }
@@ -655,7 +653,8 @@ impl DisplayListBuilder<'_> {
                          height=\"{height}\" fill=\"white\" mask=\"url(#{id})\"/></svg>"
                     );
                     let encoded = base64::engine::general_purpose::STANDARD.encode(wrapped);
-                    let data_url = ServoUrl::parse(&format!("data:image/svg+xml;base64,{encoded}")).ok()?;
+                    let data_url =
+                        ServoUrl::parse(&format!("data:image/svg+xml;base64,{encoded}")).ok()?;
                     let image = self
                         .image_resolver
                         .get_cached_image_for_url(
@@ -668,15 +667,18 @@ impl DisplayListBuilder<'_> {
                     let scale = self.device_pixel_ratio.get();
                     let device_size: DeviceIntSize =
                         Size2D::new(width * scale, height * scale).to_i32();
-                    let key =
-                        self.image_resolver
-                            .image_key_from_cached_image(&image, device_size, node)?;
+                    let key = self.image_resolver.image_key_from_cached_image(
+                        &image,
+                        device_size,
+                        node,
+                    )?;
                     Some((key, rect))
                 })();
                 // Not yet resolved, failed, or this build's device_size/key
                 // lookup isn't ready this pass: a transparent layer, same as
                 // any other not-yet-loaded image (a later pass picks it up).
-                let (image_key, rect) = mask.unwrap_or((wr::ImageKey::DUMMY, fragment_builder.border_rect));
+                let (image_key, rect) =
+                    mask.unwrap_or((wr::ImageKey::DUMMY, fragment_builder.border_rect));
                 let mask_id = self.wr().define_clip_image_mask(
                     spatial_id,
                     wr::ImageMask {
@@ -1045,8 +1047,8 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
     fn visit_box(&mut self, state: &TraversalState, fragment: &BoxFragmentWithStyle<'_>) {
         fragment.base.visit_fragment(self);
 
-        if let Some(mut inspector_highlight) = self.inspector_highlight.take()
-            && fragment.base.tag == Some(inspector_highlight.tag)
+        if let Some(mut inspector_highlight) = self.inspector_highlight.take() &&
+            fragment.base.tag == Some(inspector_highlight.tag)
         {
             inspector_highlight.register_fragment_of_highlighted_dom_node(self, state, fragment);
             self.inspector_highlight = Some(inspector_highlight);
@@ -1335,8 +1337,8 @@ impl Fragment {
         let mut baseline_origin = rect.origin;
         baseline_origin.y += fragment.font_metrics.ascent;
 
-        let include_whitespace = fragment.run_data.selection.borrow().is_some()
-            || state
+        let include_whitespace = fragment.run_data.selection.borrow().is_some() ||
+            state
                 .text_decorations
                 .iter()
                 .any(|item| !item.line.is_empty());
@@ -1459,8 +1461,8 @@ impl Fragment {
         builder.mark_is_contentful();
 
         // Accumulate this text fragment for LCP by the containing element's tag
-        if let Some(tag) = state.containing_element_tag
-            && builder.largest_contentful_paint_enabled
+        if let Some(tag) = state.containing_element_tag &&
+            builder.largest_contentful_paint_enabled
         {
             let transform = builder
                 .paint_info
@@ -1525,9 +1527,9 @@ impl Fragment {
         let expand_rect_for_text_decoration = |mut rect: Box2D<f32, LayoutPixel>| {
             if matches!(
                 text_decoration.style,
-                ComputedTextDecorationStyle::Dotted
-                    | ComputedTextDecorationStyle::Dashed
-                    | ComputedTextDecorationStyle::Wavy,
+                ComputedTextDecorationStyle::Dotted |
+                    ComputedTextDecorationStyle::Dashed |
+                    ComputedTextDecorationStyle::Wavy,
             ) {
                 rect.min.x = rect.min.x.min(0.0);
             }
@@ -1605,8 +1607,8 @@ impl Fragment {
         // offsets. This allows updating this selection directly from the DOM (skipping layout).
         let selection_character_range = run_data.map_dom_range_to_transformed_range(selection);
 
-        if fragment.character_range_in_dom_node.start > selection_character_range.end
-            || fragment.character_range_in_dom_node.end < selection_character_range.start
+        if fragment.character_range_in_dom_node.start > selection_character_range.end ||
+            fragment.character_range_in_dom_node.end < selection_character_range.start
         {
             return;
         }
@@ -1615,8 +1617,8 @@ impl Fragment {
         // layout will push an empty fragment in order to trigger painting of the cursor on an empty line.
         // This code ensure that it is only painted if the cursor is on the starting index of the empty
         // fragment.
-        if fragment.is_empty_for_text_cursor
-            && !fragment
+        if fragment.is_empty_for_text_cursor &&
+            !fragment
                 .character_range_in_dom_node
                 .contains(&selection_character_range.start)
         {
@@ -1629,12 +1631,12 @@ impl Fragment {
         let mut end_advance = None;
         for glyph_store in fragment.glyphs.iter() {
             let glyph_store_character_count = glyph_store.character_count();
-            if current_character_index + glyph_store_character_count
-                < selection_character_range.start
+            if current_character_index + glyph_store_character_count <
+                selection_character_range.start
             {
-                current_advance += glyph_store.total_advance()
-                    + (fragment.justification_adjustment
-                        * glyph_store.total_word_separators() as i32);
+                current_advance += glyph_store.total_advance() +
+                    (fragment.justification_adjustment *
+                        glyph_store.total_word_separators() as i32);
                 current_character_index += glyph_store_character_count;
                 continue;
             }
@@ -1878,9 +1880,9 @@ impl<'a> BuilderForBoxFragment<'a> {
             .effective_overflow(self.fragment.base.flags);
         let scrolls_via_user_input =
             |overflow| matches!(overflow, ComputedOverflow::Scroll | ComputedOverflow::Auto);
-        if (scrolls_via_user_input(overflow.x) || scrolls_via_user_input(overflow.y))
-            && self.fragment.style().get_inherited_ui().pointer_events
-                != style::computed_values::pointer_events::T::None
+        if (scrolls_via_user_input(overflow.x) || scrolls_via_user_input(overflow.y)) &&
+            self.fragment.style().get_inherited_ui().pointer_events !=
+                style::computed_values::pointer_events::T::None
         {
             let mut inner_state = state.clone();
             inner_state.spatial_id = self
@@ -1962,8 +1964,8 @@ impl<'a> BuilderForBoxFragment<'a> {
             return;
         }
         // If the `<body>` background was inherited by the root element, don't paint it again here.
-        if !builder.paint_body_background
-            && flags.intersects(FragmentFlags::IS_BODY_ELEMENT_OF_HTML_ELEMENT_ROOT)
+        if !builder.paint_body_background &&
+            flags.intersects(FragmentFlags::IS_BODY_ELEMENT_OF_HTML_ELEMENT_ROOT)
         {
             return;
         }
@@ -2800,10 +2802,10 @@ impl BoxFragment {
     fn border_radius(&self) -> BorderRadius {
         let style = self.style();
         let border = style.get_border();
-        if border.border_top_left_radius.0.is_zero()
-            && border.border_top_right_radius.0.is_zero()
-            && border.border_bottom_right_radius.0.is_zero()
-            && border.border_bottom_left_radius.0.is_zero()
+        if border.border_top_left_radius.0.is_zero() &&
+            border.border_top_right_radius.0.is_zero() &&
+            border.border_bottom_right_radius.0.is_zero() &&
+            border.border_bottom_left_radius.0.is_zero()
         {
             return BorderRadius::zero();
         }

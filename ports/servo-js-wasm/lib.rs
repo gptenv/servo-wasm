@@ -6,6 +6,13 @@
 
 mod preflight_cache;
 
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::str::FromStr;
+use std::sync::Once;
+use std::{mem, ptr};
+
 use bytes::Bytes;
 use dpi::PhysicalSize;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, header};
@@ -13,9 +20,10 @@ use hyper_serde::Serde;
 use js::jsapi::{GCReason, OnNewGlobalHookOption};
 use js::jsval::UndefinedValue;
 use js::rooted;
-use js::rust::SIMPLE_GLOBAL_CLASS;
 use js::rust::wrappers2::{JS_GC, JS_NewGlobalObject};
-use js::rust::{CompileOptionsWrapper, JSEngine, RealmOptions, Runtime, evaluate_script};
+use js::rust::{
+    CompileOptionsWrapper, JSEngine, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS, evaluate_script,
+};
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::http_status::HttpStatus;
 use net_traits::request::{
@@ -30,31 +38,20 @@ use net_traits::{
 };
 use profile_traits::generic_callback::GenericCallback as ProfileGenericCallback;
 use servo::{
-    Code, DevicePoint, InputEvent, Key, KeyState, KeyboardEvent, Location, Modifiers, MouseButton,
-    MouseButtonAction, MouseButtonEvent, MouseMoveEvent, RenderingContext, Servo, ServoBuilder,
-    SoftwareRenderingContext, WebView, WebViewBuilder, WebViewPoint, WheelDelta, WheelEvent,
-    WheelMode, attach_worker_cookies, pump_worker_services,
+    Code, DevicePoint, InputEvent, JavaScriptEvaluationError, Key, KeyState, KeyboardEvent,
+    Location, Modifiers, MouseButton, MouseButtonAction, MouseButtonEvent, MouseMoveEvent,
+    RenderingContext, Servo, ServoBuilder, SoftwareRenderingContext, WebDriverCommandMsg,
+    WebDriverJSResult, WebDriverScriptCommand, WebView, WebViewBuilder, WebViewPoint, WheelDelta,
+    WheelEvent, WheelMode, WorkerFetchHandler, attach_worker_cookies, pump_worker_fetches,
+    pump_worker_services, set_worker_fetch_handler,
 };
-use servo::{
-    JavaScriptEvaluationError, WebDriverCommandMsg, WebDriverJSResult, WebDriverScriptCommand,
-};
-use servo::{WorkerFetchHandler, pump_worker_fetches, set_worker_fetch_handler};
-use servo_url::{ImmutableOrigin, ServoUrl};
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::mem;
-use std::ptr;
-use std::rc::Rc;
-use std::str::FromStr;
-use std::sync::Once;
-use url::Url;
-use uuid::Uuid;
-
-// Keep the inventory resource reader linked into the raw wasm module.
-use servo_default_resources as _;
-
 use servo_base::generic_channel::{self, GenericCallback, GenericReceiver, TryReceiveError};
 use servo_base::id::BrowsingContextId;
+// Keep the inventory resource reader linked into the raw wasm module.
+use servo_default_resources as _;
+use servo_url::{ImmutableOrigin, ServoUrl};
+use url::Url;
+use uuid::Uuid;
 
 use crate::preflight_cache::{PreflightCache, preflight_max_age_secs};
 
@@ -1121,8 +1118,12 @@ pub unsafe extern "C" fn servo_worker_restore_storage_state(
     };
     // Session storage is keyed by webview; restore into the current one.
     let webview = if kind == 1 {
-        match BROWSER.with(|browser| browser.borrow().as_ref().map(|browser| browser.webview.id()))
-        {
+        match BROWSER.with(|browser| {
+            browser
+                .borrow()
+                .as_ref()
+                .map(|browser| browser.webview.id())
+        }) {
             Some(id) => Some(id),
             None => return 0,
         }
@@ -1241,9 +1242,9 @@ pub unsafe extern "C" fn servo_worker_websocket_close(
     let Some(request_id) = (unsafe { parse_worker_request_id(id_ptr, id_len) }) else {
         return 0;
     };
-    if (reason_ptr.is_null() && reason_len != 0)
-        || failed > 1
-        || (code > u16::MAX as u32 && code != u32::MAX)
+    if (reason_ptr.is_null() && reason_len != 0) ||
+        failed > 1 ||
+        (code > u16::MAX as u32 && code != u32::MAX)
     {
         return 0;
     }
@@ -1510,14 +1511,14 @@ fn worker_response_visibility(
         .map(|name| name.as_str().to_owned())
         .collect();
     let credentials = request.credentials_mode == CredentialsMode::Include;
-    let needs_preflight = request.use_cors_preflight
-        || request.unsafe_request
-            && (!is_cors_safelisted_method(&request.method) || !unsafe_headers.is_empty());
+    let needs_preflight = request.use_cors_preflight ||
+        request.unsafe_request &&
+            (!is_cors_safelisted_method(&request.method) || !unsafe_headers.is_empty());
     // A cached preflight result skips the OPTIONS round-trip: the adapter
     // simply omits `cors_preflight` from the host command. The actual
     // response is still CORS-checked, so a hit can never widen access.
-    let cached_preflight = needs_preflight
-        && PREFLIGHT_CACHE.with(|cache| {
+    let cached_preflight = needs_preflight &&
+        PREFLIGHT_CACHE.with(|cache| {
             // SAFETY: `worker_monotonic_now_ns` is one of the nine required
             // `env` imports; the adapter always provides it.
             let now_ns = unsafe { host_monotonic_now_ns() };
@@ -1541,10 +1542,10 @@ fn worker_response_visibility(
             .collect(),
         credentials,
     });
-    if !needs_preflight
-        && request.method != Method::GET
-        && request.method != Method::HEAD
-        && request.method != Method::POST
+    if !needs_preflight &&
+        request.method != Method::GET &&
+        request.method != Method::HEAD &&
+        request.method != Method::POST
     {
         return Err(NetworkError::CorsGeneral);
     }
@@ -1819,9 +1820,9 @@ pub unsafe extern "C" fn servo_worker_process_redirect_cookies(
         if entry.response_started {
             return -1;
         }
-        if !entry.accepts_cookies
-            || response_url.origin() != entry.cookie_origin
-            || next_url.origin() != entry.cookie_origin
+        if !entry.accepts_cookies ||
+            response_url.origin() != entry.cookie_origin ||
+            next_url.origin() != entry.cookie_origin
         {
             return 0;
         }
@@ -1856,12 +1857,12 @@ pub unsafe extern "C" fn servo_worker_begin_http_response(
     headers_len: usize,
     redirected: i32,
 ) -> i32 {
-    if request_id_ptr.is_null()
-        || url_ptr.is_null()
-        || (headers_ptr.is_null() && headers_len != 0)
-        || request_id_len == 0
-        || url_len == 0
-        || !(100..=599).contains(&status)
+    if request_id_ptr.is_null() ||
+        url_ptr.is_null() ||
+        (headers_ptr.is_null() && headers_len != 0) ||
+        request_id_len == 0 ||
+        url_len == 0 ||
+        !(100..=599).contains(&status)
     {
         return 0;
     }
@@ -2089,8 +2090,8 @@ fn check_cors_preflight(
         .map(|name| name.to_ascii_lowercase())
         .collect();
     let safelisted_method = matches!(preflight.method.as_str(), "GET" | "HEAD" | "POST");
-    if !safelisted_method
-        && !methods
+    if !safelisted_method &&
+        !methods
             .iter()
             .any(|method| *method == preflight.method || !credentialed && method == "*")
     {
@@ -2104,8 +2105,8 @@ fn check_cors_preflight(
         return Err(NetworkError::CorsAuthorization);
     }
     let wildcard = !credentialed && names.iter().any(|name| name == "*");
-    if !wildcard
-        && preflight
+    if !wildcard &&
+        preflight
             .unsafe_headers
             .iter()
             .any(|name| !names.contains(name))
@@ -2209,19 +2210,19 @@ fn filter_worker_metadata(
         if name == header::SET_COOKIE || name_text == "set-cookie2" {
             continue;
         }
-        if matches!(visibility, WorkerResponseVisibility::Basic)
-            || all_exposed
-            || matches!(
+        if matches!(visibility, WorkerResponseVisibility::Basic) ||
+            all_exposed ||
+            matches!(
                 name_text,
-                "cache-control"
-                    | "content-language"
-                    | "content-length"
-                    | "content-type"
-                    | "expires"
-                    | "last-modified"
-                    | "pragma"
-            )
-            || exposed
+                "cache-control" |
+                    "content-language" |
+                    "content-length" |
+                    "content-type" |
+                    "expires" |
+                    "last-modified" |
+                    "pragma"
+            ) ||
+            exposed
                 .iter()
                 .any(|candidate| candidate.eq_ignore_ascii_case(name_text))
         {
@@ -2387,8 +2388,8 @@ fn complete_worker_fetch_error(request_id: RequestId, error: NetworkError) -> bo
     };
     // Release the callback-map borrow before notifying listeners. Cancellation
     // can be triggered by a listener's cleanup on this same Worker thread.
-    let metadata_ok = entry.response_started
-        || entry
+    let metadata_ok = entry.response_started ||
+        entry
             .callback
             .send(FetchResponseMsg::ProcessResponse(
                 request_id,

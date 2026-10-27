@@ -323,12 +323,12 @@ pub enum FetchResponseMsg {
 impl FetchResponseMsg {
     pub fn request_id(&self) -> RequestId {
         match self {
-            FetchResponseMsg::ProcessRequestBody(id)
-            | FetchResponseMsg::ProcessResponse(id, ..)
-            | FetchResponseMsg::ProcessResponseChunk(id, ..)
-            | FetchResponseMsg::ProcessResponseEOF(id, ..)
-            | FetchResponseMsg::ProcessCspViolations(id, ..)
-            | FetchResponseMsg::ProcessContentLength(id, _) => *id,
+            FetchResponseMsg::ProcessRequestBody(id) |
+            FetchResponseMsg::ProcessResponse(id, ..) |
+            FetchResponseMsg::ProcessResponseChunk(id, ..) |
+            FetchResponseMsg::ProcessResponseEOF(id, ..) |
+            FetchResponseMsg::ProcessCspViolations(id, ..) |
+            FetchResponseMsg::ProcessContentLength(id, _) => *id,
         }
     }
 }
@@ -1490,20 +1490,20 @@ impl NetworkError {
     pub fn is_permanent_failure(&self) -> bool {
         matches!(
             self,
-            NetworkError::ContentSecurityPolicy
-                | NetworkError::MixedContent
-                | NetworkError::SubresourceIntegrity
-                | NetworkError::Nosniff
-                | NetworkError::InvalidPort
-                | NetworkError::CorsGeneral
-                | NetworkError::CrossOriginResponse
-                | NetworkError::CorsCredentials
-                | NetworkError::CorsAllowMethods
-                | NetworkError::CorsAllowHeaders
-                | NetworkError::CorsMethod
-                | NetworkError::CorsAuthorization
-                | NetworkError::CorsHeaders
-                | NetworkError::UnsupportedScheme
+            NetworkError::ContentSecurityPolicy |
+                NetworkError::MixedContent |
+                NetworkError::SubresourceIntegrity |
+                NetworkError::Nosniff |
+                NetworkError::InvalidPort |
+                NetworkError::CorsGeneral |
+                NetworkError::CrossOriginResponse |
+                NetworkError::CorsCredentials |
+                NetworkError::CorsAllowMethods |
+                NetworkError::CorsAllowHeaders |
+                NetworkError::CorsMethod |
+                NetworkError::CorsAuthorization |
+                NetworkError::CorsHeaders |
+                NetworkError::UnsupportedScheme
         )
     }
 
@@ -1541,8 +1541,8 @@ pub fn trim_http_whitespace(mut slice: &[u8]) -> &[u8] {
 
 /// Returns true if a given string has a given suffix with case-insensitive match.
 pub fn ends_with_ignore_ascii_case(string: &str, suffix: &str) -> bool {
-    string.len() >= suffix.len()
-        && string.as_bytes()[string.len() - suffix.len()..].eq_ignore_ascii_case(suffix.as_bytes())
+    string.len() >= suffix.len() &&
+        string.as_bytes()[string.len() - suffix.len()..].eq_ignore_ascii_case(suffix.as_bytes())
 }
 
 /// Returns the cached current system locale, or en-US by default.

@@ -91,8 +91,8 @@ pub struct WebGLPaint {
 impl WebGLPaint {
     fn shutdown(&self) {
         self.webgl_threads.exit();
-        if let Some(webgl_join_handle) = self.webgl_join_handle.take()
-            && webgl_join_handle.join().is_err()
+        if let Some(webgl_join_handle) = self.webgl_join_handle.take() &&
+            webgl_join_handle.join().is_err()
         {
             warn!("Could not join WebGLThread.");
         }
@@ -1180,9 +1180,7 @@ impl Paint {
                 -wheel_event.delta.x as f32,
                 -wheel_event.delta.y as f32,
             );
-            if let Some((pipeline_id, scroll_states)) =
-                crate::worker_frame::scroll_root_by(delta)
-            {
+            if let Some((pipeline_id, scroll_states)) = crate::worker_frame::scroll_root_by(delta) {
                 let _ = self.embedder_to_constellation_sender.send(
                     EmbedderToConstellationMessage::SetScrollStates(pipeline_id, scroll_states),
                 );

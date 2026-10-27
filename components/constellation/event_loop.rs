@@ -12,9 +12,9 @@ use std::rc::Rc;
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
 
+use background_hang_monitor_api::BackgroundHangMonitorControlMsg;
 #[cfg(feature = "multiprocess")]
 use background_hang_monitor_api::HangAlert;
-use background_hang_monitor_api::BackgroundHangMonitorControlMsg;
 #[cfg(target_arch = "wasm32")]
 use background_hang_monitor_api::{
     BackgroundHangMonitor, BackgroundHangMonitorClone, BackgroundHangMonitorExitSignal,
@@ -226,8 +226,8 @@ impl EventLoop {
         &self,
         message: &BackgroundHangMonitorControlMsg,
     ) {
-        if let Some(background_hang_monitor_sender) = &self.background_hang_monitor_sender
-            && let Err(error) = background_hang_monitor_sender.send(message.clone())
+        if let Some(background_hang_monitor_sender) = &self.background_hang_monitor_sender &&
+            let Err(error) = background_hang_monitor_sender.send(message.clone())
         {
             error!("Could not send message ({message:?}) to BHM: {error}");
         }

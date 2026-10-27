@@ -13,9 +13,9 @@ use std::{fs, ptr, slice, str};
 use encoding_rs::{Encoding, UTF_8};
 use http::HeaderMap;
 use http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
-use ipc_channel::ipc::{IpcReceiver, IpcSender};
 #[cfg(not(target_arch = "wasm32"))]
 use ipc_channel::ipc;
+use ipc_channel::ipc::{IpcReceiver, IpcSender};
 use ipc_channel::router::ROUTER;
 use js::context::JSContext;
 use js::jsapi::{Heap, JSObject, Value as JSValue};
@@ -118,7 +118,9 @@ fn register_worker_request_body_stream(stream: &ReadableStream) -> String {
 fn queue_worker_request_body_read(id: String) {
     let next = WORKER_REQUEST_BODY_STREAMS.with(|streams| {
         let mut streams = streams.borrow_mut();
-        let Some(stream) = streams.get_mut(&id) else { return Err(()); };
+        let Some(stream) = streams.get_mut(&id) else {
+            return Err(());
+        };
         if stream.read_pending || stream.cancelled {
             return Ok(None);
         }
@@ -234,7 +236,9 @@ impl Callback for WorkerRequestBodyPromiseHandler {
             Ok(is_done) => is_done,
             Err(_) => {
                 let active = finish_worker_request_body_read(&self.request_id, &self.stream, cx);
-                if !active { return; }
+                if !active {
+                    return;
+                }
                 net_traits::worker_request_body_event(
                     self.request_id.clone(),
                     WorkerRequestBodyEvent::Error,
@@ -244,7 +248,9 @@ impl Callback for WorkerRequestBodyPromiseHandler {
         };
         if is_done {
             let active = finish_worker_request_body_read(&self.request_id, &self.stream, cx);
-            if !active { return; }
+            if !active {
+                return;
+            }
             net_traits::worker_request_body_event(
                 self.request_id.clone(),
                 WorkerRequestBodyEvent::Done,
@@ -255,7 +261,9 @@ impl Callback for WorkerRequestBodyPromiseHandler {
             Ok(bytes) => bytes,
             Err(_) => {
                 let active = finish_worker_request_body_read(&self.request_id, &self.stream, cx);
-                if !active { return; }
+                if !active {
+                    return;
+                }
                 net_traits::worker_request_body_event(
                     self.request_id.clone(),
                     WorkerRequestBodyEvent::Error,
@@ -265,12 +273,19 @@ impl Callback for WorkerRequestBodyPromiseHandler {
         };
         let active = WORKER_REQUEST_BODY_STREAMS.with(|streams| {
             let mut streams = streams.borrow_mut();
-            let Some(state) = streams.get_mut(&self.request_id) else { return false; };
-            if state.cancelled { streams.remove(&self.request_id); return false; }
+            let Some(state) = streams.get_mut(&self.request_id) else {
+                return false;
+            };
+            if state.cancelled {
+                streams.remove(&self.request_id);
+                return false;
+            }
             state.read_pending = false;
             true
         });
-        if !active { return; }
+        if !active {
+            return;
+        }
         net_traits::worker_request_body_event(
             self.request_id.clone(),
             WorkerRequestBodyEvent::Chunk(bytes),
@@ -293,7 +308,9 @@ impl js::gc::Rootable for WorkerRequestBodyPromiseRejectionHandler {}
 impl Callback for WorkerRequestBodyPromiseRejectionHandler {
     fn callback(&self, cx: &mut CurrentRealm, _value: HandleValue) {
         let active = finish_worker_request_body_read(&self.request_id, &self.stream, cx);
-        if !active { return; }
+        if !active {
+            return;
+        }
         net_traits::worker_request_body_event(
             self.request_id.clone(),
             WorkerRequestBodyEvent::Error,

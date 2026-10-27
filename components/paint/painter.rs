@@ -679,8 +679,8 @@ impl Painter {
                 },
             );
 
-            let scaled_webview_rect = webview_renderer.rect
-                / webview_renderer.device_pixels_per_page_pixel_not_including_pinch_zoom();
+            let scaled_webview_rect = webview_renderer.rect /
+                webview_renderer.device_pixels_per_page_pixel_not_including_pinch_zoom();
             builder.push_iframe(
                 LayoutRect::from_untyped(&scaled_webview_rect.to_untyped()),
                 LayoutRect::from_untyped(&scaled_webview_rect.to_untyped()),
@@ -778,9 +778,9 @@ impl Painter {
         let mut flags = renderer.get_debug_flags();
         let flag = match option {
             WebRenderDebugOption::Profiler => {
-                webrender::DebugFlags::PROFILER_DBG
-                    | webrender::DebugFlags::GPU_TIME_QUERIES
-                    | webrender::DebugFlags::GPU_SAMPLE_QUERIES
+                webrender::DebugFlags::PROFILER_DBG |
+                    webrender::DebugFlags::GPU_TIME_QUERIES |
+                    webrender::DebugFlags::GPU_SAMPLE_QUERIES
             },
             WebRenderDebugOption::TextureCacheDebug => webrender::DebugFlags::TEXTURE_CACHE_DBG,
             WebRenderDebugOption::RenderTargetDebug => webrender::DebugFlags::RENDER_TARGET_DBG,
@@ -1019,8 +1019,8 @@ impl Painter {
 
         let epoch = display_list_info.epoch.into();
         let first_reflow = display_list_info.first_reflow;
-        if details.first_paint_metric == PaintMetricState::Waiting
-            && display_list_info
+        if details.first_paint_metric == PaintMetricState::Waiting &&
+            display_list_info
                 .paint_timing_report
                 .contains(PaintTimingReport::FirstPaint)
         {
@@ -1028,8 +1028,8 @@ impl Painter {
                 PaintMetricState::Seen(epoch, first_reflow, display_list_info.paint_timing_info);
         }
 
-        if details.first_contentful_paint_metric == PaintMetricState::Waiting
-            && display_list_info
+        if details.first_contentful_paint_metric == PaintMetricState::Waiting &&
+            display_list_info
                 .paint_timing_report
                 .contains(PaintTimingReport::FirstContentfulPaint)
         {
@@ -1360,8 +1360,8 @@ impl Painter {
     }
 
     pub(crate) fn set_page_zoom(&mut self, webview_id: WebViewId, new_zoom: f32) {
-        if let Some(webview_renderer) = self.webview_renderers.get_mut(&webview_id)
-            && webview_renderer.set_page_zoom(Scale::new(new_zoom))
+        if let Some(webview_renderer) = self.webview_renderers.get_mut(&webview_id) &&
+            webview_renderer.set_page_zoom(Scale::new(new_zoom))
         {
             webview_renderer.webview.notify_viewport_updated();
         }

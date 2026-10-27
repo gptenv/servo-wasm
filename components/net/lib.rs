@@ -62,12 +62,12 @@ pub mod resource_thread {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use crossbeam_channel::Sender;
     use cookie::SameSite;
+    use crossbeam_channel::Sender;
     use http::{HeaderValue, header};
+    use net_traits::pub_domains::is_same_site;
     use net_traits::request::{CredentialsMode, Origin, RequestBuilder};
     use net_traits::response::ResponseInit;
-    use net_traits::pub_domains::is_same_site;
     use net_traits::{AsyncRuntime, CoreResourceMsg, FetchChannels, ResourceThreads};
     use profile_traits::mem::ProfilerChan;
     use profile_traits::time::ProfilerChan as TimeProfilerChan;
@@ -139,10 +139,13 @@ pub mod resource_thread {
     fn worker_cookie_header_for_request(request: &RequestBuilder) -> Option<String> {
         let origin = match &request.origin {
             Origin::Origin(origin) => Some(origin),
-            Origin::Client => request.client.as_ref().and_then(|client| match &client.origin {
-                Origin::Origin(origin) => Some(origin),
-                Origin::Client => None,
-            }),
+            Origin::Client => request
+                .client
+                .as_ref()
+                .and_then(|client| match &client.origin {
+                    Origin::Origin(origin) => Some(origin),
+                    Origin::Client => None,
+                }),
         };
         let url = request.url.url();
         let request_origin: ImmutableOrigin = url.origin();
@@ -152,10 +155,10 @@ pub mod resource_thread {
         let same_site = !request
             .client
             .as_ref()
-            .is_some_and(|client| client.is_nested_browsing_context)
-            && origin.is_some_and(|origin| is_same_site(origin, &request_origin));
-        let lax_top_level_navigation = request.mode == net_traits::request::RequestMode::Navigate
-            && matches!(request.method.as_str(), "GET" | "HEAD");
+            .is_some_and(|client| client.is_nested_browsing_context) &&
+            origin.is_some_and(|origin| is_same_site(origin, &request_origin));
+        let lax_top_level_navigation = request.mode == net_traits::request::RequestMode::Navigate &&
+            matches!(request.method.as_str(), "GET" | "HEAD");
 
         COOKIES.with(|jar| {
             let mut jar = jar.borrow_mut();
@@ -185,10 +188,13 @@ pub mod resource_thread {
     pub fn worker_request_accepts_cookies(request: &RequestBuilder) -> bool {
         let origin = match &request.origin {
             Origin::Origin(origin) => Some(origin),
-            Origin::Client => request.client.as_ref().and_then(|client| match &client.origin {
-                Origin::Origin(origin) => Some(origin),
-                Origin::Client => None,
-            }),
+            Origin::Client => request
+                .client
+                .as_ref()
+                .and_then(|client| match &client.origin {
+                    Origin::Origin(origin) => Some(origin),
+                    Origin::Client => None,
+                }),
         };
         // A cross-origin no-cors request is opaque to script and remains
         // anonymous. CORS requests with `include` may use cookies, with
@@ -216,8 +222,8 @@ pub mod resource_thread {
         }
 
         let cookie_header = worker_cookie_header_for_request(request);
-        if let Some(cookie_header) = cookie_header
-            && let Ok(cookie_header) = HeaderValue::from_bytes(cookie_header.as_bytes())
+        if let Some(cookie_header) = cookie_header &&
+            let Ok(cookie_header) = HeaderValue::from_bytes(cookie_header.as_bytes())
         {
             request.headers.insert(header::COOKIE, cookie_header);
         }
@@ -318,7 +324,9 @@ pub mod resource_thread {
                 },
                 CoreResourceMsg::SetHistoryState(history_state_id, structured_data) => {
                     HISTORY_STATES.with(|states| {
-                        states.borrow_mut().insert(history_state_id, structured_data)
+                        states
+                            .borrow_mut()
+                            .insert(history_state_id, structured_data)
                     });
                 },
                 CoreResourceMsg::RemoveHistoryStates(states_to_remove) => {
@@ -381,12 +389,12 @@ pub mod resource_thread {
     }
 }
 pub mod subresource_integrity;
-#[cfg(target_arch = "wasm32")]
-pub mod worker_blob_store;
 #[cfg(feature = "test-util")]
 pub mod test_util;
 #[cfg(not(target_arch = "wasm32"))]
 mod websocket_loader;
+#[cfg(target_arch = "wasm32")]
+pub mod worker_blob_store;
 
 /// An implementation of the [Fetch specification](https://fetch.spec.whatwg.org/)
 #[cfg(not(target_arch = "wasm32"))]

@@ -22,8 +22,8 @@ use servo_url::ServoUrl;
 
 #[cfg(target_arch = "wasm32")]
 fn worker_system_time() -> SystemTime {
-    SystemTime::UNIX_EPOCH
-        + Duration::from_nanos(
+    SystemTime::UNIX_EPOCH +
+        Duration::from_nanos(
             servo_base::cross_process_instant::CrossProcessInstant::unix_time_now_ns(),
         )
 }

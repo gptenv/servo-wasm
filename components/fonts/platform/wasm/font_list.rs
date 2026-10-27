@@ -74,7 +74,10 @@ where
 {
     let mut seen = Vec::<String>::new();
     for face in faces() {
-        if !seen.iter().any(|family| family.eq_ignore_ascii_case(&face.family)) {
+        if !seen
+            .iter()
+            .any(|family| family.eq_ignore_ascii_case(&face.family))
+        {
             seen.push(face.family.clone());
             callback(face.family);
         }

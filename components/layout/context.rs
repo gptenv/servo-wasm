@@ -71,11 +71,10 @@ impl LayoutContext<'_> {
     }
 
     pub(crate) fn should_parallelize_layout(&self, jobs: impl Iterator<Item = usize>) -> bool {
-        self.allow_parallel_layout
-            && jobs
-                .filter(|job| *job >= self.parallelism_job_size_minimum)
-                .count()
-                >= self.parallelism_job_count_minimum
+        self.allow_parallel_layout &&
+            jobs.filter(|job| *job >= self.parallelism_job_size_minimum)
+                .count() >=
+                self.parallelism_job_count_minimum
     }
 }
 
@@ -349,7 +348,8 @@ impl ImageResolver {
         if id.is_empty() {
             return None;
         }
-        (without_fragment(url.as_str()) == without_fragment(self.document_url.as_str())).then_some(id)
+        (without_fragment(url.as_str()) == without_fragment(self.document_url.as_str()))
+            .then_some(id)
     }
 
     /// Look up the XML source of the `<svg>` subtree containing the element
