@@ -1367,6 +1367,30 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
   });
 });
 
+test('Worker adapter bootstraps a requested URL rather than remaining at about:blank', async () => {
+  const requests = [];
+  const runtime = await createServoWorkerRuntime(wasm, {
+    url: 'https://bootstrap.example/initial',
+    width: 160,
+    height: 100,
+    fetchImpl: async (url) => {
+      requests.push(String(url));
+      return new Response('<!doctype html><title>Bootstrapped page</title><body>ready</body>', {
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      });
+    },
+  });
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 3_000 })).settled, true);
+  const evaluation = await runtime.evaluate('JSON.stringify({url: location.href, title: document.title})', {
+    maxDurationMs: 3_000,
+  });
+  assert.deepEqual(JSON.parse(evaluation.Ok.String), {
+    url: 'https://bootstrap.example/initial',
+    title: 'Bootstrapped page',
+  });
+  assert.ok(requests.some((request) => request === 'https://bootstrap.example/initial'), JSON.stringify(requests));
+});
+
 test('host subrequest budget counts redirects and separates invocation from session caps', async () => {
   const requests = [];
   let discardedRedirectBody = false;
@@ -1871,7 +1895,8 @@ test('screenshots apply backdrop-filter blur to the content behind an element', 
   // two sides; outside the region (above y=10) the edge stays sharp.
   const [r, g, b] = png.pixel(100, 50);
   assert.ok(r > 30 && b > 30, `blurred boundary mixes red and blue (got [${r}, ${g}, ${b}])`);
-  assert.deepEqual(png.pixel(100, 5), [255, 0, 0, 255], 'above the backdrop-filter region the edge is sharp');
+  assert.deepEqual(png.pixel(99, 5), [255, 0, 0, 255], 'red side of the edge stays sharp above the backdrop-filter region');
+  assert.deepEqual(png.pixel(100, 5), [0, 0, 255, 255], 'blue side of the edge stays sharp above the backdrop-filter region');
 });
 
 test('screenshots apply clip-path polygon clips', async () => {

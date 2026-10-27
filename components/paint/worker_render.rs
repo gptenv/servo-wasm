@@ -19,7 +19,6 @@ use std::sync::Arc;
 
 use flate2::{Compress, Compression, FlushCompress};
 use image::codecs::jpeg::JpegEncoder;
-
 use paint_api::display_list::{ScrollTree, SpatialTreeNodeInfo, StickyNodeInfo};
 use pixels::{Multiply, transform_inplace};
 use rustc_hash::FxHashMap;
@@ -548,8 +547,8 @@ impl<'a> Renderer<'a> {
                 DisplayItem::ImageMaskClip(clip) => {
                     let rect = clip.image_mask.rect;
                     // Zero (WebRender's `Default`) means "one tile spanning `rect`".
-                    let tile_size = if clip.image_mask.tile_size.width > 0.0
-                        && clip.image_mask.tile_size.height > 0.0
+                    let tile_size = if clip.image_mask.tile_size.width > 0.0 &&
+                        clip.image_mask.tile_size.height > 0.0
                     {
                         clip.image_mask.tile_size
                     } else {
@@ -854,15 +853,9 @@ impl<'a> Renderer<'a> {
                         continue;
                     };
                     let mut path = BezPath::new();
-                    path.move_to(transform * kurbo::Point::new(
-                        first.x as f64,
-                        first.y as f64,
-                    ));
+                    path.move_to(transform * kurbo::Point::new(first.x as f64, first.y as f64));
                     for point in outline {
-                        path.line_to(transform * kurbo::Point::new(
-                            point.x as f64,
-                            point.y as f64,
-                        ));
+                        path.line_to(transform * kurbo::Point::new(point.x as f64, point.y as f64));
                     }
                     path.close_path();
                     path
@@ -976,8 +969,8 @@ impl<'a> Renderer<'a> {
                                     let context = RenderContext::new_with(bw, bh, settings);
                                     let parent = std::mem::replace(&mut self.context, context);
                                     self.context.set_transform(offset);
-                                    let extend = if tile_size.width < rect.width()
-                                        || tile_size.height < rect.height()
+                                    let extend = if tile_size.width < rect.width() ||
+                                        tile_size.height < rect.height()
                                     {
                                         Extend::Repeat
                                     } else {
@@ -1120,8 +1113,8 @@ impl<'a> Renderer<'a> {
         if tile.width <= 0.0 || tile.height <= 0.0 || image_width == 0.0 || image_height == 0.0 {
             return;
         }
-        let paint_transform = Affine::translate((bounds.min.x as f64, bounds.min.y as f64))
-            * Affine::scale_non_uniform(
+        let paint_transform = Affine::translate((bounds.min.x as f64, bounds.min.y as f64)) *
+            Affine::scale_non_uniform(
                 tile.width as f64 / image_width,
                 tile.height as f64 / image_height,
             );
@@ -1507,8 +1500,23 @@ impl<'a> Renderer<'a> {
         filters: &[FilterOp],
     ) {
         let transform = self.node(pipeline, common.spatial_id.0);
-        let (effects, matrix) = lower_filters(filters, transform);
-        if effects.is_empty() && matrix.is_none() {
+        // vello_cpu's experimental filter layers do not reliably blur a
+        // pre-rendered image in the Worker renderer. Blur a single backdrop
+        // Gaussian directly in premultiplied RGBA pixels instead. Keep the
+        // existing lowering for other and combined filters.
+        let gaussian_sigma = match filters {
+            [FilterOp::Blur(x, y)] => {
+                let scale = transform.as_coeffs()[0].hypot(transform.as_coeffs()[1]) as f32;
+                Some(x.max(*y) * scale)
+            },
+            _ => None,
+        };
+        let (effects, matrix) = if gaussian_sigma.is_some() {
+            (Vec::new(), None)
+        } else {
+            lower_filters(filters, transform)
+        };
+        if effects.is_empty() && matrix.is_none() && gaussian_sigma.is_none() {
             return;
         }
         let region = transform
@@ -1522,12 +1530,36 @@ impl<'a> Renderer<'a> {
         if x1 <= x0 || y1 <= y0 {
             return;
         }
-        let (region_width, region_height) = (x1 - x0, y1 - y0);
-
-        // Snapshot the backdrop painted so far.
+        // Snapshot the backdrop painted so far, including neighboring pixels
+        // outside the filtered element's bounds. A blur must sample those
+        // pixels before the result is clipped to the element's border box.
         self.context.flush();
         let mut backdrop = Pixmap::new(width, height);
         self.context.render(&mut backdrop, &mut self.resources);
+        if let Some(sigma) = gaussian_sigma {
+            if sigma.is_finite() && sigma > 0.0 {
+                let pixels = image::RgbaImage::from_raw(
+                    u32::from(width),
+                    u32::from(height),
+                    backdrop.data_as_u8_slice().to_vec(),
+                )
+                .expect("Worker Pixmap always has four bytes per pixel");
+                // Gaussian blur clamps samples at the outer image edge. A
+                // transparent backdrop must stay transparent outside the
+                // element instead of being extended into the blurred result.
+                let alpha = pixels.pixels().map(|pixel| pixel.0[3]).collect::<Vec<_>>();
+                let mut blurred = image::imageops::blur(&pixels, sigma);
+                for (pixel, alpha) in blurred.pixels_mut().zip(alpha) {
+                    if alpha == 0 {
+                        *pixel = image::Rgba([0, 0, 0, 0]);
+                    }
+                }
+                backdrop
+                    .data_as_u8_slice_mut()
+                    .copy_from_slice(blurred.as_raw());
+            }
+        }
+
         let backdrop = Arc::new(backdrop);
 
         // Filter in device space. Keeping the full-canvas snapshot in its
@@ -1786,9 +1818,9 @@ fn gradient_paint(
             );
             paint.stops = stops;
             paint.extend = extend_of(g.extend_mode);
-            let squash = Affine::translate(center.to_vec2())
-                * Affine::scale_non_uniform(1.0, (g.radius.height / radius) as f64)
-                * Affine::translate(-center.to_vec2());
+            let squash = Affine::translate(center.to_vec2()) *
+                Affine::scale_non_uniform(1.0, (g.radius.height / radius) as f64) *
+                Affine::translate(-center.to_vec2());
             Some((paint, squash))
         },
         MaskGradient::Conic(g) => {
@@ -1911,9 +1943,9 @@ fn corner_radius(size: LayoutSize) -> f64 {
 
 /// The area a box shadow can paint.
 fn shadow_extent(shadow: &webrender_api::BoxShadowDisplayItem) -> LayoutRect {
-    let reach = shadow.spread_radius.abs()
-        + shadow.blur_radius * 1.5
-        + shadow.offset.x.abs().max(shadow.offset.y.abs());
+    let reach = shadow.spread_radius.abs() +
+        shadow.blur_radius * 1.5 +
+        shadow.offset.x.abs().max(shadow.offset.y.abs());
     shadow.box_bounds.inflate(reach, reach)
 }
 

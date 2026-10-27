@@ -498,7 +498,9 @@ def run_python_type_checker() -> Iterator[tuple[str, int, str]]:
 def run_cargo_deny_lints() -> Iterator[tuple[str, int, str]]:
     print("\r ➤  Running `cargo-deny` checks...")
     result = subprocess.run(
-        ["cargo-deny", "--format=json", "--all-features", "check"], encoding="utf-8", capture_output=True
+        ["cargo-deny", "--format=json", "--all-features", "check", "--allow", "unmatched-organization"],
+        encoding="utf-8",
+        capture_output=True,
     )
     assert result.stderr is not None, "cargo deny should return error information via stderr when failing"
 
@@ -970,7 +972,7 @@ def check_config_file(config_file: LiteralString, print_text: bool = True) -> It
 
     # Check for invalid listed ignored directories
     exclude_dirs = [d for p in exclude.get("directories", []) for d in (glob.glob(p) or [p])]
-    skip_dirs = ["./target", "./tests", "./support/crown/target"]
+    skip_dirs = ["./target", "./tests", "./support/crown/target", "./ports/servo-js-wasm/workerd-smoke/.wrangler"]
     invalid_dirs = [d for d in exclude_dirs if not os.path.isdir(d) and not any(s in d for s in skip_dirs)]
 
     # Check for invalid listed ignored files

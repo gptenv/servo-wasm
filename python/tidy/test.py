@@ -9,8 +9,10 @@
 
 import logging
 import os
+import tempfile
 from collections.abc import Iterable
 import unittest
+from unittest.mock import patch
 
 from . import tidy
 
@@ -39,6 +41,26 @@ class CheckTidiness(unittest.TestCase):
         self.assertEqual("ignored file './fake/file.html' doesn't exist", next(errors)[2])
         self.assertEqual("ignored directory './fake/dir' doesn't exist", next(errors)[2])
         self.assertNoMoreErrors(errors)
+
+    def test_optional_wrangler_cache_is_valid_when_missing(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml") as config_file:
+            config_file.write('[ignore]\ndirectories = ["./ports/servo-js-wasm/workerd-smoke/.wrangler"]\n')
+            config_file.flush()
+            with patch.object(tidy.os.path, "isdir", return_value=False), patch.object(tidy, "parse_config"):
+                self.assertEqual([], list(tidy.check_config_file(config_file.name, print_text=False)))
+
+    def test_file_list_skips_wrangler_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = os.path.join(directory, ".wrangler")
+            os.makedirs(os.path.join(cache, "cache"))
+            generated = os.path.join(cache, "cache", "cf.json")
+            source = os.path.join(directory, "worker.js")
+            for filename in (generated, source):
+                with open(filename, "w") as file:
+                    file.write("fixture")
+            files = list(tidy.FileList(directory, exclude_dirs=[cache]))
+            self.assertIn(source, files)
+            self.assertNotIn(generated, files)
 
     def test_directory_checks(self):
         dirs = {

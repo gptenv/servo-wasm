@@ -61,10 +61,11 @@ class Base:
         if not skip_platform:
             installed_something |= self._platform_bootstrap(force, yes)
         self.install_rust_toolchain()
+        # Formatting runs before every build, including when lint tools are skipped.
+        installed_something |= self.install_taplo(force)
         if not skip_nextest:
             installed_something |= self.install_cargo_nextest(force)
         if not skip_lints:
-            installed_something |= self.install_taplo(force)
             installed_something |= self.install_cargo_deny(force)
             installed_something |= self.install_crown(force)
         # Optional and non-default, since most people won't be compiling for OpenHarmony
