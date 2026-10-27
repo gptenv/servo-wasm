@@ -52,18 +52,20 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/actions-logs"
           for attempt in 1 2 3 4 5; do
-            if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/attempts/$SOURCE_ATTEMPT/logs" > "$RUNNER_TEMP/actions-logs/logs.zip" && unzip -tq "$RUNNER_TEMP/actions-logs/logs.zip"; then
+            if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/attempts/$SOURCE_ATTEMPT/logs" > "$RUNNER_TEMP/actions-logs/logs.zip" && python3 -m zipfile -t "$RUNNER_TEMP/actions-logs/logs.zip"; then
               break
             fi
             sleep 10
           done
-          unzip -tq "$RUNNER_TEMP/actions-logs/logs.zip" || { echo 'Unable to download the completed run logs.' >&2; exit 1; }
+          python3 -m zipfile -t "$RUNNER_TEMP/actions-logs/logs.zip" || { echo 'Unable to download the completed run logs.' >&2; exit 1; }
           python3 - "$RUNNER_TEMP/actions-logs/logs.zip" "$RUNNER_TEMP/actions-logs/actions-logs-run-$SOURCE_RUN_ID-attempt-$SOURCE_ATTEMPT.txt" <<'PYTHON'
           import shutil
           import sys
           import zipfile
 
           with zipfile.ZipFile(sys.argv[1]) as archive, open(sys.argv[2], 'wb') as output:
+              if not any(not entry.is_dir() for entry in archive.infolist()):
+                  output.write(b'GitHub returned no logs for this workflow run attempt.\n')
               for entry in archive.infolist():
                   if entry.is_dir():
                       continue
