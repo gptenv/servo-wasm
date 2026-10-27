@@ -972,7 +972,7 @@ def check_config_file(config_file: LiteralString, print_text: bool = True) -> It
 
     # Check for invalid listed ignored directories
     exclude_dirs = [d for p in exclude.get("directories", []) for d in (glob.glob(p) or [p])]
-    skip_dirs = ["./target", "./tests", "./support/crown/target"]
+    skip_dirs = ["./target", "./tests", "./support/crown/target", "./ports/servo-js-wasm/workerd-smoke/.wrangler"]
     invalid_dirs = [d for d in exclude_dirs if not os.path.isdir(d) and not any(s in d for s in skip_dirs)]
 
     # Check for invalid listed ignored files
