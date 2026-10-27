@@ -498,7 +498,9 @@ def run_python_type_checker() -> Iterator[tuple[str, int, str]]:
 def run_cargo_deny_lints() -> Iterator[tuple[str, int, str]]:
     print("\r ➤  Running `cargo-deny` checks...")
     result = subprocess.run(
-        ["cargo-deny", "--format=json", "--all-features", "check"], encoding="utf-8", capture_output=True
+        ["cargo-deny", "--format=json", "--all-features", "check", "--allow", "unmatched-organization"],
+        encoding="utf-8",
+        capture_output=True,
     )
     assert result.stderr is not None, "cargo deny should return error information via stderr when failing"
 

@@ -171,6 +171,12 @@ jobs:
           .\mach fetch
           .\mach bootstrap-gstreamer
 
+      - name: Install taplo for build formatting
+        uses: baptiste0928/cargo-install@v3
+        with:
+          crate: taplo-cli
+          locked: true
+
       # Always install crown, even on self-hosted runners, because it is tightly
       # coupled to the rustc version, and we may have the wrong version if the
       # commit we are building uses a different rustc version.

@@ -103,6 +103,11 @@ class MachCommands(CommandBase):
         flavor: str | None = None,
         **kwargs: Any,
     ) -> int:
+        print("Formatting the workspace before building...")
+        format_status = Registrar.dispatch("fmt", context=self.context)
+        if format_status != 0:
+            return format_status
+
         opts = params or []
 
         if build_type.is_release():

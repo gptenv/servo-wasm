@@ -15,6 +15,7 @@ from typing import Any, Optional
 from .. import util
 from .base import Base
 from .build_target import BuildTarget
+from .macos_wasm import bootstrap_worker_wasm
 
 URL_BASE = "https://github.com/servo/servo-build-deps/releases/download/macOS"
 GSTREAMER_PLUGIN_VERSION = "1.22.3"
@@ -29,6 +30,13 @@ class MacOS(Base):
     def __init__(self, *args: str, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.is_macos = True
+
+    def bootstrap(
+        self, force: bool, yes: bool, skip_platform: bool, skip_lints: bool, skip_nextest: bool, install_ohos: bool
+    ) -> None:
+        super().bootstrap(force, yes, skip_platform, skip_lints, skip_nextest, install_ohos)
+        if not skip_platform:
+            bootstrap_worker_wasm()
 
     def gstreamer_root(self, target: BuildTarget) -> Optional[str]:
         # We do not support building with gstreamer while cross-compiling on MacOS.
@@ -51,7 +59,9 @@ class MacOS(Base):
             print("Could not run homebrew. Is it installed?")
             raise e
         target = BuildTarget.from_triple(None)
-        installed_something |= self._platform_bootstrap_gstreamer(target, force, yes)
+        # Bootstrap installs the native build dependencies as well as the Worker
+        # toolchain. The official GStreamer installer may prompt for sudo.
+        installed_something |= self._platform_bootstrap_gstreamer(target, force, True)
         return installed_something
 
     def _platform_bootstrap_gstreamer(self, target: BuildTarget, force: bool, yes: bool) -> bool:

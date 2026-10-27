@@ -234,8 +234,5 @@ github = [
     "gptenv",
 ]
 
-# This fork uses registry dependencies rather than Git sources in some builds.
-# Preserve the explicit trusted-organization allowlist without treating unused
-# allowances as errors, matching upstream Servo's policy.
-[sources]
-unused-allowed-org = "allow"
+# Tidy allows unmatched organizations when running cargo-deny, so this list
+# remains compatible with cargo-deny releases that lack unused-allowed-org.
