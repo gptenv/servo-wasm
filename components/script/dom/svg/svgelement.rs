@@ -282,7 +282,7 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
                 ));
             }
         }
-        let url_data = UrlExtraData(document.url_for_layout().get_arc());
+        let url_data = UrlExtraData(document.base_url_for_layout().get_arc());
         let parsing_mode =
             ParsingMode::ALLOW_UNITLESS_LENGTH | ParsingMode::ALLOW_ALL_NUMERIC_VALUES;
         let parser_context = ParserContext::new(

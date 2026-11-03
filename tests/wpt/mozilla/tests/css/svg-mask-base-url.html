@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Relative URLs in SVG mask presentation attributes</title>
+<link rel="help" href="https://svgwg.org/svg2-draft/styling.html#PresentationAttributes">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<base href="/images/">
+<svg><rect mask="url(mask.png)"></rect></svg>
+<script>
+const expected = 'url("' + new URL("mask.png", document.baseURI).href + '")';
+
+test(() => {
+  assert_equals(getComputedStyle(document.querySelector("rect")).maskImage, expected);
+}, "A mask URL resolves against the first base element");
+
+promise_test(async t => {
+  const frame = document.createElement("iframe");
+  t.add_cleanup(() => frame.remove());
+  const loaded = new Promise(resolve => frame.onload = resolve);
+  frame.srcdoc = '<svg><rect mask="url(mask.png)"></rect></svg>';
+  document.body.append(frame);
+  await loaded;
+  const rect = frame.contentDocument.querySelector("rect");
+  assert_equals(frame.contentWindow.getComputedStyle(rect).maskImage, expected);
+}, "A mask URL in srcdoc resolves against its inherited base URL");
+</script>

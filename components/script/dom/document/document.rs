@@ -1218,22 +1218,28 @@ impl Document {
 
     /// <https://html.spec.whatwg.org/multipage/#fallback-base-url>
     pub(crate) fn fallback_base_url(&self) -> ServoUrl {
-        let document_url = self.url();
+        Self::resolve_fallback_base_url(self.url(), self.about_base_url.borrow().as_ref())
+    }
+
+    fn resolve_fallback_base_url(
+        document_url: ServoUrl,
+        about_base_url: Option<&ServoUrl>,
+    ) -> ServoUrl {
         // Step 1: If document is an iframe srcdoc document:
         if document_url.as_str() == "about:srcdoc" {
             // Step 1.1: Assert: document's about base URL is non-null.
             // Step 1.2: Return document's about base URL.
-            return self
-                .about_base_url()
-                .expect("about:srcdoc page should always have an about base URL");
+            return about_base_url
+                .expect("about:srcdoc page should always have an about base URL")
+                .clone();
         }
 
         // Step 2: If document's URL matches about:blank and document's about base URL is
         // non-null, then return document's about base URL.
         if document_url.matches_about_blank() &&
-            let Some(about_base_url) = self.about_base_url()
+            let Some(about_base_url) = about_base_url
         {
-            return about_base_url;
+            return about_base_url.clone();
         }
 
         // Step 3: Return document's URL.
@@ -3920,8 +3926,18 @@ impl<'dom> LayoutDom<'dom, Document> {
     }
 
     #[expect(unsafe_code)]
-    pub(crate) fn url_for_layout(self) -> ServoUrl {
-        unsafe { self.unsafe_get().url.borrow_for_layout() }.clone()
+    pub(crate) fn base_url_for_layout(self) -> ServoUrl {
+        let document = self.unsafe_get();
+        // Layout can read these values while the script thread is suspended.
+        unsafe {
+            if let Some(base) = document.base_element.to_layout() {
+                return base.frozen_base_url_for_layout();
+            }
+            Document::resolve_fallback_base_url(
+                document.url.borrow_for_layout().clone(),
+                document.about_base_url.borrow_for_layout().as_ref(),
+            )
+        }
     }
 
     #[expect(unsafe_code)]
