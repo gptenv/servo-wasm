@@ -11,7 +11,9 @@ use script_bindings::codegen::GenericBindings::WindowBinding::ScrollBehavior;
 use script_bindings::str::DOMString;
 use style::attr::AttrValue;
 use style::parser::ParserContext;
-use style::properties::{PropertyDeclaration, longhands};
+use style::properties::{
+    PropertyDeclaration, PropertyId, ShorthandId, SourcePropertyDeclaration, longhands,
+};
 use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
 use style::values::generics::NonNegative;
 use style::values::specified;
@@ -121,6 +123,7 @@ impl VirtualMethods for SVGElement {
             &local_name!("fill") |
                 &local_name!("fill-opacity") |
                 &local_name!("fill-rule") |
+                &local_name!("mask") |
                 &local_name!("stroke") |
                 &local_name!("stroke-width") |
                 &local_name!("stroke-linecap") |
@@ -379,6 +382,26 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
             longhands::opacity::parse_declared,
             push,
         );
+
+        if let Some(value) = element.get_attr_val_for_layout(&ns!(), &local_name!("mask")) {
+            let mut declarations = SourcePropertyDeclaration::default();
+            let mut parser = cssparser::Parser::new(value);
+            if parser
+                .parse_entirely(|input| {
+                    PropertyDeclaration::parse_into(
+                        &mut declarations,
+                        PropertyId::NonCustom(ShorthandId::Mask.into()),
+                        &parser_context,
+                        input,
+                    )
+                })
+                .is_ok()
+            {
+                for declaration in declarations.declarations.drain(..) {
+                    push(declaration);
+                }
+            }
+        }
 
         // Parse geometry attributes based on element type
         // <circle>: https://svgwg.org/svg2-draft/shapes.html#CircleElement
