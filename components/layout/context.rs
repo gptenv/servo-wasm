@@ -23,6 +23,7 @@ use servo_base::id::PainterId;
 use servo_url::{ImmutableOrigin, ServoUrl};
 use style::context::SharedStyleContext;
 use style::dom::OpaqueNode;
+use style::properties::ComputedValues;
 use style::url::ComputedUrl;
 use style::values::computed::color::Color;
 use style::values::computed::image::{Gradient, Image};
@@ -369,10 +370,25 @@ impl ImageResolver {
         None
     }
 
+    pub(crate) fn image_for_style(
+        &self,
+        image: CachedImage,
+        style: &ComputedValues,
+    ) -> CachedImage {
+        if style.get_inherited_box().image_orientation ==
+            style::computed_values::image_orientation::T::None
+        {
+            self.image_cache.without_exif_orientation(image)
+        } else {
+            image
+        }
+    }
+
     pub(crate) fn resolve_image<'a>(
         &self,
         node: Option<OpaqueNode>,
         image: &'a Image,
+        style: &ComputedValues,
     ) -> Result<ResolvedImage<'a>, ResolveImageError> {
         match image {
             // TODO: Add support for PaintWorklet and CrossFade rendering.
@@ -396,6 +412,7 @@ impl ImageResolver {
                     LayoutImageDestination::DisplayListBuilding,
                     InternalRequest::No,
                 )?;
+                let image = self.image_for_style(image, style);
                 let metadata = image.metadata();
                 let size = Size2D::new(metadata.width, metadata.height).to_f32();
                 Ok(ResolvedImage::Image { image, size })
@@ -406,7 +423,7 @@ impl ImageResolver {
                     .get(image_set.selected_index)
                     .ok_or(ResolveImageError::ImageMissingFromImageSet)
                     .and_then(|image| {
-                        self.resolve_image(node, &image.image)
+                        self.resolve_image(node, &image.image, style)
                             .map(|info| match info {
                                 ResolvedImage::Image {
                                     image: cached_image,

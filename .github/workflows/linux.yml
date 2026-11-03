@@ -237,6 +237,8 @@ jobs:
       - name: Run unit-tests with coverage
         shell: bash
         env:
+          # The fork's Servo_JS_* symbols are only in source-built SpiderMonkey.
+          MOZJS_FROM_SOURCE: "1"
           NEXTEST_RETRIES: 2 # https://github.com/servo/servo/issues/30683
           LANG: en-US
         run: |

@@ -5,9 +5,10 @@
 <script src="/resources/testharnessreport.js"></script>
 <script>
     async_test(function (t) {
-        var popup = window.open("about:blank", "_blank", "width=100,height=100");
+        var popup = window.open("/common/blank.html", "_blank", "width=100,height=100");
         assert_not_equals(popup, null, "Popup must be successfully opened");
 
+        t.add_cleanup(() => popup.close());
         popup.onload = function () {
             popup.onresize = t.step_func(function () {
                 assert_approx_equals(popup.outerWidth, 200, 10, "Popup width should be ~200");

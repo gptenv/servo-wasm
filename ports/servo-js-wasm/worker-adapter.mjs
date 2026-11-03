@@ -66,77 +66,81 @@ export function installDocumentObserver(token) {
   const supported = typeof MutationObserver === 'function';
   const maximumRoots = 256;
 
-  function changed() {
-    lastMutation = performance.now();
-    changes++;
-  }
+  // This function runs in another JS realm after bundling. Method syntax keeps
+  // Wrangler from inserting references to its host-only function naming helper.
+  const observer = {
+    changed() {
+      lastMutation = performance.now();
+      changes++;
+    },
 
-  function walk(root, onElement) {
-    if (!root) return;
-    if (supported && !active.has(root) && active.size < maximumRoots) {
-      try {
-        const observer = new MutationObserver(changed);
-        observer.observe(root, {
-          subtree: true, childList: true, attributes: true, characterData: true,
-        });
-        active.set(root, observer);
-        // Newly discovered frame/shadow roots need a fresh quiet period.
-        changed();
-      } catch { /* Detached documents and unsupported node types. */ }
-    }
-    let elements;
-    try { elements = root.querySelectorAll('*'); } catch { return; }
-    for (const element of elements) {
-      onElement?.(element);
-      if (element.shadowRoot) {
-        if (!active.has(element.shadowRoot)) shadowCount++;
-        walk(element.shadowRoot, onElement);
-      }
-      if (element.localName === 'iframe') {
+    walk(root, onElement) {
+      if (!root) return;
+      if (supported && !active.has(root) && active.size < maximumRoots) {
         try {
-          const nested = element.contentDocument;
-          if (nested) {
-            if (!active.has(nested)) iframeCount++;
-            walk(nested, onElement);
-          }
-        } catch { /* Cross-origin frames cannot be inspected. */ }
+          const watcher = new MutationObserver(observer.changed);
+          watcher.observe(root, {
+            subtree: true, childList: true, attributes: true, characterData: true,
+          });
+          active.set(root, watcher);
+          // Newly discovered frame/shadow roots need a fresh quiet period.
+          observer.changed();
+        } catch { /* Detached documents and unsupported node types. */ }
       }
-    }
-  }
+      let elements;
+      try { elements = root.querySelectorAll('*'); } catch { return; }
+      for (const element of elements) {
+        onElement?.(element);
+        if (element.shadowRoot) {
+          if (!active.has(element.shadowRoot)) shadowCount++;
+          observer.walk(element.shadowRoot, onElement);
+        }
+        if (element.localName === 'iframe') {
+          try {
+            const nested = element.contentDocument;
+            if (nested) {
+              if (!active.has(nested)) iframeCount++;
+              observer.walk(nested, onElement);
+            }
+          } catch { /* Cross-origin frames cannot be inspected. */ }
+        }
+      }
+    },
 
-  function snapshot(selector) {
-    let matched = selector === undefined;
-    if (selector !== undefined) {
-      try { if (document.querySelector(selector)) matched = true; }
-      catch { /* A detached document or restricted query should not prevent traversal. */ }
-    }
-    try {
-      walk(document, selector === undefined ? null : (element) => {
-        if (matched) return;
-        try { if (element.matches(selector)) matched = true; } catch { /* Invalid selector. */ }
+    snapshot(selector) {
+      let matched = selector === undefined;
+      if (selector !== undefined) {
+        try { if (document.querySelector(selector)) matched = true; }
+        catch { /* A detached document or restricted query should not prevent traversal. */ }
+      }
+      try {
+        observer.walk(document, selector === undefined ? null : (element) => {
+          if (matched) return;
+          try { if (element.matches(selector)) matched = true; } catch { /* Invalid selector. */ }
+        });
+      } catch { /* Navigation may have detached the document. */ }
+
+      // Take pending records synchronously in case Servo has not dispatched the
+      // MutationObserver microtask yet.
+      for (const watcher of active.values()) {
+        if (watcher.takeRecords().length) observer.changed();
+      }
+      return JSON.stringify({
+        url: location.href,
+        readyState: document.readyState,
+        observerSupported: supported && active.size > 0,
+        observedRoots: active.size,
+        shadowRoots: shadowCount,
+        iframes: iframeCount,
+        mutations: changes,
+        quietForMs: performance.now() - lastMutation,
+        selectorMatched: matched,
       });
-    } catch { /* Navigation may have detached the document. */ }
-
-    // Take pending records synchronously in case Servo has not dispatched the
-    // MutationObserver microtask yet.
-    for (const observer of active.values()) {
-      if (observer.takeRecords().length) changed();
-    }
-    return JSON.stringify({
-      url: location.href,
-      readyState: document.readyState,
-      observerSupported: supported && active.size > 0,
-      observedRoots: active.size,
-      shadowRoots: shadowCount,
-      iframes: iframeCount,
-      mutations: changes,
-      quietForMs: performance.now() - lastMutation,
-      selectorMatched: matched,
-    });
-  }
+    },
+  };
 
   const handle = {
-    snapshot,
+    snapshot: observer.snapshot,
     dispose() {
       for (const observer of active.values()) observer.disconnect();
       active.clear();
@@ -144,7 +148,7 @@ export function installDocumentObserver(token) {
     },
   };
   globalThis[token] = handle;
-  return snapshot();
+  return handle.snapshot();
 }
 
 function documentStatusScript(token, selector) {

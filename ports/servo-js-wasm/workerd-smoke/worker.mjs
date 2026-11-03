@@ -38,7 +38,9 @@ export default {
     });
 
     const bootstrap = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
-    const loaded = runtime.loadHtml(FIXTURE_HTML, { url: FIXTURE_URL });
+    const readiness = await runtime.navigateHtml(FIXTURE_HTML, {
+      url: FIXTURE_URL, readiness: { selector: '#result', maxDurationMs: 3_000 },
+    });
     const page = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
     runtime.evaluatePage(
       'document.title === "workerd fixture" && ' +
@@ -49,8 +51,8 @@ export default {
     );
     const evaluation = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
     const result = runtime.pageResult();
-    const passed = loaded && bootstrap.settled && page.settled && evaluation.settled &&
-      streamCanceled && result?.Ok?.Number === 42 && runtime.pendingFetchCount() === 0;
+    const passed = readiness.ready && readiness.observerSupported && bootstrap.settled && page.settled &&
+      evaluation.settled && streamCanceled && result?.Ok?.Number === 42 && runtime.pendingFetchCount() === 0;
     return Response.json({ passed, result, streamCanceled,
       pendingFetches: runtime.pendingFetchCount() }, {
       status: passed ? 200 : 500,

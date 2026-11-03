@@ -190,6 +190,9 @@ pub trait ImageCacheFactory: Sync + Send {
 /// An [`ImageCache`] manages fetching and decoding images for a single `Pipeline` for its
 /// `Document` and all of its associated `Worker`s.
 pub trait ImageCache: Sync + Send {
+    /// Return a lazily registered alternative for CSS image-orientation: none.
+    fn without_exif_orientation(&self, image: Image) -> Image;
+
     fn memory_reports(&self, prefix: &str, ops: &mut MallocSizeOfOps) -> Vec<Report>;
 
     #[cfg(feature = "test-util")]

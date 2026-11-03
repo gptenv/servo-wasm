@@ -492,6 +492,9 @@ struct ImageCacheStore {
     /// Images that have finished loading (successful or not)
     completed_loads: HashMap<ImageKey, CompletedLoad>,
 
+    /// Register a second paint resource only when a page requests unrotated pixels.
+    unoriented_images: FxHashMap<WebRenderImageKey, Image>,
+
     /// Vector (e.g. SVG) images that have been sucessfully loaded and parsed
     /// but are yet to be rasterized. Since the same SVG data can be used for
     /// rasterizing at different sizes, we use this hasmap to share the data.
@@ -723,10 +726,12 @@ impl ImageCacheStore {
             let ImageResponse::Loaded(Image::Raster(image), _) = loaded_image.image_response &&
             let Some(id) = image.id
         {
-            self.paint_api.update_images(
-                self.webview_id.into(),
-                vec![ImageUpdate::DeleteImage(id)].into(),
-            );
+            let mut deletions = smallvec::smallvec![ImageUpdate::DeleteImage(id)];
+            if let Some(Image::Raster(raw)) = self.unoriented_images.remove(&id) {
+                deletions.extend(raw.id.map(ImageUpdate::DeleteImage));
+            }
+            self.paint_api
+                .update_images(self.webview_id.into(), deletions);
         }
     }
 
@@ -848,6 +853,7 @@ impl ImageCacheFactory for ImageCacheFactoryImpl {
             store: Arc::new(Mutex::new(ImageCacheStore {
                 pending_loads: AllPendingLoads::new(),
                 completed_loads: HashMap::new(),
+                unoriented_images: FxHashMap::default(),
                 vector_images: FxHashMap::default(),
                 rasterized_vector_images: FxHashMap::default(),
                 broken_image_icon_image: OnceCell::new(),
@@ -885,6 +891,38 @@ pub struct ImageCacheImpl {
 }
 
 impl ImageCache for ImageCacheImpl {
+    fn without_exif_orientation(&self, image: Image) -> Image {
+        let Image::Raster(ref raster) = image else {
+            return image;
+        };
+        let Some(original_key) = raster.id else {
+            return image;
+        };
+        if raster.exif_orientation.is_none() || raster.cors_status != CorsStatus::Safe {
+            return image;
+        }
+        let mut store = self.store.lock();
+        if let Some(cached) = store.unoriented_images.get(&original_key) {
+            return cached.clone();
+        }
+        if matches!(store.key_cache.cache, KeyCacheState::PipelineClosed) {
+            return image;
+        }
+        let Some(mut raw) = raster.without_exif_orientation() else {
+            return image;
+        };
+        let Some(key) = store
+            .paint_api
+            .generate_image_key_blocking(store.webview_id)
+        else {
+            return image;
+        };
+        set_webrender_image_key(&store.paint_api, &mut raw, key);
+        let raw = Image::Raster(Arc::new(raw));
+        store.unoriented_images.insert(original_key, raw.clone());
+        raw
+    }
+
     fn memory_reports(&self, prefix: &str, ops: &mut MallocSizeOfOps) -> Vec<Report> {
         let store_size = self.store.lock().size_of(ops);
         let fontdb_size = self.usvg_options.conditional_size_of(ops);
@@ -1149,6 +1187,7 @@ impl ImageCache for ImageCacheImpl {
                 };
 
                 RasterImage {
+                    exif_orientation: None,
                     metadata: ImageMetadata {
                         width: tinyskia_requested_size.width(),
                         height: tinyskia_requested_size.height(),
@@ -1397,6 +1436,11 @@ impl ImageCacheStore {
                     .filter_map(|task| task.result.as_ref()?.id.map(ImageUpdate::DeleteImage)),
             )
             .chain(
+                self.unoriented_images
+                    .values()
+                    .filter_map(|image| image.as_raster_image()?.id.map(ImageUpdate::DeleteImage)),
+            )
+            .chain(
                 self.broken_image_icon_image
                     .get()
                     .and_then(|icon| icon.as_ref())
@@ -1412,6 +1456,7 @@ impl ImageCacheStore {
         // explicitly on pipeline close, and again on Drop (as a safeguard,
         // since we could forget to explicitly clear).
         self.completed_loads = Default::default();
+        self.unoriented_images.clear();
         self.vector_images = Default::default();
         self.rasterized_vector_images = Default::default();
         self.svg_rasterization_task_store = Default::default();

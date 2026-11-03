@@ -298,6 +298,9 @@ pub struct SharedRasterImage {
 
 #[derive(Clone, MallocSizeOf)]
 pub struct RasterImage {
+    /// The EXIF transform already applied to this static image, if non-identity.
+    #[ignore_malloc_size_of = "Orientation is a fieldless enum."]
+    pub exif_orientation: Option<image::metadata::Orientation>,
     pub metadata: ImageMetadata,
     pub format: PixelFormat,
     pub id: Option<ImageKey>,
@@ -706,7 +709,70 @@ fn is_webp(buffer: &[u8]) -> bool {
 
 #[cfg(test)]
 mod test {
-    use super::detect_image_format;
+
+    use image::ImageEncoder;
+    use image::codecs::png::PngEncoder;
+
+    use super::{CorsStatus, detect_image_format, load_from_memory};
+
+    #[test]
+    fn css_can_recover_encoded_pixels_only_for_origin_clean_images() {
+        let pixels: Vec<u8> = (0..6)
+            .flat_map(|i| [i * 40, 200 - i * 10, i, 255])
+            .collect();
+        for orientation in 1..=8 {
+            // Little-endian TIFF with a single EXIF Orientation (0x0112) entry.
+            let exif = vec![
+                b'I',
+                b'I',
+                42,
+                0,
+                8,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0x12,
+                1,
+                3,
+                0,
+                1,
+                0,
+                0,
+                0,
+                orientation,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ];
+            let mut png = Vec::new();
+            let mut encoder = PngEncoder::new(&mut png);
+            encoder.set_exif_metadata(exif).unwrap();
+            encoder
+                .write_image(&pixels, 3, 2, image::ExtendedColorType::Rgba8)
+                .unwrap();
+            let decoded = load_from_memory(&png, CorsStatus::Safe).unwrap();
+            if orientation == 1 {
+                assert!(decoded.without_exif_orientation().is_none());
+            } else {
+                let raw = decoded.without_exif_orientation().unwrap();
+                assert_eq!((raw.metadata.width, raw.metadata.height), (3, 2));
+                assert_eq!(
+                    raw.bytes.as_slice(),
+                    pixels,
+                    "EXIF orientation {orientation}"
+                );
+                assert!(raw.without_exif_orientation().is_none());
+            }
+            let opaque = load_from_memory(&png, CorsStatus::Unsafe).unwrap();
+            assert!(opaque.without_exif_orientation().is_none());
+        }
+    }
 
     #[test]
     fn test_supported_images() {

@@ -11,7 +11,7 @@ use servo_url::ServoUrl;
 
 use crate::dom::bindings::codegen::Bindings::HTMLBaseElementBinding::HTMLBaseElementMethods;
 use crate::dom::bindings::inheritance::Castable;
-use crate::dom::bindings::root::DomRoot;
+use crate::dom::bindings::root::{DomRoot, LayoutDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::document::Document;
 use crate::dom::element::attributes::storage::AttrRef;
@@ -104,6 +104,15 @@ impl HTMLBaseElement {
     pub(crate) fn frozen_base_url(&self) -> ServoUrl {
         self.frozen_base_url
             .borrow()
+            .clone()
+            .expect("Must only retrieve frozen base URL for valid base elements")
+    }
+}
+
+impl LayoutDom<'_, HTMLBaseElement> {
+    #[expect(unsafe_code)]
+    pub(crate) fn frozen_base_url_for_layout(self) -> ServoUrl {
+        unsafe { self.unsafe_get().frozen_base_url.borrow_for_layout() }
             .clone()
             .expect("Must only retrieve frozen base URL for valid base elements")
     }

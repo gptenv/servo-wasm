@@ -534,6 +534,14 @@ impl<'dom> style::dom::TElement for ServoDangerousStyleElement<'dom> {
                 }
             }
 
+            // Replaced boxes retain the selected raster and its intrinsic dimensions.
+            // A change inherited from an ancestor must refresh both.
+            if old.get_inherited_box().image_orientation !=
+                new.get_inherited_box().image_orientation
+            {
+                return true;
+            }
+
             if old.get_font() != new.get_font() {
                 return true;
             }

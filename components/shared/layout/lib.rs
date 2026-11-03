@@ -1078,6 +1078,7 @@ mod test {
         .take(10)
         .collect();
         let image = RasterImage {
+            exif_orientation: None,
             metadata: ImageMetadata {
                 width: 100,
                 height: 100,
@@ -1119,6 +1120,7 @@ mod test {
         .take(2)
         .collect();
         let image = RasterImage {
+            exif_orientation: None,
             metadata: ImageMetadata {
                 width: 100,
                 height: 100,
