@@ -195,9 +195,12 @@ jobs:
           .\mach build --use-crown --locked --profile ${{ inputs.profile }} ${{ inputs.build-args }}
           mv C:\a\servo\servo\target\cargo-timings C:\a\servo\servo\target\cargo-timings-windows
       - name: Copy resources
-        # GitHub-hosted runners sometimes check out the repo on D: drive.
-        if: ${{ runner.environment != 'self-hosted' && startsWith(github.workspace, 'D:\') }}
-        run: cp D:\a\servo\servo\resources C:\a\servo\servo -Recurse
+        if: ${{ runner.environment != 'self-hosted' }}
+        run: |
+          $targetRoot = (Get-Item -LiteralPath $env:CARGO_TARGET_DIR).Parent.FullName
+          if ($targetRoot -ne $env:GITHUB_WORKSPACE) {
+            Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'resources') -Destination $targetRoot -Recurse -Force
+          }
       - name: Smoketest
         run: .\mach smoketest --profile ${{ inputs.profile }}
       - name: Install cargo nextest
