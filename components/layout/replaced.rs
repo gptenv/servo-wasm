@@ -172,7 +172,7 @@ impl ReplacedContents {
         }
 
         let (kind, natural_size) = {
-            if let Some((image_info, natural_size_in_dots)) = node.as_image() {
+            if let Some((image_info, natural_size_in_dots)) = node.as_image(context) {
                 if let Some(content_image) = Self::from_content_property(node, context) {
                     return Some(content_image);
                 }
@@ -370,6 +370,9 @@ impl ReplacedContents {
         ) {
             LayoutImageCacheResult::DataAvailable(img_or_meta) => match img_or_meta {
                 ImageOrMetadataAvailable::ImageAvailable { image, .. } => {
+                    let image = context
+                        .image_resolver
+                        .image_for_style(image, &node.style(&context.style_context));
                     if let Image::Raster(image) = &image {
                         context
                             .image_resolver

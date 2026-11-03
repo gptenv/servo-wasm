@@ -253,18 +253,60 @@ impl<'a> ServoImageDecoder<'a> for DefaultImageDecoder<'a> {
     }
 }
 
+impl RasterImage {
+    /// Recover the encoded pixel order for an origin-clean static image. The
+    /// normal decoded image stays oriented for other consumers of the same URL.
+    pub fn without_exif_orientation(&self) -> Option<Self> {
+        use image::metadata::Orientation;
+        if self.cors_status != CorsStatus::Safe || self.frames.len() != 1 {
+            return None;
+        }
+        let orientation = self.exif_orientation?;
+        let inverse = match orientation {
+            Orientation::NoTransforms => return None,
+            Orientation::Rotate90 => Orientation::Rotate270,
+            Orientation::Rotate270 => Orientation::Rotate90,
+            transform => transform,
+        };
+        let pixels = image::RgbaImage::from_raw(
+            self.metadata.width,
+            self.metadata.height,
+            self.bytes.as_ref().clone(),
+        )?;
+        let mut image = DynamicImage::ImageRgba8(pixels);
+        image.apply_orientation(inverse);
+        let rgba = image.into_rgba8();
+        let (width, height) = rgba.dimensions();
+        Some(Self {
+            exif_orientation: None,
+            metadata: ImageMetadata { width, height },
+            format: self.format,
+            id: None,
+            cors_status: self.cors_status,
+            frames: vec![ImageFrame {
+                width,
+                height,
+                ..self.frames[0].clone()
+            }],
+            bytes: Arc::new(rgba.into_vec()),
+            is_opaque: self.is_opaque,
+            loop_count: None,
+        })
+    }
+}
+
 pub(crate) fn decode_static_image(
     cors_status: CorsStatus,
     mut image_decoder: impl ImageDecoder,
 ) -> Option<RasterImage> {
-    let orientation = image_decoder.orientation();
+    let orientation = image_decoder.orientation().ok();
 
     let Ok(mut dynamic_image) = DynamicImage::from_decoder(image_decoder) else {
         debug!("Image decoding error");
         return None;
     };
 
-    if let Ok(orientation) = orientation {
+    if let Some(orientation) = orientation {
         dynamic_image.apply_orientation(orientation);
     }
 
@@ -282,6 +324,7 @@ pub(crate) fn decode_static_image(
         height: rgba.height(),
     };
     Some(RasterImage {
+        exif_orientation: orientation.filter(|o| *o != image::metadata::Orientation::NoTransforms),
         metadata: ImageMetadata {
             width: rgba.width(),
             height: rgba.height(),
@@ -371,6 +414,7 @@ where
     }
 
     Some(RasterImage {
+        exif_orientation: None,
         metadata: ImageMetadata { width, height },
         cors_status,
         frames,

@@ -412,7 +412,7 @@ impl Drop for BoxSlot<'_> {
 
 pub(crate) trait NodeExt<'dom> {
     /// Returns the relevant data wrapping into respective struct and its size in pixels.
-    fn as_image(&self) -> Option<(ImageInfo, PhysicalSize<f64>)>;
+    fn as_image(&self, context: &LayoutContext) -> Option<(ImageInfo, PhysicalSize<f64>)>;
     fn as_canvas(&self) -> Option<(CanvasInfo, PhysicalSize<f64>)>;
     fn as_iframe(&self) -> Option<IFrameInfo>;
     fn as_video(&self) -> Option<(VideoInfo, Option<PhysicalSize<f64>>)>;
@@ -483,8 +483,14 @@ pub(crate) trait NodeExt<'dom> {
 }
 
 impl<'dom> NodeExt<'dom> for ServoLayoutNode<'dom> {
-    fn as_image(&self) -> Option<(ImageInfo, PhysicalSize<f64>)> {
+    fn as_image(&self, context: &LayoutContext) -> Option<(ImageInfo, PhysicalSize<f64>)> {
         let (resource, metadata) = self.image_data()?;
+        let resource = resource.map(|image| {
+            context
+                .image_resolver
+                .image_for_style(image, &self.style(&context.style_context))
+        });
+        let metadata = resource.as_ref().map(|image| image.metadata()).or(metadata);
         let width = metadata.map(|metadata| metadata.width).unwrap_or_default();
         let height = metadata.map(|metadata| metadata.height).unwrap_or_default();
         let (mut width, mut height) = (width as f64, height as f64);

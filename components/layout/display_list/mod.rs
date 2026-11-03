@@ -714,16 +714,17 @@ impl DisplayListBuilder<'_> {
                 /// kind this build does not implement.
                 Transparent,
             }
-            let (natural_sizes, layer) = match self.image_resolver.resolve_image(node, image) {
-                Ok(ResolvedImage::Image { image, size }) => (
-                    NaturalSizes::from_width_and_height(size.width, size.height),
-                    Layer::Image(image),
-                ),
-                Ok(ResolvedImage::Gradient(gradient)) => {
-                    (NaturalSizes::empty(), Layer::Gradient(gradient))
-                },
-                _ => (NaturalSizes::empty(), Layer::Transparent),
-            };
+            let (natural_sizes, layer) =
+                match self.image_resolver.resolve_image(node, image, &style) {
+                    Ok(ResolvedImage::Image { image, size }) => (
+                        NaturalSizes::from_width_and_height(size.width, size.height),
+                        Layer::Image(image),
+                    ),
+                    Ok(ResolvedImage::Gradient(gradient)) => {
+                        (NaturalSizes::empty(), Layer::Gradient(gradient))
+                    },
+                    _ => (NaturalSizes::empty(), Layer::Transparent),
+                };
 
             let mut tile_size = background::tile_size(
                 background::get_cyclic(&svg.mask_size.0, index),
@@ -2048,7 +2049,8 @@ impl<'a> BuilderForBoxFragment<'a> {
         let node = self.fragment.base.tag.map(|tag| tag.node);
         // Reverse because the property is top layer first, we want to paint bottom layer first.
         for (index, image) in b.background_image.0.iter().enumerate().rev() {
-            let Ok(resolved_image) = builder.image_resolver.resolve_image(node, image) else {
+            let Ok(resolved_image) = builder.image_resolver.resolve_image(node, image, style)
+            else {
                 continue;
             };
             match resolved_image {
@@ -2362,10 +2364,11 @@ impl<'a> BuilderForBoxFragment<'a> {
         let mut width = border_image_size.width;
         let mut height = border_image_size.height;
         let node = self.fragment.base.tag.map(|tag| tag.node);
-        let source = match builder
-            .image_resolver
-            .resolve_image(node, &border.border_image_source)
-        {
+        let resolved_image =
+            builder
+                .image_resolver
+                .resolve_image(node, &border.border_image_source, style);
+        let source = match resolved_image {
             Err(_) => return false,
             Ok(ResolvedImage::Image { image, size }) => {
                 let scale = builder.device_pixel_ratio.get();
