@@ -1,1 +1,2455 @@
-PLACEHOLDER_TO_BE_REPLACED
+import assert from 'node:assert/strict';
+import { randomFillSync } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { inflateSync } from 'node:zlib';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import test from 'node:test';
+import { createServoWorkerRuntime, parseWorkerHostMessage } from '../worker-adapter.mjs';
+import { webPlatformCases } from './web-platform-cases.mjs';
+
+// No WASI import object here, deliberately: this module used to require 15
+// wasi_snapshot_preview1 imports (clock_time_get, fd_read/write, path_open,
+// environ_get, proc_exit, ...) purely because wasi-sysroot's libc.a bakes
+// them into its precompiled objects for functions like clock_gettime/fopen/
+// fprintf. Cloudflare Workers load wasm32-unknown-unknown modules via plain
+// WebAssembly.instantiate() with no WASI runtime, so as built, this module
+// could not actually have been instantiated in a real Worker -- it only
+// worked in earlier versions of this test because node:wasi was polyfilling
+// those imports, silently masking the problem. mozjs-sys/build.rs's
+// worker_libc_shim.c plus its trimmed copy of wasi-sysroot's libc.a (see
+// that file's build_trimmed_wasi_libc) now physically remove every object
+// that would otherwise bake those WASI imports in, so the module has
+// only explicit `env` imports, all of which a Worker can actually supply.
+// Instantiating with exactly this import object (no WASI polyfill, nothing
+// extra) is the actual regression test for that -- see the allowlist test
+// below, which additionally asserts no *other* imports crept in.
+const WORKER_ENV_IMPORT_ALLOWLIST = [
+  'worker_fetch_request',
+  'worker_fetch_body_chunk',
+  'worker_fetch_body_done',
+  'worker_fetch_body_error',
+  'worker_getrandom',
+  'worker_log_error',
+  'worker_media_command',
+  'worker_monotonic_now_ns',
+  'worker_unix_time_now_ns',
+];
+
+// Defaults to the production-stripped release artifact -- the one actually
+// audited for its import allowlist and measured against the 64 MiB Worker
+// bundle budget (see ports/servo-js-wasm/Cargo.toml's `production-stripped`
+// profile) -- not a debug build, so this test exercises what would actually
+// ship.
+const wasmPath = process.env.SERVO_WASM_PATH ??
+  new URL('../../../target/wasm32-unknown-unknown/production-stripped/servo_js_wasm.wasm', import.meta.url);
+const wasmBytes = readFileSync(wasmPath);
+const wasm = new WebAssembly.Module(wasmBytes);
+const hostCommand = (value) => new TextEncoder().encode(JSON.stringify(value));
+
+test('host command parser rejects mismatched ABI and malformed bounded DTOs', () => {
+  const request = {
+    id: 'request-id', url: 'https://example.test/', method: 'GET',
+    headers: [['accept', [116, 101, 120, 116]]], body: null,
+    destination: 'None', redirect_mode: 'Follow',
+  };
+  const valid = { version: 14, kind: 'fetch', request };
+  assert.deepEqual(parseWorkerHostMessage(hostCommand(valid)), valid);
+  const preflighted = { ...valid, request: { ...request,
+    cors_preflight: { method: 'PUT', headers: ['x-token'] } } };
+  assert.deepEqual(parseWorkerHostMessage(hostCommand(preflighted)), preflighted);
+  for (const malformed of [
+    { ...valid, version: 9 },
+    { ...valid, request: { ...request, method: 'GET\r\nCookie: x' } },
+    { ...valid, request: { ...request, headers: [['cookie\r\nx', [1]]] } },
+    { ...valid, request: { ...request, headers: [['x', [256]]] } },
+    { ...valid, request: { ...request, body: { worker_bytes: [256] } } },
+    { ...valid, request: { ...request, body: { worker_bytes: [1], worker_stream_id: 'x' } } },
+    { ...valid, request: { ...request, cors_preflight: { method: 'PUT\r\n', headers: [] } } },
+    { ...valid, request: { ...request, cors_preflight: { method: 'PUT', headers: ['X-Upper'] } } },
+    { ...valid, request: { ...request, cors_preflight: { method: 'PUT', headers: 'x-token' } } },
+    { version: 14, kind: 'cancel', request_ids: [''] },
+    { version: 14, kind: 'unrecognized' },
+  ]) {
+    assert.throws(() => parseWorkerHostMessage(hostCommand(malformed)));
+  }
+  const largeCommand = new TextEncoder().encode(JSON.stringify({
+    version: 14,
+    kind: 'cancel',
+    request_ids: ['x'.repeat(2 * 1024 * 1024)],
+  }));
+  assert.doesNotThrow(() => parseWorkerHostMessage(largeCommand));
+});
+let instance;
+const unixEpochNsAtStartup = BigInt(Date.now()) * 1_000_000n;
+instance = new WebAssembly.Instance(wasm, {
+  env: {
+    worker_monotonic_now_ns: () => process.hrtime.bigint(),
+    worker_unix_time_now_ns: () => BigInt(Date.now()) * 1_000_000n,
+    worker_log_error: (ptr, len) => {
+      const bytes = new Uint8Array(instance.exports.memory.buffer, ptr, len);
+      console.error(new TextDecoder().decode(bytes));
+    },
+    // This low-level instance only runs isolated SpiderMonkey probes. The
+    // separate adapter instance below exercises the real fetch protocol.
+    worker_fetch_request: (_ptr, _len) => {},
+    worker_fetch_body_chunk: () => {},
+    worker_fetch_body_done: () => {},
+    worker_fetch_body_error: () => {},
+    worker_media_command: (_operation, _playerId, _value, _ptr, _len) => 0,
+    // Real entropy, not a stub: getrandom's custom wasm32 backend
+    // (servo-net-traits' __getrandom_v03_custom) is fail-closed on a
+    // non-zero return, so a fake "always succeeds without writing bytes"
+    // implementation here would silently hand SpiderMonkey's Math.random
+    // and any crypto-adjacent code path uninitialized memory instead of
+    // failing loudly. Node's CSPRNG is a reasonable host-side stand-in for
+    // a Worker's crypto.getRandomValues() (see net/lib.rs's doc comment on
+    // worker_getrandom for why the real host must be CSPRNG-backed too).
+    worker_getrandom: (ptr, len) => {
+      try {
+        randomFillSync(new Uint8Array(instance.exports.memory.buffer, ptr, len));
+        return 0;
+      } catch {
+        return 1;
+      }
+    },
+  },
+});
+instance.exports.__wasm_call_ctors();
+
+// Decode an 8-bit RGBA PNG into {width, height, pixel(x, y) -> [r, g, b, a]}.
+function decodePng(bytes) {
+  const data = Buffer.from(bytes);
+  assert.deepEqual([...data.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10], 'PNG signature');
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  const idat = [];
+  while (offset < data.length) {
+    const length = data.readUInt32BE(offset);
+    const type = data.toString('latin1', offset + 4, offset + 8);
+    const chunk = data.subarray(offset + 8, offset + 8 + length);
+    if (type === 'IHDR') {
+      width = chunk.readUInt32BE(0);
+      height = chunk.readUInt32BE(4);
+      assert.equal(chunk[8], 8, 'bit depth');
+      assert.equal(chunk[9], 6, 'RGBA color type');
+    }
+    if (type === 'IDAT') idat.push(chunk);
+    offset += 12 + length;
+  }
+  const raw = inflateSync(Buffer.concat(idat));
+  const stride = width * 4;
+  const rows = [];
+  let previous = new Uint8Array(stride);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)];
+    const row = Uint8Array.from(raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)));
+    for (let i = 0; i < stride; i++) {
+      const a = i >= 4 ? row[i - 4] : 0;
+      const b = previous[i];
+      const c = i >= 4 ? previous[i - 4] : 0;
+      const predictor = [0, a, b, (a + b) >> 1,
+        (() => { const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+          return pa <= pb && pa <= pc ? a : pb <= pc ? b : c; })()][filter];
+      row[i] = (row[i] + predictor) & 255;
+    }
+    rows.push(row);
+    previous = row;
+  }
+  return { width, height, pixel: (x, y) => [...rows[y].subarray(x * 4, x * 4 + 4)] };
+}
+
+function evaluate(source) {
+  const bytes = new TextEncoder().encode(source);
+  const ptr = instance.exports.servo_js_alloc(bytes.length);
+  assert.notEqual(ptr, 0, 'wasm input allocation failed');
+  try {
+    new Uint8Array(instance.exports.memory.buffer).set(bytes, ptr);
+    const encoded = instance.exports.servo_js_evaluate_i32(ptr, bytes.length);
+    if (encoded === 0n) return { ok: false };
+    return { ok: true, value: Number(BigInt.asIntN(32, encoded)) };
+  } finally {
+    instance.exports.servo_js_free(ptr, bytes.length);
+  }
+}
+
+test('module imports exactly the allowed env functions, nothing else', () => {
+  // Stronger than "no wasi_* imports": this also catches a regression back
+  // to __wbindgen_placeholder__/__wbindgen_externref_xform__ (the
+  // wasm-bindgen glue that leaked in via `glow`'s WebGL backend before
+  // components/shared/canvas and components/shared/paint's Cargo.toml
+  // target-gated it out), an accidental new `env` import nobody adapted
+  // worker-adapter.mjs for yet, or any import from a module other than
+  // `env` at all -- a raw WebAssembly.instantiate() in a Worker can only
+  // ever supply imports under a single, hand-written `env` object.
+  const imports = WebAssembly.Module.imports(wasm);
+  const modules = new Set(imports.map((i) => i.module));
+  assert.deepEqual([...modules], ['env'], 'every import must come from the env module');
+  const names = imports.map((i) => i.name).sort();
+  assert.deepEqual(names, [...WORKER_ENV_IMPORT_ALLOWLIST].sort(),
+    'module must import exactly the Worker-supplied env allowlist, no more and no less');
+});
+
+test('production WASM stays within the 64 MiB Worker bundle ceiling', () => {
+  assert.ok(wasmBytes.byteLength < 64 * 1024 * 1024,
+    `WASM artifact is ${wasmBytes.byteLength} bytes before Worker JavaScript is bundled`);
+});
+
+test('SpiderMonkey smoke export runs in wasm', () => {
+  assert.equal(instance.exports.servo_js_smoke_test(), 42);
+});
+
+test('Worker lifecycle exports are present and initially idle', () => {
+  assert.equal(instance.exports.servo_worker_abi_version(), 14);
+  assert.equal(typeof instance.exports.servo_worker_evaluate_page_async, 'function');
+  assert.equal(Number(instance.exports.servo_worker_poll_page_evaluation(1)), -1);
+  assert.equal(typeof instance.exports.servo_worker_set_script_budget, 'function');
+  assert.equal(typeof instance.exports.servo_worker_script_budget_terminations, 'function');
+  assert.equal(typeof instance.exports.servo_worker_reset, 'function');
+  assert.equal(typeof instance.exports.servo_worker_pump_status, 'function');
+  assert.equal(typeof instance.exports.servo_worker_pending_fetch_count, 'function');
+  assert.equal(typeof instance.exports.servo_worker_websocket_open, 'function');
+  assert.equal(typeof instance.exports.servo_worker_websocket_message, 'function');
+  assert.equal(typeof instance.exports.servo_worker_websocket_close, 'function');
+  assert.equal(typeof instance.exports.servo_worker_cookie_state_len, 'function');
+  assert.equal(typeof instance.exports.servo_worker_cookie_state_ptr, 'function');
+  assert.equal(typeof instance.exports.servo_worker_restore_cookie_state, 'function');
+  const cookieStateLength = instance.exports.servo_worker_cookie_state_len();
+  assert.ok(cookieStateLength > 0);
+  const cookieStatePointer = instance.exports.servo_worker_cookie_state_ptr();
+  const cookieState = new Uint8Array(instance.exports.memory.buffer, cookieStatePointer, cookieStateLength).slice();
+  const restorePointer = instance.exports.servo_js_alloc(cookieState.byteLength);
+  new Uint8Array(instance.exports.memory.buffer, restorePointer, cookieState.byteLength).set(cookieState);
+  assert.equal(instance.exports.servo_worker_restore_cookie_state(restorePointer, cookieState.byteLength), 1);
+  instance.exports.servo_js_free(restorePointer, cookieState.byteLength);
+  assert.equal(typeof instance.exports.servo_worker_storage_state_len, 'function');
+  assert.equal(typeof instance.exports.servo_worker_storage_state_ptr, 'function');
+  assert.equal(typeof instance.exports.servo_worker_restore_storage_state, 'function');
+  for (const kind of [0, 1]) {
+    // No browser is bootstrapped on this raw instance, so no web-storage
+    // manager is registered yet and serialization must fail closed.
+    assert.equal(instance.exports.servo_worker_storage_state_len(kind), -1);
+  }
+  assert.equal(instance.exports.servo_worker_storage_state_len(7), -1);
+  assert.equal(instance.exports.servo_worker_restore_storage_state(7, 0, 0), 0);
+  assert.equal(Number(instance.exports.servo_worker_pending_fetch_count()), 0);
+  assert.equal(Number(instance.exports.servo_worker_reset()), 0);
+});
+
+test('adapter rejects an artifact without the matching host ABI', async () => {
+  const oldModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+  await assert.rejects(createServoWorkerRuntime(oldModule), /ABI mismatch/);
+});
+
+test('adapter validates optional resource budgets before instantiating WASM', async () => {
+  for (const maxResponseBytes of [-1, 0.5]) {
+    await assert.rejects(createServoWorkerRuntime(wasm, { maxResponseBytes }), RangeError);
+  }
+  for (const maxSubrequests of [-1, 0.5]) {
+    await assert.rejects(createServoWorkerRuntime(wasm, { maxSubrequests }), RangeError);
+  }
+  for (const maxSessionSubrequests of [-1, 0.5]) {
+    await assert.rejects(createServoWorkerRuntime(wasm, { maxSessionSubrequests }), RangeError);
+  }
+  for (const scriptBudget of [-1, Infinity, 0.5]) {
+    await assert.rejects(createServoWorkerRuntime(wasm, { scriptBudget }), RangeError);
+  }
+});
+
+for (const [name, source, expected] of [
+  ['arithmetic', '40 + 2', 42],
+  ['negative int32 boundary', '-2147483648', -2147483648],
+  ['loop and lexical bindings', 'let sum = 0; for (let i = 1; i <= 10; i++) sum += i; sum', 55],
+  ['Unicode string semantics', '"💡".length', 2],
+  ['regular expression', '/[α-ω]+/u.test("β") ? 1 : 0', 1],
+]) {
+  test(name, () => assert.deepEqual(evaluate(source), { ok: true, value: expected }));
+}
+
+test('Date.now() reflects real wall-clock time, not just a positive number', () => {
+  // Deliberately stronger than "> 0": that would also pass if Date.now()
+  // were silently wired to the monotonic clock (an arbitrary-origin value
+  // that happens to be positive), which is exactly the class of bug this
+  // fix was for -- and it's also why this doesn't just evaluate
+  // `Date.now()` directly: that returns milliseconds since epoch, a value
+  // in the trillions that overflows this harness's int32-only evaluation
+  // protocol and would misreport as failure regardless of correctness.
+  // getFullYear() stays comfortably inside int32 while still discriminating
+  // sharply: if Date.now() were fed a monotonic (process-uptime-scale)
+  // value instead of a real epoch, `new Date(...)` would land in early
+  // 1970, not the current year.
+  const jsYear = evaluate('new Date().getFullYear()');
+  const realYear = new Date(Number(unixEpochNsAtStartup / 1_000_000n)).getFullYear();
+  assert.deepEqual(jsYear, { ok: true, value: realYear });
+});
+
+test('fresh globals prevent state leaking between evaluations', () => {
+  assert.deepEqual(evaluate('globalThis.workerOnly = 123; 1'), { ok: true, value: 1 });
+  assert.deepEqual(evaluate('typeof workerOnly === "undefined" ? 1 : 0'), { ok: true, value: 1 });
+});
+
+test('repeated evaluations remain within a Worker-sized heap', () => {
+  const initialBytes = instance.exports.memory.buffer.byteLength;
+  for (let i = 0; i < 100; i++) {
+    assert.deepEqual(evaluate(`${i} + 1`), { ok: true, value: i + 1 });
+  }
+  const finalBytes = instance.exports.memory.buffer.byteLength;
+  assert.ok(finalBytes <= 64 * 1024 * 1024,
+    `wasm heap grew beyond the 64 MiB probe memory budget: ${finalBytes} bytes`);
+  assert.ok(finalBytes <= initialBytes * 4,
+    `wasm heap grew unexpectedly from ${initialBytes} to ${finalBytes} bytes`);
+});
+
+test('JavaScript exception reports failure', () => {
+  assert.deepEqual(evaluate('throw new Error("expected")'), { ok: false });
+});
+
+test('non-int32 result reports failure', () => {
+  assert.deepEqual(evaluate('"not an integer"'), { ok: false });
+});
+
+test('Worker adapter fetches a page and evaluates its DOM and inline script', async (t) => {
+  const requests = [];
+  const webSocketConnections = [];
+  const fetchErrors = [];
+  let slowFetchAborted = false;
+  let ordinaryNavigationFetchAborted = false;
+  let ordinaryNavigationAbortCount = 0;
+  let activeQueuedFetches = 0;
+  let peakQueuedFetches = 0;
+  let beforeHeadersAborted = false;
+  let streamCanceled = false;
+  let rejectedBodyCanceled = false;
+  let failedStreamController;
+  let queuedAborts = 0;
+  const readRequestBody = async (body) => {
+    if (!(body instanceof ReadableStream)) return new Uint8Array(body ?? []);
+    const reader = body.getReader();
+    const chunks = [];
+    let length = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      length += value.byteLength;
+    }
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return bytes;
+  };
+  const runtime = await createServoWorkerRuntime(wasm, {
+    url: 'about:blank',
+    // This one runtime deliberately stress-loads many pages in a single test.
+    // Exercise an explicit finite request budget; normal adapter defaults are unlimited.
+    maxSubrequests: 200,
+    maxResponseBytes: 8 * 1024 * 1024,
+    log: (message) => {
+      fetchErrors.push(message);
+      if (/panicked|fatal/i.test(message)) t.diagnostic(message);
+    },
+    fetchImpl: async (url, init) => {
+      requests.push({ url, method: init.method, body: init.body,
+        authorization: init.headers.get('authorization'),
+        cookie: init.headers.get('cookie'),
+        origin: init.headers.get('origin') });
+      if (url.endsWith('/abort-before')) {
+        return new Promise((_, reject) => {
+          init.signal.addEventListener('abort', () => {
+            beforeHeadersAborted = true;
+            reject(init.signal.reason);
+          }, { once: true });
+        });
+      }
+      if (url.includes('/abort-queued-')) {
+        return new Promise((_, reject) => {
+          init.signal.addEventListener('abort', () => {
+            queuedAborts++;
+            reject(init.signal.reason);
+          }, { once: true });
+        });
+      }
+      if (url.endsWith('/abort-stream')) {
+        return new Response(new ReadableStream({
+          start(controller) { controller.enqueue(new TextEncoder().encode('partial')); },
+          cancel() { streamCanceled = true; },
+        }));
+      }
+      if (url.endsWith('/failed-stream')) {
+        return new Response(new ReadableStream({
+          start(controller) {
+            failedStreamController = controller;
+            controller.enqueue(new TextEncoder().encode('incomplete'));
+          },
+        }));
+      }
+      if (url.endsWith('/rejected-stream')) {
+        return new Response(new ReadableStream({
+          cancel() { rejectedBodyCanceled = true; },
+        }), { headers: { 'content-length': '9000000' } });
+      }
+      if (url.includes('/queued-')) {
+        activeQueuedFetches++;
+        peakQueuedFetches = Math.max(peakQueuedFetches, activeQueuedFetches);
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        activeQueuedFetches--;
+        return new Response('queued-ok');
+      }
+      if (url === 'https://cors.example/ok') {
+        return new Response('cors-ok', {
+          status: 200,
+          headers: {
+            'access-control-allow-origin': 'https://example.test',
+            'access-control-expose-headers': 'x-public',
+            'x-public': 'shown',
+            'x-secret': 'hidden',
+          },
+        });
+      }
+      if (url === 'https://cors.example/wildcard') {
+        return new Response('wildcard-ok', {
+          status: 200,
+          headers: { 'access-control-allow-origin': '*', 'x-private': 'hidden' },
+        });
+      }
+      if (url === 'https://cors.example/denied') {
+        return new Response('cors-denied', { status: 200 });
+      }
+      if (url.endsWith('/slow')) {
+        return new Promise((_, reject) => {
+          init.signal.addEventListener('abort', () => {
+            slowFetchAborted = true;
+            reject(new DOMException('aborted by page reset', 'AbortError'));
+          }, { once: true });
+        });
+      }
+      if (url.includes('/ordinary-slow')) {
+        return new Promise((_, reject) => {
+          init.signal.addEventListener('abort', () => {
+            ordinaryNavigationFetchAborted = true;
+            ordinaryNavigationAbortCount++;
+            reject(new DOMException('aborted by navigation', 'AbortError'));
+          }, { once: true });
+        });
+      }
+      if (url.endsWith('/data.json')) {
+        return new Response('{"value":"fetch-ok"}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/headers')) {
+        return new Response('header-ok', {
+          status: 201,
+          headers: { 'content-type': 'text/plain', 'x-fixture': 'preserved',
+            'set-cookie': 'session=private' },
+        });
+      }
+      if (url.endsWith('/cookie-check')) {
+        return new Response(init.headers.get('cookie') ?? '', {
+          status: 200,
+          headers: { 'content-type': 'text/plain' },
+        });
+      }
+      if (url.endsWith('/omit-cookie')) {
+        return new Response('ignored', {
+          status: 200,
+          headers: { 'set-cookie': 'omitted=never' },
+        });
+      }
+      if (url.endsWith('/http-only-cookie')) {
+        return new Response('stored', {
+          status: 200,
+          headers: { 'set-cookie': 'serverOnly=secret; HttpOnly' },
+        });
+      }
+      if (url.endsWith('/big')) {
+        return new Response('x'.repeat(1_050_000), {
+          status: 200,
+          headers: { 'content-type': 'text/plain' },
+        });
+      }
+      if (url.endsWith('/oversize')) {
+        return new Response('small', {
+          status: 200,
+          headers: { 'content-length': '9000000' },
+        });
+      }
+      if (url.endsWith('/failure')) throw new Error('fixture network failure');
+      if (url.endsWith('/post')) {
+        const bytes = await readRequestBody(init.body);
+        const recorded = requests.findLast((request) => request.url === url && request.body === init.body);
+        if (recorded) recorded.body = bytes;
+        return new Response(new TextDecoder().decode(bytes), {
+          status: 200,
+          headers: { 'content-type': 'text/plain' },
+        });
+      }
+      if (url.endsWith('/cookie-redirect')) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: '/cookie-check', 'set-cookie': 'redirected=yes; HttpOnly' },
+        });
+      }
+      if (url.endsWith('/redirect')) {
+        return new Response(null, { status: 302, headers: { location: '/final' } });
+      }
+      if (url.endsWith('/js-redirect')) {
+        return new Response(null, { status: 302, headers: { location: '/data.json' } });
+      }
+      if (url.endsWith('/cross-redirect')) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: 'https://other.example/data.json' },
+        });
+      }
+      if (url.endsWith('/missing')) {
+        return new Response('not found', { status: 404 });
+      }
+      if (url.endsWith('/site.css')) {
+        return new Response('#answer { color: blue }', {
+          status: 200,
+          headers: { 'content-type': 'text/css' },
+        });
+      }
+      if (url === 'https://cdn.example/external.css') {
+        return new Response('#external { color: blue }', {
+          status: 200,
+          headers: { 'content-type': 'text/css' },
+        });
+      }
+      return new Response(
+        '<!doctype html><html><head><title>Worker fixture</title>' +
+          '<link rel="stylesheet" href="/site.css">' +
+          (url === 'https://example.test/'
+            ? '<link id="cross-style" rel="stylesheet" href="https://cdn.example/external.css">'
+            : '') +
+          '<style>#answer { color: red }</style></head><body>' +
+          '<main id="answer">hello from fixture</main>' +
+          '<div id="external">external style</div>' +
+          '<script>document.body.dataset.ready = "yes";' +
+          'fetch("/data.json").then(r => r.json()).then(x => ' +
+          'document.body.dataset.fetchValue = x.value);' +
+          'fetch("/missing").then(r => ' +
+          'document.body.dataset.missingStatus = String(r.status));' +
+          'fetch("/headers").then(r => {' +
+          'document.body.dataset.header = r.headers.get("x-fixture");' +
+          'document.body.dataset.cookieHidden = String(r.headers.get("set-cookie") === null);' +
+          'document.body.dataset.headerStatus = String(r.status);' +
+          (url === 'https://example.test/'
+            ? 'document.body.dataset.scriptCookie = document.cookie;' +
+              'return fetch("/cookie-check").then(r => r.text()).then(cookie => ' +
+              'document.body.dataset.requestCookie = cookie)' : '') + ' });' +
+          (url === 'https://example.test/'
+            ? 'fetch("/big").then(r => r.arrayBuffer()).then(b => ' +
+              'document.body.dataset.bigLength = String(b.byteLength)).catch(e => ' +
+              'document.body.dataset.bigError = String(e))'
+            : '') + '</script>' +
+          '</body></html>',
+        { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } },
+      );
+    },
+    webSocketFactory: (url, protocols) => {
+      const listeners = new Map();
+      const socket = {
+        url,
+        protocols,
+        protocol: protocols[0] ?? '',
+        binaryType: 'blob',
+        addEventListener(type, listener, options = {}) {
+          const entries = listeners.get(type) ?? [];
+          entries.push({ listener, once: options.once === true });
+          listeners.set(type, entries);
+        },
+        emit(type, event = {}) {
+          const entries = listeners.get(type) ?? [];
+          listeners.set(type, entries.filter(({ once }) => !once));
+          for (const { listener } of entries) listener(event);
+        },
+        send(data) {
+          queueMicrotask(() => this.emit('message', { data }));
+        },
+        close(code = 1000, reason = '') {
+          queueMicrotask(() => this.emit('close', { code, reason }));
+        },
+      };
+      webSocketConnections.push(socket);
+      queueMicrotask(() => socket.emit('open'));
+      return socket;
+    },
+  });
+  assert.equal(runtime.capabilities().abiVersion, 14);
+  assert.ok(runtime.capabilities().supported.includes('script-operation-budget'));
+  assert.ok(runtime.capabilities().supported.includes('cpu-screenshots'));
+  assert.ok(runtime.capabilities().partial.cookies);
+  assert.ok(runtime.capabilities().supported.includes('indexeddb'));
+  assert.ok(runtime.capabilities().partial.storage);
+  assert.ok(!runtime.capabilities().unsupported.includes('cookies'));
+  assert.ok(!runtime.capabilities().unsupported.includes('indexeddb'));
+  assert.ok(!runtime.capabilities().unsupported.includes('cache-storage'));
+  assert.ok(runtime.capabilities().supported.includes('request-animation-frame'));
+  assert.ok(runtime.capabilities().supported.includes('websocket-transport'));
+  assert.ok(runtime.capabilities().unsupported.includes('service-workers'));
+  assert.ok(runtime.capabilities().unsupported.includes('web-audio'));
+  assert.match(runtime.capabilities().unsupportedReasons['service-workers'], /cooperative service-worker scheduler/);
+  assert.match(runtime.capabilities().unsupportedReasons['web-audio'], /dedicated audio-render thread/);
+
+  const turn = async () => {
+    runtime.pump();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  const waitForPageResult = async () => {
+    while (true) {
+      const result = runtime.pageResult();
+      if (result !== undefined) return result;
+      await turn();
+    }
+  };
+  const waitForPageCondition = async (source) => {
+    while (true) {
+      assert.equal(runtime.evaluatePage(source), true);
+      const result = await waitForPageResult();
+      if (result?.Ok?.Number === 1) return result;
+    }
+  };
+  assert.equal(runtime.bootstrap(1280, 720, 'about:blank'), false,
+    'a second bootstrap must fail without replacing the live SpiderMonkey runtime');
+  for (let i = 0; i < 3; i++) await turn();
+
+  assert.equal(runtime.loadPage('https://example.test/'), true);
+  for (let i = 0; i < 80; i++) await turn();
+  assert.deepEqual(requests.map(({ url }) => url).sort(), [
+    'https://example.test/',
+    'https://example.test/data.json',
+    'https://example.test/headers',
+    'https://example.test/cookie-check',
+    'https://example.test/big',
+    'https://example.test/missing',
+    'https://example.test/site.css',
+    'https://cdn.example/external.css',
+  ].sort());
+  assert.ok(requests.every(({ method }) => method === 'GET'));
+
+  assert.equal(runtime.evaluatePage(
+    'document.title === "Worker fixture" && ' +
+      'document.querySelector("#answer")?.textContent === "hello from fixture" && ' +
+      'document.body.dataset.ready === "yes" && ' +
+      'document.body.dataset.fetchValue === "fetch-ok" && ' +
+      'document.body.dataset.missingStatus === "404" && ' +
+      'document.body.dataset.header === "preserved" && ' +
+      'document.body.dataset.cookieHidden === "true" && ' +
+      'document.body.dataset.headerStatus === "201" && ' +
+      'document.body.dataset.bigLength === "1050000" && ' +
+      'document.querySelector("style").sheet.cssRules.length === 1 && ' +
+      'getComputedStyle(document.querySelector("#external")).color === "rgb(0, 0, 255)" && ' +
+      'document.querySelector("#cross-style").sheet.cssRules.length === 1 && ' +
+      'getComputedStyle(document.querySelector("#answer")).color === "rgb(255, 0, 0)" ? 42 : 0',
+  ), true);
+  assert.throws(() => runtime.evaluatePage('42'), /Read the previous page evaluation result/,
+    'the adapter rejects a second evaluation while the single result slot is pending');
+  for (let i = 0; i < 10; i++) await turn();
+  if (runtime.pageResult()?.Ok?.Number !== 42) {
+    runtime.evaluatePage('JSON.stringify({' +
+      'title: document.title, ready: document.body.dataset.ready,' +
+      'fetchValue: document.body.dataset.fetchValue,' +
+      'missingStatus: document.body.dataset.missingStatus,' +
+      'header: document.body.dataset.header,' +
+      'headerStatus: document.body.dataset.headerStatus,' +
+      'scriptCookie: document.body.dataset.scriptCookie,' +
+      'requestCookie: document.body.dataset.requestCookie,' +
+      'cookie: document.cookie,' +
+      'bigLength: document.body.dataset.bigLength,' +
+      'bigError: document.body.dataset.bigError,' +
+      'cssRules: document.querySelector("style").sheet.cssRules.length,' +
+      'color: getComputedStyle(document.querySelector("#answer")).color})');
+    for (let i = 0; i < 10; i++) await turn();
+    assert.fail(JSON.stringify({ result: runtime.pageResult(), fetchErrors,
+      pendingFetchCount: runtime.pendingFetchCount() }));
+  }
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+
+  assert.equal(runtime.evaluatePage(
+    'fetch("/failure").catch(() => document.body.dataset.failed = "yes");' +
+      'fetch("/oversize").catch(() => document.body.dataset.oversize = "yes");' +
+      'fetch("/post", {method: "POST", body: "x"}).then(r => r.text()).then(t => ' +
+      'document.body.dataset.postEcho = t);' +
+      'window.largePostPromise = fetch("/post", {method: "POST", body: "x".repeat(300000)}).then(r => r.text()).then(t => ' +
+      'document.body.dataset.largePostLength = String(t.length)).catch(e => ' +
+      'document.body.dataset.largePostError = String(e));' +
+      'window.streamPutPromise = fetch("/post", {method: "PUT", body: new ReadableStream({' +
+      'start(c) { c.enqueue(new TextEncoder().encode("upload-")); ' +
+      'c.enqueue(new TextEncoder().encode("stream")); c.close() }' +
+      '}), duplex: \"half\"}).then(r => r.text()).then(t => document.body.dataset.streamPost = t).catch(e => ' +
+      'document.body.dataset.streamPostError = String(e));' +
+      'window.fileUploadPromise = fetch("/post", {method: "PUT", body: ' +
+      'new File(["file-data".repeat(40000)], "upload.txt")}).then(r => r.text()).then(t => ' +
+      'document.body.dataset.fileUploadLength = String(t.length)).catch(e => ' +
+      'document.body.dataset.fileUploadError = String(e));' +
+      'fetch("/js-redirect").then(r => r.json().then(body => ({r, body}))).then(({r, body}) => ' +
+      'document.body.dataset.redirected = String(r.redirected && ' +
+      'r.url.endsWith("/data.json") && body.value === "fetch-ok"));' +
+      'fetch("/cross-redirect", {headers: {authorization: "Bearer secret"}})' +
+      '.catch(() => document.body.dataset.crossRedirectBlocked = "yes");' +
+      'fetch("https://other.example/data.json").catch(() => ' +
+      'document.body.dataset.crossOriginBlocked = "yes");' +
+      'fetch("https://cors.example/ok").then(r => r.text().then(body => ({r, body})))' +
+      '.then(({r, body}) => document.body.dataset.corsOk = String(' +
+      'body === "cors-ok" && r.ok));' +
+      'fetch("https://cors.example/wildcard").then(r => r.text()).then(t => ' +
+      'document.body.dataset.corsWildcard = t);' +
+      'fetch("https://cors.example/denied").catch(() => ' +
+      'document.body.dataset.corsDenied = "yes");' +
+      'fetch("https://cors.example/ok", {credentials:"include"}).catch(() => ' +
+      'document.body.dataset.corsCredentialsBlocked = "yes");' +
+      'fetch("https://cors.example/ok", {headers:{"x-unsafe":"yes"}}).catch(() => ' +
+      'document.body.dataset.corsPreflightBlocked = "yes"); ' +
+      'Promise.all([window.largePostPromise, window.streamPutPromise, window.fileUploadPromise]).then(() => ' +
+      'document.body.dataset.uploadsComplete = "yes"); 1',
+  ), true);
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 1 } });
+  await waitForPageCondition('document.body.dataset.uploadsComplete === "yes" ? 1 : 0');
+  assert.equal(runtime.evaluatePage(
+      'document.body.dataset.failed === "yes" && ' +
+      'document.body.dataset.oversize === "yes" && ' +
+      'document.body.dataset.postEcho === "x" && ' +
+      'document.body.dataset.largePostLength === "300000" && ' +
+      'document.body.dataset.streamPost === "upload-stream" && ' +
+      'document.body.dataset.fileUploadLength === "360000" && ' +
+      'document.body.dataset.corsOk === "true" && ' +
+      'document.body.dataset.corsWildcard === "wildcard-ok" && ' +
+      'document.body.dataset.redirected === "true" ? 42 : 0',
+  ), true);
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
+  assert.ok(fetchErrors.some((message) => message.includes('fixture network failure')));
+  assert.ok(fetchErrors.some((message) => message.includes('exceeds')));
+  assert.ok(!fetchErrors.some((message) => message.includes('request-body streaming')));
+  const postRequest = requests.find(({ url }) => url.endsWith('/post'));
+  assert.equal(postRequest?.method, 'POST');
+  assert.equal(new TextDecoder().decode(postRequest.body), 'x');
+  const largePostRequest = requests.find(({ url, method, body }) =>
+    url.endsWith('/post') && method === 'POST' && body instanceof Uint8Array && body.byteLength === 300000);
+  assert.equal(largePostRequest?.body.byteLength, 300000);
+  const streamedPutRequest = requests.find(({ url, method, body }) =>
+    url.endsWith('/post') && method === 'PUT' && body instanceof Uint8Array && body.byteLength === 13);
+  assert.equal(new TextDecoder().decode(streamedPutRequest?.body), 'upload-stream');
+  const fileUploadRequest = requests.find(({ url, method, body }) =>
+    url.endsWith('/post') && method === 'PUT' && body instanceof Uint8Array && body.byteLength === 360000);
+  assert.equal(fileUploadRequest?.body.byteLength, 360000);
+  assert.equal(requests.some(({ url }) => url === 'https://other.example/data.json'), true,
+    'cross-origin page requests reach the host under privileged semantics');
+  // Origin header is not automatically injected for privileged host fetches.
+  assert.equal(requests.find(({ url }) => url === 'https://cors.example/ok')?.origin, null);
+  assert.equal(requests.find(({ url }) => url.endsWith('/cross-redirect'))?.authorization,
+    'Bearer secret', 'serialized request header values must be decoded from bytes');
+  const corsOk = requests.filter(({ url }) => url === 'https://cors.example/ok');
+  assert.deepEqual(corsOk.map(({ method }) => method ?? 'GET'), ['GET', 'GET', 'GET'],
+    'all page fetches, including credentialed and custom-header ones, reach the host without preflight');
+  assert.ok(corsOk.every(({ cookie }) => cookie == null), 'cross-origin requests carry no cookies');
+
+  assert.equal(runtime.evaluatePage(
+    'Promise.all(Array.from({length: 9}, (_, i) => ' +
+    'fetch("/queued-" + i).then(r => r.text()).then(t => {' +
+    'document.body.dataset.queueResolved = String(Number(document.body.dataset.queueResolved || 0) + 1);' +
+    'return t }))).then(values => ' +
+    'document.body.dataset.queueDone = String(values.every(v => v === "queued-ok")))' +
+    '.catch(e => document.body.dataset.queueError = String(e)); 1',
+  ), true);
+  const queueStatus = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+  assert.equal(queueStatus.settled, true);
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
+  assert.equal(runtime.evaluatePage(
+    'document.body.dataset.queueDone === "true" ? 42 : 0',
+  ), true);
+  for (let i = 0; i < 10; i++) await turn();
+  if (runtime.pageResult()?.Ok?.Number !== 42) {
+    runtime.evaluatePage('JSON.stringify({done: document.body.dataset.queueDone,' +
+      'resolved: document.body.dataset.queueResolved,error: document.body.dataset.queueError})');
+    for (let i = 0; i < 10; i++) await turn();
+    assert.fail(JSON.stringify({ queueStatus, result: runtime.pageResult(),
+      peakQueuedFetches, fetchErrors, queuedRequests: requests.filter(({ url }) => url.includes('/queued-')) }));
+  }
+  assert.equal(peakQueuedFetches, 9,
+    'the host adapter has no default outgoing-connection limit');
+
+  assert.equal(runtime.evaluatePage(
+    'setTimeout(() => { document.body.dataset.timer = "fired" }, 500); 1',
+  ), true);
+  for (let i = 0; i < 5; i++) await turn();
+  assert.notEqual(runtime.nextTimerDelayMs(), null);
+  const timerStatus = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+  assert.equal(timerStatus.settled, true, JSON.stringify({
+    timerStatus,
+    nextTimerDelayMs: runtime.nextTimerDelayMs(),
+    pendingFetchCount: runtime.pendingFetchCount(),
+  }));
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
+  assert.equal(runtime.evaluatePage(
+    'document.body.dataset.timer === "fired" ? 42 : 0',
+  ), true);
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
+
+  // A recurring timer never lets a strict settle finish, but with the network
+  // idle it counts as settled under networkIdleMs.
+  assert.equal(runtime.evaluatePage('window.poll = setInterval(() => {}, 50); 1'), true);
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 1 } });
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 600 })).settled, false);
+  const idleStatus = await runtime.pumpUntilSettled({ maxDurationMs: 3_000, networkIdleMs: 200 });
+  assert.equal(idleStatus.settled, true, JSON.stringify(idleStatus));
+  assert.equal(idleStatus.timersPending, true);
+  assert.equal(runtime.evaluatePage('clearInterval(window.poll); 1'), true);
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 1 } });
+
+  const heapBeforeRepeatLoads = runtime.instance.exports.memory.buffer.byteLength;
+  for (let page = 0; page < 4; page++) {
+    assert.equal(runtime.loadPage(`https://example.test/repeat-${page}`), true);
+    for (let i = 0; i < 30; i++) await turn();
+  }
+  assert.equal(runtime.evaluatePage(
+    'document.title === "Worker fixture" && ' +
+      'document.querySelector("#answer") !== null ? 42 : 0',
+  ), true);
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
+  const heapAfterRepeatLoads = runtime.instance.exports.memory.buffer.byteLength;
+  assert.ok(heapAfterRepeatLoads <= 128 * 1024 * 1024,
+    `WASM heap exceeded the Worker memory ceiling: ${heapAfterRepeatLoads} bytes`);
+  assert.ok(heapAfterRepeatLoads <= heapBeforeRepeatLoads * 4,
+    `repeated page loads grew the heap unexpectedly: ${heapBeforeRepeatLoads} -> ${heapAfterRepeatLoads}`);
+
+  assert.equal(runtime.evaluatePage('globalThis.oldPageSentinel = "private"; 42'), true);
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
+  assert.equal(runtime.loadPage('https://other.example/'), true);
+  for (let i = 0; i < 50; i++) await turn();
+  assert.equal(runtime.evaluatePage(
+    'location.origin === "https://other.example" && ' +
+      'typeof oldPageSentinel === "undefined" ? 42 : 0',
+  ), true);
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
+
+  assert.equal(runtime.loadPage('https://example.test/redirect'), true);
+  for (let i = 0; i < 45; i++) await turn();
+  assert.ok(requests.some(({ url }) => url === 'https://example.test/final'));
+  assert.equal(runtime.evaluatePage(
+    'location.pathname === "/final" && document.title === "Worker fixture" ? 42 : 0',
+  ), true);
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
+
+  assert.equal(runtime.evaluatePage('globalThis.oldPageSentinel = "private"; 42'), true);
+  for (let i = 0; i < 10; i++) await turn();
+  assert.equal(runtime.reset(), true);
+  assert.equal(runtime.pendingFetchCount(), 0);
+  for (let i = 0; i < 50; i++) await turn();
+  assert.equal(runtime.evaluatePage(
+    'document.URL === "about:blank" && typeof oldPageSentinel === "undefined" ? 42 : 0',
+  ), true);
+  assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
+
+  assert.equal(runtime.loadPage('https://example.test/slow'), true);
+  for (let i = 0; i < 10; i++) await turn();
+  assert.ok(runtime.pendingFetchCount() > 0);
+  assert.equal(runtime.reset(), true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(slowFetchAborted, true);
+  assert.equal(runtime.pendingFetchCount(), 0);
+
+  assert.equal(runtime.loadPage('https://example.test/ordinary-slow'), true);
+  for (let i = 0; i < 10; i++) await turn();
+  assert.ok(runtime.pendingFetchCount() > 0);
+  assert.equal(runtime.loadPage('https://example.test/'), true);
+  for (let i = 0; i < 50; i++) await turn();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ordinaryNavigationFetchAborted, true,
+    'ordinary navigation must abort the abandoned page\'s host request');
+  assert.equal(runtime.pendingFetchCount(), 0,
+    'ordinary navigation must retire the abandoned page\'s Rust callback');
+  const memoryBeforeCanceledNavigationStress = runtime.instance.exports.memory.buffer.byteLength;
+  const canceledNavigationCountBefore = ordinaryNavigationAbortCount;
+  for (let page = 0; page < 12; page++) {
+    assert.equal(runtime.loadPage(`https://example.test/ordinary-slow?round=${page}`), true);
+    for (let i = 0; i < 15; i++) await turn();
+    assert.ok(runtime.pendingFetchCount() > 0, 'slow navigation should be pending before replacement');
+    assert.equal(runtime.loadPage('https://example.test/'), true);
+    for (let i = 0; i < 35; i++) await turn();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(runtime.pendingFetchCount(), 0,
+      `replacement navigation ${page} must retire its Rust fetch callback`);
+  }
+  assert.equal(ordinaryNavigationAbortCount - canceledNavigationCountBefore, 12,
+    'all superseded host requests must observe abort');
+  const memoryAfterCanceledNavigationStress = runtime.instance.exports.memory.buffer.byteLength;
+  assert.ok(memoryAfterCanceledNavigationStress <= 128 * 1024 * 1024,
+    `canceled navigation stress exceeded the Worker memory ceiling: ${memoryAfterCanceledNavigationStress}`);
+  assert.ok(memoryAfterCanceledNavigationStress <= memoryBeforeCanceledNavigationStress * 4,
+    `canceled navigation stress grew memory unexpectedly: ${memoryBeforeCanceledNavigationStress} -> ${memoryAfterCanceledNavigationStress}`);
+  assert.equal(runtime.reset(), true);
+  for (let i = 0; i < 10; i++) await turn();
+
+  assert.throws(() => runtime.loadHtml('<p>nope</p>', { url: 'data:text/html,nope' }),
+    TypeError);
+  assert.equal(runtime.loadHtml(
+    '<!doctype html><html><head><title>Inline document</title>' +
+      '<style>#inline { color: purple }</style></head><body>' +
+      '<main id="inline">host bytes</main><script>' +
+      'document.body.dataset.executed = "yes";' +
+      'fetch("data.json").then(r => r.json()).then(data => ' +
+      'document.body.dataset.relativeFetch = data.value)' +
+      '</script></body></html>',
+    { url: 'https://inline.example/test/' },
+  ), true);
+  const inlineStatus = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+  assert.equal(inlineStatus.settled, true, JSON.stringify({
+    inlineStatus,
+    pendingFetchCount: runtime.pendingFetchCount(),
+    requests: requests.filter(({ url }) => url.startsWith('https://inline.example/')),
+    fetchErrors,
+  }));
+  assert.equal(runtime.evaluatePage(
+    'document.title === "Inline document" && ' +
+      'document.querySelector("#inline").textContent === "host bytes" && ' +
+      'document.body.dataset.executed === "yes" && ' +
+      'document.body.dataset.relativeFetch === "fetch-ok" && ' +
+      'getComputedStyle(document.querySelector("#inline")).color === "rgb(128, 0, 128)" ' +
+      '? 42 : 0',
+  ), true);
+  for (let i = 0; i < 10; i++) await turn();
+  if (runtime.pageResult()?.Ok?.Number !== 42) {
+    runtime.evaluatePage('JSON.stringify({' +
+      'url: document.URL, title: document.title, text: document.querySelector("#inline")?.textContent,' +
+      'executed: document.body?.dataset.executed,' +
+      'relativeFetch: document.body?.dataset.relativeFetch,' +
+      'color: document.querySelector("#inline") && getComputedStyle(document.querySelector("#inline")).color})');
+    for (let i = 0; i < 10; i++) await turn();
+    assert.fail(JSON.stringify({ inlineStatus, result: runtime.pageResult(), fetchErrors,
+      inlineRequests: requests.filter(({ url }) => url.startsWith('https://inline.example/')) }));
+  }
+  assert.equal(requests.some(({ url }) => url === 'https://inline.example/test/'), false,
+    'host-supplied HTML must not make an outbound navigation subrequest');
+  assert.ok(requests.some(({ url }) => url === 'https://inline.example/test/data.json'),
+    'relative script fetches must resolve against the supplied page URL');
+
+  const settle = async () => {
+    const status = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+    assert.equal(status.settled, true, JSON.stringify({ status, fetchErrors }));
+    assert.equal(runtime.pendingFetchCount(), 0);
+  };
+  const checkPage = async (expression) => {
+    const logStart = fetchErrors.length;
+    // Consume the setup evaluation's result before using the single result slot again.
+    runtime.pageResult();
+    assert.equal(runtime.evaluatePage(`(${expression}) ? 42 : 0`), true);
+    await settle();
+    const settledResult = runtime.pageResult();
+    if (settledResult?.Ok?.Number === 42) return;
+    let lateTurns = 0;
+    while (!runtime.pageResult() && lateTurns < 50 && !runtime.trapped) {
+      runtime.pump();
+      lateTurns++;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.fail(JSON.stringify({ settledResult, lateResult: runtime.pageResult(), lateTurns,
+      trapped: String(runtime.trapped ?? ''), log: fetchErrors.slice(logStart),
+      diagnostic: (() => {
+        runtime.evaluatePage('JSON.stringify({url: location.href, body: document.body?.innerHTML,' +
+          'dataset: {...document.body?.dataset}, indexedDB: typeof indexedDB,' +
+          'caches: typeof caches})');
+        for (let i = 0; i < 5; i++) runtime.pump();
+        return runtime.pageResult();
+      })() }));
+  };
+
+  await t.test('requestAnimationFrame callbacks run on Worker refresh ticks', async () => {
+    assert.equal(runtime.evaluatePage(
+      'requestAnimationFrame(() => document.body.dataset.rafProbe = "fired"); 1',
+    ), true);
+    const status = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+    assert.equal(status.settled, true);
+    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
+    assert.equal(runtime.evaluatePage(
+      'document.body.dataset.rafProbe === "fired" ? 42 : 0',
+    ), true);
+    assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
+  });
+
+  await t.test('requestAnimationFrame supports recurring callbacks', async () => {
+    assert.equal(runtime.evaluatePage(
+      'document.body.dataset.rafCount = "0";' +
+      'const tick = () => {' +
+      '  const count = Number(document.body.dataset.rafCount) + 1;' +
+      '  document.body.dataset.rafCount = String(count);' +
+      '  if (count < 2) requestAnimationFrame(tick);' +
+      '}; requestAnimationFrame(tick); 1',
+    ), true);
+    const status = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+    assert.equal(status.settled, true);
+    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
+    assert.equal(runtime.evaluatePage(
+      'document.body.dataset.rafCount === "2" ? 42 : 0',
+    ), true);
+    assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
+  });
+
+  await t.test('WebSocket connects, exchanges messages, and closes through the Worker host', async () => {
+    assert.equal(runtime.evaluatePage(
+      'const ws = new WebSocket("wss://socket.example/echo", "chat");' +
+      'ws.addEventListener("open", () => {' +
+      'document.body.dataset.wsOpen = ws.protocol; ws.send("worker-echo") });' +
+      'ws.addEventListener("message", e => {' +
+      'document.body.dataset.wsMessage = e.data; ws.close(1000, "done") });' +
+      'ws.addEventListener("close", e => {' +
+      'document.body.dataset.wsClose = `${e.code}:${e.reason}` }); 1',
+    ), true);
+    for (let i = 0; i < 60; i++) await turn();
+    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
+    assert.equal(runtime.evaluatePage(
+      'document.body.dataset.wsOpen === "chat" && ' +
+      'document.body.dataset.wsMessage === "worker-echo" && ' +
+      'document.body.dataset.wsClose === "1000:done" ? 42 : 0',
+    ), true);
+    assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
+    assert.equal(webSocketConnections.length, 1);
+    assert.equal(webSocketConnections[0].binaryType, 'arraybuffer');
+  });
+
+  await t.test('settling budgets and concurrent calls fail explicitly', async () => {
+    assert.deepEqual(await runtime.pumpUntilSettled({ maxTurns: 0 }), { settled: false, turns: 0, scriptsTerminated: 0 });
+    assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: Infinity })).settled, true);
+    await assert.rejects(runtime.pumpUntilSettled({ maxTurns: -1 }), RangeError);
+    await assert.rejects(runtime.pumpUntilSettled({ until: true }), TypeError);
+    const pending = runtime.pumpUntilSettled();
+    await assert.rejects(runtime.pumpUntilSettled(), /already running/);
+    assert.equal((await pending).settled, true);
+  });
+
+  await t.test('AbortController cancels a host fetch before headers', async () => {
+    runtime.evaluatePage('globalThis.beforeController = new AbortController();' +
+      'fetch("/abort-before", {signal: beforeController.signal}).catch(e => ' +
+      'document.body.dataset.beforeAbort = e.name); 1');
+    assert.deepEqual(await waitForPageResult(), { Ok: { Number: 1 } });
+    assert.ok(requests.some(({ url }) => url.endsWith('/abort-before')));
+    runtime.evaluatePage('beforeController.abort(); 1');
+    await settle();
+    assert.equal(beforeHeadersAborted, true);
+    await checkPage('document.body.dataset.beforeAbort === "AbortError"');
+  });
+
+  await t.test('streaming headers wake the page and abort cancels its open body', async () => {
+    runtime.evaluatePage('globalThis.streamController = new AbortController();' +
+      'fetch("/abort-stream", {signal: streamController.signal}).then(r => {' +
+      'document.body.dataset.streamHeaders = String(r.status);' +
+      'r.text().then(() => document.body.dataset.streamAbort = "unexpected success",' +
+      'e => document.body.dataset.streamAbort = e.name);' +
+      'streamController.abort(); }); 1');
+    await settle();
+    assert.equal(streamCanceled, true, 'an open host body must be canceled');
+    await checkPage('document.body.dataset.streamHeaders === "200" && ' +
+      'document.body.dataset.streamAbort === "AbortError"');
+  });
+
+  await t.test('canceling concurrent requests aborts every host connection', async () => {
+    const before = requests.length;
+    runtime.evaluatePage('globalThis.queueControllers = Array.from({length:9}, () => new AbortController());' +
+      'globalThis.queueAbortCount = 0;' +
+      'queueControllers.forEach((c,i) => fetch("/abort-queued-" + i, {signal:c.signal})' +
+      '.catch(e => { if (e.name === "AbortError") queueAbortCount++ }));' +
+      'queueControllers.forEach(c => c.abort()); 1');
+    await settle();
+    assert.equal(requests.slice(before).filter(({ url }) => url.includes('/abort-queued-')).length, 9);
+    assert.equal(queuedAborts, 9);
+    await checkPage('queueAbortCount === 9');
+  });
+
+  await t.test('failure after response headers rejects the body, not a truncated success', async () => {
+    runtime.evaluatePage('fetch("/failed-stream").then(r => {' +
+      'document.body.dataset.failedStreamHeaders = "yes";' +
+      'return r.text() }).then(() => document.body.dataset.failedStream = "unexpected success",' +
+      'e => document.body.dataset.failedStream = e.name); 1');
+    for (let i = 0; i < 15; i++) await turn();
+    assert.ok(failedStreamController);
+    failedStreamController.error(new Error('fixture body interrupted'));
+    await settle();
+    await checkPage('document.body.dataset.failedStreamHeaders === "yes" && ' +
+      'document.body.dataset.failedStream === "TypeError"');
+  });
+
+  await t.test('rejecting response metadata releases the unread host body', async () => {
+    runtime.evaluatePage('fetch("/rejected-stream").catch(e => ' +
+      'document.body.dataset.rejectedStream = e.name); 1');
+    await settle();
+    assert.equal(rejectedBodyCanceled, true);
+    await checkPage('document.body.dataset.rejectedStream === "TypeError"');
+  });
+
+  await t.test('response ABI enforces headers, chunks, and exactly one terminal event', async () => {
+    const dispatchFetch = runtime.dispatchFetch;
+    let requestId;
+    runtime.dispatchFetch = (request) => { requestId = request.id; };
+    try {
+      runtime.evaluatePage('fetch("/protocol").then(r => r.text()).then(t => ' +
+        'document.body.dataset.protocol = t); 1');
+      for (let i = 0; i < 10 && !requestId; i++) await turn();
+      assert.equal(typeof requestId, 'string');
+    } finally {
+      runtime.dispatchFetch = dispatchFetch;
+    }
+    const buffers = [requestId, 'https://inline.example/protocol', '[]', 'complete']
+      .map((value) => {
+        const bytes = new TextEncoder().encode(value);
+        const ptr = runtime.instance.exports.servo_js_alloc(bytes.length);
+        assert.notEqual(ptr, 0);
+        new Uint8Array(runtime.instance.exports.memory.buffer, ptr, bytes.length).set(bytes);
+        return [ptr, bytes.length];
+      });
+    try {
+      const [id, url, headers, body] = buffers;
+      const exports = runtime.instance.exports;
+      assert.equal(exports.servo_worker_deliver_http_chunk(...id, ...body), 0);
+      assert.equal(exports.servo_worker_finish_http_response(...id), 0);
+      assert.equal(exports.servo_worker_begin_http_response(...id, ...url, 200, ...headers, 0), 1);
+      assert.equal(exports.servo_worker_begin_http_response(...id, ...url, 200, ...headers, 0), 0);
+      assert.equal(exports.servo_worker_deliver_http_chunk(...id, ...body), 1);
+      assert.equal(exports.servo_worker_finish_http_response(...id), 1);
+      assert.equal(exports.servo_worker_finish_http_response(...id), 0);
+      assert.equal(exports.servo_worker_deliver_http_chunk(...id, ...body), 0);
+    } finally {
+      for (const buffer of buffers) runtime.instance.exports.servo_js_free(...buffer);
+    }
+    await settle();
+    await checkPage('document.body.dataset.protocol === "complete"');
+  });
+
+  for (const { name, source } of webPlatformCases) {
+    await t.test(name, async () => checkPage(source));
+  }
+
+  await t.test('IndexedDB opens a database and round-trips a record in the Worker service', async () => {
+    runtime.pageResult();
+    assert.equal(runtime.evaluatePage(`(() => {
+      const request = indexedDB.open('servo-worker-storage-test', 1);
+      request.onupgradeneeded = () => request.result.createObjectStore('records');
+      request.onerror = () => document.body.dataset.idbStatus = 'open-error';
+      request.onsuccess = () => {
+        const db = request.result;
+        const write = db.transaction('records', 'readwrite');
+        write.objectStore('records').put('stored-value', 'record-key');
+        write.onerror = () => document.body.dataset.idbStatus = 'write-error';
+        write.oncomplete = () => {
+          const read = db.transaction('records', 'readonly');
+          const store = read.objectStore('records');
+          const get = store.get('record-key');
+          const all = store.getAll();
+          const keys = store.getAllKeys();
+          let allValues;
+          let allKeys;
+          const report = () => {
+            if (!allValues || !allKeys || get.readyState !== 'done') return;
+            document.body.dataset.idbStatus =
+              String(get.result) + ':' + allValues.length + ':' + String(allKeys[0]);
+            db.close();
+          };
+          get.onerror = () => document.body.dataset.idbStatus = 'read-error';
+          get.onsuccess = report;
+          all.onerror = () => document.body.dataset.idbStatus = 'get-all-error';
+          all.onsuccess = () => { allValues = all.result; report(); };
+          keys.onerror = () => document.body.dataset.idbStatus = 'get-all-keys-error';
+          keys.onsuccess = () => { allKeys = keys.result; report(); };
+        };
+      };
+      return 1;
+    })()`), true);
+    for (let i = 0; i < 120; i++) await turn();
+    await checkPage('document.body.dataset.idbStatus === "stored-value:1:record-key"');
+  });
+
+  await t.test('Cache Storage worker service supports cache lifecycle operations', async () => {
+    runtime.pageResult();
+    assert.equal(runtime.evaluatePage(`(() => {
+      const first = 'servo-worker-cache-first';
+      const second = 'servo-worker-cache-second';
+      caches.open(first).then(() => caches.open(second))
+      .then(() => caches.open(first)).then(() => caches.has(first)).then((has) => {
+        if (!has) throw new Error('cache missing after open');
+        return caches.keys();
+      }).then((names) => {
+        if (JSON.stringify(names) !== JSON.stringify([first, second]))
+          throw new Error('cache names changed creation order');
+        return caches.delete(first);
+      }).then((deleted) => {
+        if (!deleted) throw new Error('first cache was not deleted');
+        return caches.open(first);
+      }).then(() => caches.keys()).then((names) => {
+        if (JSON.stringify(names) !== JSON.stringify([second, first]))
+          throw new Error('recreated cache did not move to the end');
+        return Promise.all([caches.delete(first), caches.delete(second)]);
+      }).then((deleted) => {
+        document.body.dataset.cacheStatus = String(deleted.every(Boolean));
+      }).catch(() => document.body.dataset.cacheStatus = 'error');
+      return 1;
+    })()`), true);
+    for (let i = 0; i < 160; i++) await turn();
+    await checkPage('document.body.dataset.cacheStatus === "true"');
+  });
+
+  await t.test('Worker storage estimate resolves and persistence stays unavailable', async () => {
+    runtime.pageResult();
+    assert.equal(runtime.evaluatePage(`(() => {
+      Promise.all([
+        navigator.storage.estimate(),
+        navigator.storage.persisted(),
+        navigator.storage.persist()
+      ]).then(([{usage, quota}, before, requested]) =>
+        navigator.storage.persisted().then((after) => {
+        document.body.dataset.storageEstimate =
+          String(Number.isFinite(usage) && usage >= 0 &&
+            Number.isFinite(quota) && quota >= usage && quota > 128 * 1024 * 1024 &&
+            before === false && requested === false && after === false);
+      })).catch(() => document.body.dataset.storageEstimate = 'error');
+      return 1;
+    })()`), true);
+    for (let i = 0; i < 80; i++) await turn();
+    await checkPage('document.body.dataset.storageEstimate === "true"');
+  });
+
+  await t.test('final response cookies are sent with subsequent same-origin fetches', () => {
+    assert.equal(requests.find(({ url }) => url.endsWith('/cookie-check'))?.cookie,
+      'session=private', 'final response cookies should be attached to same-origin requests');
+  });
+
+  await t.test('credentials omit rejects response cookies and HttpOnly stays hidden from script', async () => {
+    runtime.pageResult();
+    assert.equal(runtime.evaluatePage(`(() => {
+      fetch('/omit-cookie', {credentials: 'omit'})
+        .then(() => fetch('/http-only-cookie'))
+        .then(() => fetch('/cookie-check'))
+        .then((response) => response.text())
+        .then((cookie) => {
+          document.body.dataset.cookiePolicy =
+            String(!cookie.includes('omitted=') &&
+              cookie.includes('serverOnly=secret') &&
+              !document.cookie.includes('serverOnly='));
+        })
+        .catch(() => document.body.dataset.cookiePolicy = 'error');
+      return 1;
+    })()`), true);
+    for (let i = 0; i < 80; i++) await turn();
+    await checkPage('document.body.dataset.cookiePolicy === "true"');
+    assert.equal(requests.find(({ url }) => url.endsWith('/omit-cookie'))?.cookie, null,
+      'credentials: omit must not send existing jar cookies to the host');
+  });
+
+  await t.test('redirect cookies are sent on the next same-origin request', async () => {
+    runtime.pageResult();
+    assert.equal(runtime.evaluatePage(`(() => {
+      fetch('/cookie-redirect').then((response) => response.text())
+        .then((cookies) => {
+          document.body.dataset.redirectCookie =
+            String(cookies.includes('redirected=yes') &&
+              !document.cookie.includes('redirected='));
+        }).catch(() => document.body.dataset.redirectCookie = 'error');
+      return 1;
+    })()`), true);
+    for (let i = 0; i < 80; i++) await turn();
+    await checkPage('document.body.dataset.redirectCookie === "true"');
+  });
+
+  await t.test('the complete cookie jar can be exported and restored', () => {
+    const savedCookies = runtime.exportCookieState();
+    assert.ok(savedCookies instanceof Uint8Array);
+    assert.ok(savedCookies.byteLength > 0);
+    assert.equal(runtime.restoreCookieState(savedCookies), true);
+  });
+
+  await t.test('web-storage areas can be exported and restored', async () => {
+    assert.equal(runtime.evaluatePage(`(() => {
+      localStorage.setItem('persist-me', 'local-value');
+      sessionStorage.setItem('persist-me', 'session-value');
+      return 1;
+    })()`), true);
+    await settle();
+    await checkPage('localStorage.getItem("persist-me") === "local-value"');
+    await checkPage('sessionStorage.getItem("persist-me") === "session-value"');
+    const saved = {};
+    for (const kind of ['local', 'session']) {
+      saved[kind] = runtime.exportStorageState(kind);
+      assert.ok(saved[kind] instanceof Uint8Array);
+      assert.ok(saved[kind].byteLength > 0);
+    }
+    // Wipe the live areas, then restore: the values must come back.
+    assert.equal(runtime.evaluatePage(`(() => {
+      localStorage.clear();
+      sessionStorage.clear();
+      return 1;
+    })()`), true);
+    await settle();
+    await checkPage('localStorage.getItem("persist-me") === null');
+    await checkPage('sessionStorage.getItem("persist-me") === null');
+    for (const kind of ['local', 'session']) {
+      assert.equal(runtime.restoreStorageState(kind, saved[kind]), true);
+    }
+    await checkPage('localStorage.getItem("persist-me") === "local-value"');
+    await checkPage('sessionStorage.getItem("persist-me") === "session-value"');
+    assert.throws(() => runtime.exportStorageState('indexeddb'), TypeError);
+    assert.throws(() => runtime.restoreStorageState('indexeddb', new Uint8Array([0])), TypeError);
+  });
+
+  await t.test('a frame request makes layout build a display list for the Worker renderer', async () => {
+    const exports = runtime.instance.exports;
+    assert.equal(exports.servo_worker_request_frame(), 1);
+    await settle();
+    assert.ok(exports.servo_worker_frame_item_count() > 0, 'no display items were captured');
+  });
+
+  await t.test('host fonts register, and invalid font data is rejected', () => {
+    const mono = readFileSync(new URL('../fonts/NotoSansMono-Regular.ttf', import.meta.url));
+    assert.equal(runtime.registerFont(mono), 1);
+    assert.throws(() => runtime.registerFont(new Uint8Array([1, 2, 3, 4])), TypeError);
+    assert.throws(() => runtime.registerFont(new Uint8Array()), RangeError);
+  });
+
+  await t.test('canvas drawImage decodes an <img> through the deferred Worker pool', async () => {
+    assert.equal(runtime.evaluatePage(`(() => {
+      const src = document.createElement('canvas'); src.width = 2; src.height = 2;
+      const s = src.getContext('2d'); s.fillStyle = 'rgb(0, 128, 0)'; s.fillRect(0, 0, 2, 2);
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement('canvas'); c.width = 2; c.height = 2;
+        const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0);
+        document.body.dataset.imgPixel = Array.from(ctx.getImageData(1, 1, 1, 1).data).join(',');
+      };
+      img.onerror = () => { document.body.dataset.imgPixel = 'error'; };
+      img.src = src.toDataURL();
+      return 1;
+    })()`), true);
+    await settle();
+    await checkPage('document.body.dataset.imgPixel === "0,128,0,255"');
+  });
+
+  await t.test('promise microtasks precede timers and canceled timers stay canceled', async () => {
+    runtime.evaluatePage('globalThis.taskOrder = ["sync"];' +
+      'Promise.resolve().then(() => taskOrder.push("microtask"));' +
+      'const canceled = setTimeout(() => taskOrder.push("canceled"), 0); clearTimeout(canceled);' +
+      'setTimeout(() => { taskOrder.push("timer");' +
+      'Promise.resolve().then(() => taskOrder.push("timer-microtask")); }, 5); 1');
+    await settle();
+    await checkPage('taskOrder.join(",") === "sync,microtask,timer,timer-microtask"');
+  });
+
+  await t.test('nested timeouts and interval cancellation preserve callback order', async () => {
+    runtime.evaluatePage('globalThis.nestedOrder = [];' +
+      'document.body.dataset.nestedOrder = "[]";' +
+      'const record = value => { nestedOrder.push(value); ' +
+      'document.body.dataset.nestedOrder = JSON.stringify(nestedOrder); };' +
+      'const interval = setInterval(() => record("interval"), 2);' +
+      'setTimeout(() => { record("outer");' +
+      'setTimeout(() => { record("inner"); clearInterval(interval);' +
+      'setTimeout(() => document.body.dataset.nestedStable = document.body.dataset.nestedOrder, 20);' +
+      '}, 4); }, 3); 1');
+    await settle();
+    runtime.pageResult();
+    assert.equal(runtime.evaluatePage('JSON.stringify({' +
+      'order: document.body.dataset.nestedOrder, stable: document.body.dataset.nestedStable})'), true);
+    await settle();
+    const { order: orderJson, stable } = JSON.parse(runtime.pageResult().Ok.String);
+    const order = JSON.parse(orderJson);
+    assert.ok(order.includes('outer') && order.includes('inner'), JSON.stringify(order));
+    assert.ok(order.indexOf('outer') < order.indexOf('inner'), JSON.stringify(order));
+    assert.ok(order.includes('interval'), JSON.stringify(order));
+    assert.equal(stable, orderJson, JSON.stringify({ order, stable }));
+  });
+});
+
+test('Worker adapter bootstraps a requested URL rather than remaining at about:blank', async () => {
+  const requests = [];
+  const runtime = await createServoWorkerRuntime(wasm, {
+    url: 'https://bootstrap.example/initial',
+    width: 160,
+    height: 100,
+    fetchImpl: async (url) => {
+      requests.push(String(url));
+      return new Response('<!doctype html><title>Bootstrapped page</title><body>ready</body>', {
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      });
+    },
+  });
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 3_000 })).settled, true);
+  const evaluation = await runtime.evaluate('JSON.stringify({url: location.href, title: document.title})', {
+    maxDurationMs: 3_000,
+  });
+  assert.deepEqual(JSON.parse(evaluation.Ok.String), {
+    url: 'https://bootstrap.example/initial',
+    title: 'Bootstrapped page',
+  });
+  assert.ok(requests.some((request) => request === 'https://bootstrap.example/initial'), JSON.stringify(requests));
+});
+
+test('host subrequest budget counts redirects and separates invocation from session caps', async () => {
+  const requests = [];
+  let discardedRedirectBody = false;
+  const runtime = await createServoWorkerRuntime(wasm, {
+    maxSubrequests: 2,
+    maxSessionSubrequests: 3,
+    log: () => {},
+    fetchImpl: async (url) => {
+      requests.push(url);
+      if (url.endsWith('/redirect')) {
+        return new Response(new ReadableStream({
+          cancel() { discardedRedirectBody = true; },
+        }), { status: 302, headers: { location: '/final' } });
+      }
+      return new Response('final');
+    },
+  });
+  const settle = async () => {
+    assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 3_000 })).settled, true);
+    assert.equal(runtime.pendingFetchCount(), 0);
+  };
+  // Deliberately no bootstrap pumps here: the factory must return a usable
+  // initial browsing context, so callers can load immediately after awaiting it.
+  runtime.loadHtml('<!doctype html><title>budget</title><body><script>' +
+    'fetch("/redirect").then(r => r.text()).then(t => {' +
+    'document.body.dataset.first = t; return fetch("/over-budget") })' +
+    '.catch(e => document.body.dataset.failure = e.name);</script>',
+  { url: 'https://budget.example/' });
+  await settle();
+  runtime.evaluatePage('document.body.dataset.first === "final" && ' +
+    'document.body.dataset.failure === "TypeError" ? 42 : 0');
+  await settle();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.equal(discardedRedirectBody, true);
+  assert.deepEqual(requests, ['https://budget.example/redirect', 'https://budget.example/final']);
+
+  runtime.reset();
+  runtime.loadHtml('<!doctype html><body><script>fetch("/after-reset")' +
+    '.catch(e => document.body.dataset.failure = e.name);</script>',
+  { url: 'https://budget.example/again' });
+  await settle();
+  runtime.evaluatePage('document.body.dataset.failure === "TypeError" ? 42 : 0');
+  await settle();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.equal(requests.length, 2, 'reset must not replenish the invocation subrequest budget');
+
+  runtime.beginInvocation();
+  runtime.loadHtml('<!doctype html><body><script>fetch("/after-new-invocation")' +
+    '.then(r => r.text()).then(t => document.body.dataset.value = t);</script>',
+  { url: 'https://budget.example/renewed' });
+  await settle();
+  runtime.evaluatePage('document.body.dataset.value === "final" ? 42 : 0');
+  await settle();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.equal(requests.length, 3, 'new invocation should replenish only its own budget');
+
+  runtime.reset();
+  runtime.beginInvocation();
+  runtime.loadHtml('<!doctype html><body><script>fetch("/after-session-cap")' +
+    '.catch(e => document.body.dataset.failure = e.name);</script>',
+  { url: 'https://budget.example/session-cap' });
+  await settle();
+  runtime.evaluatePage('document.body.dataset.failure === "TypeError" ? 42 : 0');
+  await settle();
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.equal(requests.length, 3, 'new invocation must not replenish the session cap');
+});
+
+test('late WebSocket events after reset cannot call the retired page', async () => {
+  const sockets = [];
+  const runtime = await createServoWorkerRuntime(wasm, {
+    log: () => {},
+    webSocketFactory: () => {
+      const listeners = new Map();
+      const socket = {
+        protocol: '',
+        addEventListener(type, listener) {
+          const entries = listeners.get(type) ?? [];
+          entries.push(listener);
+          listeners.set(type, entries);
+        },
+        emit(type, event = {}) {
+          for (const listener of listeners.get(type) ?? []) listener(event);
+        },
+        close() {},
+      };
+      sockets.push(socket);
+      return socket;
+    },
+  });
+  runtime.loadHtml('<!doctype html><body><script>' +
+    'new WebSocket("wss://socket.example/late");</script>',
+  { url: 'https://socket.example/' });
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 3_000 })).settled, true);
+  assert.equal(sockets.length, 1);
+  assert.equal(runtime.reset(), true);
+  const websocketExports = [
+    'servo_worker_websocket_open',
+    'servo_worker_websocket_message',
+    'servo_worker_websocket_close',
+  ];
+  let staleExportCalls = 0;
+  for (const name of websocketExports) {
+    const original = runtime.instance.exports[name];
+    runtime.instance.exports[name] = (...args) => {
+      staleExportCalls++;
+      return original(...args);
+    };
+  }
+  for (const type of ['open', 'message', 'error', 'close']) {
+    sockets[0].emit(type, { data: 'late', code: 1000, reason: 'late' });
+  }
+  assert.equal(staleExportCalls, 0);
+  assert.equal(runtime.trapped, null);
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 3_000 })).settled, true);
+  assert.equal(runtime.evaluatePage('42'), true);
+  assert.throws(() => runtime.beginInvocation(), /Finish or cancel pending Worker work/);
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 3_000 })).settled, true);
+  assert.throws(() => runtime.beginInvocation(), /Finish or cancel pending Worker work/);
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  assert.doesNotThrow(() => runtime.beginInvocation());
+});
+
+test('screenshots rasterize backgrounds, borders, text, images and canvas', async () => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 400,
+    height: 300,
+    fetchImpl: async (url) => url.endsWith('.svg')
+      ? new Response('<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#f0f"/></svg>',
+        { headers: { 'content-type': 'image/svg+xml' } })
+      : new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:rgb(10, 20, 30)">
+    <div style="position:absolute;left:330px;top:20px;width:10px;height:10px;
+      background:url(t.svg), linear-gradient(transparent, transparent) no-repeat;background-size:10px"></div>
+    <div id="box" style="position:absolute;left:20px;top:20px;width:100px;height:50px;
+      background:rgb(0, 200, 0);border:5px solid rgb(0, 0, 255)"></div>
+    <canvas id="canvas" width="40" height="40" style="position:absolute;left:200px;top:20px"></canvas>
+    <img id="image" width="40" height="40" style="position:absolute;left:260px;top:20px">
+    <div style="position:absolute;left:20px;top:150px;font:24px sans-serif;color:white">Hello</div>
+    <script>
+      const canvas = document.getElementById('canvas').getContext('2d');
+      canvas.fillStyle = 'rgb(255, 0, 0)';
+      canvas.fillRect(0, 0, 40, 40);
+      const source = document.createElement('canvas');
+      source.width = 2; source.height = 2;
+      const context = source.getContext('2d');
+      context.fillStyle = 'rgb(255, 255, 0)';
+      context.fillRect(0, 0, 2, 2);
+      document.getElementById('image').src = source.toDataURL();
+    </script></body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const png = decodePng(await runtime.screenshot({ waitForResources: true }));
+  assert.equal(png.width, 400);
+  assert.equal(png.height, 300);
+  assert.deepEqual(png.pixel(390, 290), [10, 20, 30, 255], 'page background');
+  assert.deepEqual(png.pixel(70, 50), [0, 200, 0, 255], 'box background');
+  assert.deepEqual(png.pixel(22, 50), [0, 0, 255, 255], 'box border');
+  assert.deepEqual(png.pixel(220, 40), [255, 0, 0, 255], 'canvas content');
+  assert.deepEqual(png.pixel(280, 40), [255, 255, 0, 255], 'image content');
+  assert.deepEqual(png.pixel(335, 25), [255, 0, 255, 255], 'SVG background image');
+  let inked = 0;
+  for (let y = 150; y < 185; y++) {
+    for (let x = 20; x < 90; x++) {
+      if (png.pixel(x, y)[0] > 128) inked++;
+    }
+  }
+  assert.ok(inked > 50, `text should draw glyphs (inked ${inked} pixels)`);
+});
+
+test('large SVG rasterization remains available without a default Worker pixel budget', async () => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 200,
+    height: 200,
+    log: () => {},
+    fetchImpl: async () => new Response(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="5000" height="5000">' +
+        '<rect width="5000" height="5000" fill="red"/></svg>',
+      { headers: { 'content-type': 'image/svg+xml' } },
+    ),
+  });
+  runtime.loadHtml('<!doctype html><body style="margin:0;background:white">' +
+    '<img src="large.svg" width="5000" height="5000"></body>',
+  { url: 'https://image.example/' });
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 3_000 })).settled, true);
+  const png = decodePng(await runtime.screenshot({ maxDurationMs: 3_000, waitForResources: true }));
+  assert.equal(runtime.trapped, null);
+  assert.equal(png.width, 200);
+  assert.equal(png.height, 200);
+  assert.deepEqual(png.pixel(100, 100), [255, 0, 0, 255]);
+});
+
+test('screenshots draw shadows and filters, follow scrolling, and capture full pages', async () => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 300,
+    height: 200,
+    fetchImpl: async () => new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <div style="position:absolute;left:20px;top:20px;width:100px;height:50px;background:white;
+      box-shadow:0 0 0 10px rgb(0, 0, 255)"></div>
+    <div style="position:absolute;left:160px;top:20px;width:60px;height:50px;
+      background:rgb(255, 0, 0);filter:grayscale(1)"></div>
+    <div style="position:absolute;left:0;top:1000px;width:300px;height:1000px;background:rgb(0, 128, 0)"></div>
+    </body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const top = decodePng(await runtime.screenshot({ waitForResources: true }));
+  assert.deepEqual(top.pixel(15, 45), [0, 0, 255, 255], 'box-shadow spread');
+  const [red, green, blue] = top.pixel(190, 45);
+  assert.ok(red === green && green === blue && red > 0 && red < 255, `grayscale filter: ${top.pixel(190, 45)}`);
+
+  runtime.evaluatePage('window.scrollTo(0, 1000); window.scrollY');
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+  assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1000 } });
+  const scrolled = decodePng(await runtime.screenshot({ waitForResources: true }));
+  assert.deepEqual(scrolled.pixel(150, 100), [0, 128, 0, 255], 'viewport follows the scroll position');
+
+  const full = decodePng(await runtime.screenshot({ fullPage: true }));
+  assert.equal(full.width, 300);
+  assert.equal(full.height, 2000);
+  assert.deepEqual(full.pixel(15, 45), [0, 0, 255, 255], 'full page starts at the top');
+  assert.deepEqual(full.pixel(150, 1500), [0, 128, 0, 255], 'full page reaches the bottom');
+});
+
+test('full-page screenshots stitch content across a render-strip boundary seamlessly', async () => {
+  // Full-page captures are rendered in fixed-height device strips (each with
+  // its own renderer, to bound memory) and joined into one PNG. A box tall
+  // enough to straddle a strip boundary must still come out as one unbroken
+  // block of color, with no seam, gap, or duplicated/missing row at the join.
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 100,
+    height: 200,
+    fetchImpl: async () => new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <div style="position:absolute;left:0;top:950px;width:100px;height:150px;background:rgb(255, 128, 0)"></div>
+    <div style="position:absolute;left:0;top:1400px;width:100px;height:10px;background:rgb(0, 0, 0)"></div>
+    </body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const full = decodePng(await runtime.screenshot({ fullPage: true }));
+  assert.equal(full.width, 100);
+  assert.equal(full.height, 1410);
+  // The box spans device rows 950..1099, straddling the strip boundary
+  // (wherever a multiple of the internal strip height falls in that range).
+  assert.deepEqual(full.pixel(50, 949), [255, 255, 255, 255], 'row above the box is background');
+  for (const y of [950, 1000, 1023, 1024, 1025, 1050, 1099]) {
+    assert.deepEqual(full.pixel(50, y), [255, 128, 0, 255], `row ${y} is inside the box, unbroken across strips`);
+  }
+  assert.deepEqual(full.pixel(50, 1150), [255, 255, 255, 255], 'row below the box is background again');
+});
+
+test('screenshots apply mask-image (icons drawn as masked colored boxes)', async () => {
+  // Left half opaque, right half transparent.
+  const maskSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">' +
+    '<rect width="10" height="20" fill="#000"/></svg>';
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 200,
+    height: 100,
+    fetchImpl: async (url) => url.endsWith('.svg')
+      ? new Response(maskSvg, { headers: { 'content-type': 'image/svg+xml' } })
+      : new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <div style="position:absolute;left:10px;top:10px;width:40px;height:40px;background:rgb(255, 0, 0);
+      mask-image:url(m.svg);mask-size:40px 40px;mask-repeat:no-repeat"></div>
+    <div style="position:absolute;left:110px;top:10px;width:40px;height:40px;background:rgb(0, 0, 255);
+      -webkit-mask:url(m.svg) no-repeat center / 20px 20px"></div>
+    </body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const png = decodePng(await runtime.screenshot({ waitForResources: true }));
+  assert.deepEqual(png.pixel(15, 30), [255, 0, 0, 255], 'masked-in half is drawn');
+  assert.deepEqual(png.pixel(45, 30), [255, 255, 255, 255], 'masked-out half is not');
+  // Centered 20px mask: x 120..130 visible, the rest of the box masked out.
+  assert.deepEqual(png.pixel(125, 30), [0, 0, 255, 255], '-webkit-mask shorthand, visible part');
+  assert.deepEqual(png.pixel(135, 30), [255, 255, 255, 255], '-webkit-mask shorthand, masked part');
+  assert.deepEqual(png.pixel(112, 30), [255, 255, 255, 255], 'outside the mask tile is masked out');
+});
+
+test('screenshots tile a repeating mask-image and blend luminance and multiple mask layers', async () => {
+  // A 10x10 tile, opaque (black) in its left half only.
+  const stripeSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">' +
+    '<rect width="5" height="10" fill="#000"/></svg>';
+  // A 20x20 box, opaque (mid-gray, so alpha and luminance masking differ) in
+  // its top or bottom half.
+  const topSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">' +
+    '<rect width="20" height="10" fill="#808080"/></svg>';
+  const bottomSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">' +
+    '<rect y="10" width="20" height="10" fill="#808080"/></svg>';
+  const svgByPath = { 'stripe.svg': stripeSvg, 'top.svg': topSvg, 'bottom.svg': bottomSvg };
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 200,
+    height: 100,
+    fetchImpl: async (url) => {
+      const name = url.split('/').pop();
+      return name in svgByPath
+        ? new Response(svgByPath[name], { headers: { 'content-type': 'image/svg+xml' } })
+        : new Response('{}');
+    },
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <div style="position:absolute;left:0;top:0;width:40px;height:20px;background:rgb(255, 0, 0);
+      mask-image:url(stripe.svg);mask-size:10px 10px;mask-repeat:repeat"></div>
+    <div style="position:absolute;left:60px;top:0;width:20px;height:20px;background:rgb(255, 0, 0);
+      mask-image:url(top.svg);mask-mode:alpha"></div>
+    <div style="position:absolute;left:100px;top:0;width:20px;height:20px;background:rgb(255, 0, 0);
+      mask-image:url(top.svg);mask-mode:luminance"></div>
+    <div style="position:absolute;left:140px;top:0;width:20px;height:20px;background:rgb(255, 0, 0);
+      mask-image:url(top.svg), url(bottom.svg)"></div>
+    </body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const png = decodePng(await runtime.screenshot({ waitForResources: true }));
+  // mask-repeat: repeat, three tiles across a 40px-wide box.
+  assert.deepEqual(png.pixel(2, 10), [255, 0, 0, 255], 'first tile, visible half');
+  assert.deepEqual(png.pixel(7, 10), [255, 255, 255, 255], 'first tile, masked half');
+  assert.deepEqual(png.pixel(22, 10), [255, 0, 0, 255], 'third tile, visible half (repeat wrapped)');
+  assert.deepEqual(png.pixel(27, 10), [255, 255, 255, 255], 'third tile, masked half (repeat wrapped)');
+
+  // mask-mode: alpha (the default): the gray mask pixel is fully opaque, so
+  // it fully unmasks the red box regardless of its mid-gray color.
+  assert.deepEqual(png.pixel(70, 5), [255, 0, 0, 255], 'mask-mode: alpha, top half fully visible');
+  assert.deepEqual(png.pixel(70, 15), [255, 255, 255, 255], 'mask-mode: alpha, bottom half masked out');
+
+  // mask-mode: luminance: the same gray pixel's luminance (~0.5) partially
+  // unmasks the red box, blending it toward the white background -- unlike
+  // the fully-opaque result above.
+  const [r, g, b, a] = png.pixel(110, 5);
+  assert.deepEqual([r, a], [255, 255], 'mask-mode: luminance, red channel unaffected over white');
+  assert.ok(g > 90 && g < 160 && g === b, `mask-mode: luminance should partially unmask (got rgba ${r},${g},${b},${a})`);
+  assert.deepEqual(png.pixel(110, 15), [255, 255, 255, 255], 'mask-mode: luminance, bottom half still masked out');
+
+  // Two mask-image layers (top.svg, bottom.svg), each opaque in a different
+  // half. `mask-composite: add` (the default) unions them, so both halves
+  // are visible -- unlike naive intersection, which would mask out the
+  // entire box since neither layer alone covers it.
+  assert.deepEqual(png.pixel(150, 5), [255, 0, 0, 255], 'unioned mask layers, top half visible');
+  assert.deepEqual(png.pixel(150, 15), [255, 0, 0, 255], 'unioned mask layers, bottom half visible');
+});
+
+test('screenshots apply gradient mask-image layers and mask-composite', async () => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 400,
+    height: 200,
+    fetchImpl: async () => new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <div style="position:absolute;left:0;top:0;width:100px;height:60px;background:rgb(255, 0, 0);
+      mask-image:linear-gradient(to right, black, transparent)"></div>
+    <div style="position:absolute;left:110px;top:0;width:60px;height:60px;background:rgb(255, 0, 0);
+      padding:15px;box-sizing:border-box;
+      mask:linear-gradient(black, black), linear-gradient(black, black) content-box;
+      mask-composite:subtract"></div>
+    <div style="position:absolute;left:180px;top:0;width:60px;height:60px;background:rgb(255, 0, 0);
+      padding:15px;box-sizing:border-box;
+      mask:linear-gradient(black, black) content-box, linear-gradient(black, black);
+      mask-composite:subtract"></div>
+    <div style="position:absolute;left:250px;top:0;width:60px;height:60px;background:rgb(255, 0, 0);
+      padding:15px;box-sizing:border-box;
+      mask:linear-gradient(black,black) content-box, linear-gradient(black,black);
+      mask-composite:exclude"></div>
+    <div style="position:absolute;left:320px;top:0;width:60px;height:60px;background:rgb(255, 0, 0);
+      mask-image:url(missing.png), linear-gradient(black, black);
+      mask-composite:intersect"></div>
+    </body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const png = decodePng(await runtime.screenshot({ waitForResources: true }));
+
+  // Linear gradient fade: nearly opaque at the left edge, nearly
+  // transparent at the right (a couple of pixels in from each edge, since
+  // the interpolated stop value right at x=0/x=100 is only asymptotically
+  // exact).
+  const opaqueEnd = png.pixel(2, 30);
+  assert.ok(opaqueEnd[0] === 255 && opaqueEnd[1] < 15 && opaqueEnd[1] === opaqueEnd[2],
+    `gradient mask should be nearly fully visible near the opaque end (got rgba ${opaqueEnd.join(',')})`);
+  const transparentEnd = png.pixel(98, 30);
+  assert.ok(transparentEnd[0] === 255 && transparentEnd[1] > 240 && transparentEnd[1] === transparentEnd[2],
+    `gradient mask should be nearly fully masked near the transparent end (got rgba ${transparentEnd.join(',')})`);
+  const mid = png.pixel(50, 30);
+  assert.ok(mid[0] === 255 && mid[1] > 20 && mid[1] < 235 && mid[1] === mid[2],
+    `gradient mask midpoint should be a red/white blend (got rgba ${mid.join(',')})`);
+
+  // Order-sensitive `subtract`: per
+  // <https://drafts.fxtf.org/css-masking-1/#the-mask-composite>, layers
+  // combine bottom-up -- each layer is the "source", the composite of the
+  // layers *below* it (listed *after* it) is the "destination" it combines
+  // into. `subtract` keeps the source only where the destination does not
+  // already cover it. Layer 0 (border-box, listed first, so on top) is the
+  // source combining onto layer 1 (content-box, listed last, so on the
+  // bottom and unaffected by its own composite value): the content box is
+  // subtracted out of the border box, leaving a ring.
+  assert.deepEqual(png.pixel(112, 2), [255, 0, 0, 255], 'subtract ring: padding area visible');
+  assert.deepEqual(png.pixel(140, 30), [255, 255, 255, 255], 'subtract ring: content area masked out');
+
+  // The same two shapes with the mask-image list order swapped: now the
+  // content-box layer is on top, subtracting itself out of the border-box
+  // layer below it. Since the content box is entirely inside the border
+  // box, this removes it completely and leaves nothing.
+  assert.deepEqual(png.pixel(182, 2), [255, 255, 255, 255], 'reordered subtract: padding area also masked out');
+  assert.deepEqual(png.pixel(210, 30), [255, 255, 255, 255], 'reordered subtract: content area masked out');
+
+  // `mask-composite: exclude` (XOR) of a content-box and a border-box solid
+  // mask leaves the same ring shape as the (non-reordered) subtract case --
+  // exclude is symmetric, so layer order does not matter for it.
+  assert.deepEqual(png.pixel(252, 2), [255, 0, 0, 255], 'exclude ring: padding area visible');
+  assert.deepEqual(png.pixel(280, 30), [255, 255, 255, 255], 'exclude ring: content area masked out');
+
+  // `mask-composite: intersect` with a failed (never-loaded) layer: the
+  // failed layer contributes as fully transparent, so intersecting it with
+  // the other (opaque) layer hides the element entirely, regardless of
+  // which of the two is on top.
+  assert.deepEqual(png.pixel(350, 30), [255, 255, 255, 255], 'intersect with a failed layer hides the element');
+});
+
+test('screenshots apply a same-document SVG <mask> reference (mask-image: url(#id))', async () => {
+  const fetched = [];
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 200,
+    height: 100,
+    fetchImpl: async (url) => { fetched.push(url); return new Response('{}'); },
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <svg style="display:none">
+      <defs>
+        <mask id="m">
+          <rect x="0" y="0" width="50" height="100" fill="white"/>
+        </mask>
+      </defs>
+    </svg>
+    <div style="position:absolute;left:0;top:0;width:100px;height:60px;background:rgb(255, 0, 0);
+      mask-image:url(#m)"></div>
+    <div style="position:absolute;left:110px;top:0;width:60px;height:60px;background:rgb(255, 0, 0);
+      mask-image:url(#missing)"></div>
+    </body>`, { url: 'https://shot.example/' });
+  const settled = await runtime.pumpUntilSettled({ maxDurationMs: 5_000 });
+
+  const png = decodePng(await runtime.screenshot({ maxPasses: 8, waitForResources: true }));
+  // Masked in by a <mask> inside a `display: none` sprite sheet -- this only
+  // works because resolving the reference does not depend on that <svg>
+  // ever being laid out as replaced content.
+  assert.deepEqual(png.pixel(20, 30), [255, 0, 0, 255], 'masked-in half (from a hidden sprite <svg>) is visible');
+  assert.deepEqual(png.pixel(80, 30), [255, 255, 255, 255], 'masked-out half is not');
+  // A missing id contributes as fully transparent, like any other
+  // unresolvable mask-image layer, so the page must still settle rather
+  // than waiting forever on a reference that will never resolve.
+  assert.equal(settled.settled, true, 'the page must still settle with an unresolvable mask reference pending');
+  assert.deepEqual(png.pixel(140, 30), [255, 255, 255, 255], 'a missing id hides the element');
+  // A fragment-only reference must resolve against the document, not go out
+  // over the network as if it were an external image (which would, in this
+  // test, re-fetch the page itself).
+  assert.ok(!fetched.includes('https://shot.example/'),
+    `a same-document mask reference must not fetch the page itself (fetched: ${JSON.stringify(fetched)})`);
+});
+
+test('screenshots keep sticky elements stuck while scrolled', async () => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 200,
+    height: 200,
+    fetchImpl: async () => new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <div style="height:2000px;background:rgb(0, 0, 255)">
+      <div style="position:sticky;top:10px;left:20px;width:100px;height:50px;background:rgb(255, 0, 0)"></div>
+    </div>
+    </body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const top = decodePng(await runtime.screenshot({ waitForResources: true }));
+  assert.deepEqual(top.pixel(70, 35), [255, 0, 0, 255], 'sticky box at its static position before scrolling');
+
+  runtime.evaluatePage('window.scrollTo(0, 500); window.scrollY');
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+  const scrolled = decodePng(await runtime.screenshot({ waitForResources: true }));
+  // The sticky box sticks 10px from the viewport top instead of scrolling away
+  // with its container (which would leave it at y=-500, off-screen).
+  assert.deepEqual(scrolled.pixel(70, 35), [255, 0, 0, 255], 'sticky box sticks to the viewport top while scrolled');
+  assert.deepEqual(scrolled.pixel(70, 100), [0, 0, 255, 255], 'content behind the sticky box scrolls normally');
+});
+
+test('screenshots apply backdrop-filter blur to the content behind an element', async () => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 200,
+    height: 100,
+    fetchImpl: async () => new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <div style="position:absolute;left:0;top:0;width:100px;height:100px;background:rgb(255, 0, 0)"></div>
+    <div style="position:absolute;left:100px;top:0;width:100px;height:100px;background:rgb(0, 0, 255)"></div>
+    <div style="position:absolute;left:50px;top:10px;width:100px;height:80px;backdrop-filter:blur(8px)"></div>
+    </body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const png = decodePng(await runtime.screenshot({ waitForResources: true }));
+  // Far from the red/blue boundary the backdrop is unaffected by the blur.
+  assert.deepEqual(png.pixel(20, 50), [255, 0, 0, 255], 'backdrop far left of the blur region is sharp');
+  assert.deepEqual(png.pixel(180, 50), [0, 0, 255, 255], 'backdrop far right of the blur region is sharp');
+  // At the boundary, inside the backdrop-filter region, the blur mixes the
+  // two sides; outside the region (above y=10) the edge stays sharp.
+  const [r, g, b] = png.pixel(100, 50);
+  assert.ok(r > 30 && b > 30, `blurred boundary mixes red and blue (got [${r}, ${g}, ${b}])`);
+  assert.deepEqual(png.pixel(99, 5), [255, 0, 0, 255], 'red side of the edge stays sharp above the backdrop-filter region');
+  assert.deepEqual(png.pixel(100, 5), [0, 0, 255, 255], 'blue side of the edge stays sharp above the backdrop-filter region');
+});
+
+test('screenshots apply clip-path polygon clips', async () => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    width: 200,
+    height: 200,
+    fetchImpl: async () => new Response('{}'),
+  });
+  runtime.loadHtml(`<!doctype html><body style="margin:0;background:white">
+    <div style="position:absolute;left:10px;top:10px;width:100px;height:100px;background:rgb(255, 0, 0);
+      clip-path:polygon(50% 0%, 100% 100%, 0% 100%)"></div>
+    </body>`, { url: 'https://shot.example/' });
+  await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+
+  const png = decodePng(await runtime.screenshot({ waitForResources: true }));
+  // Triangle with apex at (60, 10) and base along y=110 from x=10 to x=110.
+  assert.deepEqual(png.pixel(60, 50), [255, 0, 0, 255], 'inside the polygon is drawn');
+  assert.deepEqual(png.pixel(60, 100), [255, 0, 0, 255], 'inside near the base is drawn');
+  assert.deepEqual(png.pixel(20, 20), [255, 255, 255, 255], 'outside the polygon (top-left) is clipped away');
+  assert.deepEqual(png.pixel(100, 20), [255, 255, 255, 255], 'outside the polygon (top-right) is clipped away');
+});
+
+test('storage stays origin-isolated across navigation in one Worker instance', async () => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    fetchImpl: async () => new Response('unexpected network request', { status: 500 }),
+  });
+  const settle = async () => {
+    const status = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+    assert.equal(status.settled, true);
+  };
+  const load = async (origin) => {
+    assert.equal(runtime.loadHtml('<!doctype html><body></body>', { url: `https://${origin}/` }), true);
+    await settle();
+  };
+  const run = async (source, expected) => {
+    runtime.pageResult();
+    assert.equal(runtime.evaluatePage(source), true);
+    await settle();
+    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 1 } });
+    for (let i = 0; i < 40; i++) {
+      runtime.pump();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.equal(runtime.evaluatePage(`(${expected}) ? 42 : 0`), true);
+    await settle();
+    assert.deepEqual(runtime.pageResult(), { Ok: { Number: 42 } });
+  };
+
+  await load('alpha.example');
+  await run(
+    'localStorage.setItem("partition", "alpha");' +
+    'sessionStorage.setItem("partition", "alpha");' +
+    'caches.open("alpha-cache").then(() => document.body.dataset.cache = "ready"); 1',
+    'document.body.dataset.cache === "ready"',
+  );
+  await load('beta.example');
+  await run(
+    'caches.has("alpha-cache").then((has) => document.body.dataset.cacheAbsent = String(!has)); 1',
+    'localStorage.getItem("partition") === null && ' +
+    'sessionStorage.getItem("partition") === null && ' +
+    'document.body.dataset.cacheAbsent === "true"',
+  );
+  await load('alpha.example');
+  await run(
+    'caches.has("alpha-cache").then((has) => document.body.dataset.cacheRestored = String(has)); 1',
+    'localStorage.getItem("partition") === "alpha" && ' +
+    'sessionStorage.getItem("partition") === "alpha" && ' +
+    'document.body.dataset.cacheRestored === "true"',
+  );
+});
+
+test('runaway scripts exhaust the per-turn operation budget without disabling the runtime', async (t) => {
+  const runtime = await createServoWorkerRuntime(wasm, { log: () => {}, scriptBudget: 5_000_000 });
+  const followUp = async () => {
+    assert.equal(runtime.evaluatePage('document.title'), true);
+    assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+    return runtime.pageResult();
+  };
+  const runaway = [
+    ['inline script loop', 'for (;;) {}'],
+    ['load event handler loop', 'addEventListener("load", () => { for (;;) {} });'],
+    ['timer callback loop', 'setTimeout(() => { for (;;) {} }, 0);'],
+    ['generator loop', 'function* g() { for (;;) yield 1; } for (const _ of g()) {}'],
+    ['async function loop', '(async () => { for (;;) await null; })();'],
+    ['eval loop', 'eval("for (;;) {}");'],
+    ['Function constructor loop', 'new Function("for (;;) {}")();'],
+    ['queueMicrotask storm', 'const f = () => queueMicrotask(f); f();'],
+    ['promise job storm', 'const p = () => Promise.resolve().then(p); p();'],
+    ['catastrophic regexp backtracking', '/(a+)+b/.test("a".repeat(64));'],
+    ['uncatchable by try/catch/finally',
+      'try { for (;;) {} } catch (e) { document.title = "caught"; } ' +
+      'finally { document.title = "finally"; }'],
+  ];
+  for (const [name, script] of runaway) {
+    await t.test(name, async () => {
+      const before = runtime.scriptBudgetTerminations;
+      const startedAt = performance.now();
+      runtime.loadHtml(`<!doctype html><title>start</title><body><script>${script}</script>`,
+        { url: 'https://budget.example/' });
+      const status = await runtime.pumpUntilSettled({ maxDurationMs: 20_000 });
+      assert.equal(status.settled, true);
+      assert.ok(status.scriptsTerminated > 0, 'the runaway script must be terminated');
+      assert.ok(runtime.scriptBudgetTerminations > before);
+      assert.ok(performance.now() - startedAt < 20_000);
+      assert.equal(runtime.trapped, null);
+      assert.deepEqual(await followUp(), { Ok: { String: 'start' } });
+    });
+  }
+
+  await t.test('evaluatePage of a runaway script reports an error result', async () => {
+    runtime.loadHtml('<!doctype html><title>eval</title>', { url: 'https://budget.example/' });
+    assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+    assert.equal(runtime.evaluatePage('for (;;) {}'), true);
+    const status = await runtime.pumpUntilSettled({ maxDurationMs: 20_000 });
+    assert.equal(status.settled, true);
+    assert.ok(status.scriptsTerminated > 0);
+    assert.ok('Err' in runtime.pageResult());
+    assert.deepEqual(await followUp(), { Ok: { String: 'eval' } });
+  });
+
+  await t.test('a recurring runaway timer is bounded by the host settle deadline', async () => {
+    const before = runtime.scriptBudgetTerminations;
+    runtime.loadHtml('<!doctype html><title>start</title><body><script>' +
+      'setInterval(() => { for (;;) {} }, 0);</script>', { url: 'https://budget.example/' });
+    const startedAt = performance.now();
+    const status = await runtime.pumpUntilSettled({ maxDurationMs: 3_000 });
+    assert.equal(status.settled, false);
+    assert.ok(status.scriptsTerminated > 1, 'each turn terminates the interval callback');
+    assert.ok(runtime.scriptBudgetTerminations > before + 1);
+    assert.ok(performance.now() - startedAt < 3_000 + 5_000);
+    runtime.loadHtml('<!doctype html><title>after</title>', { url: 'https://budget.example/' });
+    assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+    assert.deepEqual(await followUp(), { Ok: { String: 'after' } });
+  });
+
+  await t.test('deep recursion still throws a catchable stack-overflow error', async () => {
+    runtime.loadHtml('<!doctype html><title>start</title><body><script>' +
+      'function r() { r(); } try { r(); } catch (e) { document.title = "caught " + e.name; }' +
+      '</script>', { url: 'https://budget.example/' });
+    assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+    assert.deepEqual(await followUp(), { Ok: { String: 'caught InternalError' } });
+  });
+
+  await t.test('bounded work below the budget completes', async () => {
+    const before = runtime.scriptBudgetTerminations;
+    runtime.loadHtml('<!doctype html><title>start</title><body><script>' +
+      'let n = 0; for (let i = 0; i < 100000; i++) n += i; document.title = String(n);' +
+      '</script>', { url: 'https://budget.example/' });
+    const status = await runtime.pumpUntilSettled({ maxDurationMs: 10_000 });
+    assert.equal(status.settled, true);
+    assert.equal(status.scriptsTerminated, 0);
+    assert.equal(runtime.scriptBudgetTerminations, before);
+    assert.deepEqual(await followUp(), { Ok: { String: '4999950000' } });
+  });
+});
+
+test('evaluate() correlates results and awaits returned promises', async (t) => {
+  const runtime = await createServoWorkerRuntime(wasm, {
+    log: () => {},
+    scriptBudget: 5_000_000,
+    fetchImpl: async (input) =>
+      new Response(`fetched ${new URL(typeof input === 'string' ? input : input.url).pathname}`),
+  });
+  runtime.loadHtml('<!doctype html><title>eval</title><body></body>',
+    { url: 'https://evaluate.example/' });
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+  const cases = [
+    ['synchronous value', '1 + 1', { Ok: { Number: 2 } }],
+    ['structured value', '({ list: [1, "x"], none: null })',
+      { Ok: { Object: { list: { Array: [{ Number: 1 }, { String: 'x' }] }, none: 'Null' } } }],
+    ['resolved promise', 'Promise.resolve(42)', { Ok: { Number: 42 } }],
+    ['timer-settled promise', 'new Promise((r) => setTimeout(() => r("late"), 50))',
+      { Ok: { String: 'late' } }],
+    ['network-settled promise', 'fetch("/data").then((r) => r.text())',
+      { Ok: { String: 'fetched /data' } }],
+    ['async function', '(async () => { await null; return document.title; })()',
+      { Ok: { String: 'eval' } }],
+    ['basic Web Crypto without SubtleCrypto', `(() => {
+      const bytes = new Uint8Array(32);
+      const returned = crypto.getRandomValues(bytes);
+      return {
+        sameView: returned === bytes,
+        nonzero: bytes.some((byte) => byte !== 0),
+        uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+          crypto.randomUUID()),
+        subtleAbsent: !('subtle' in crypto),
+      };
+    })()`, { Ok: { Object: {
+      sameView: { Boolean: true },
+      nonzero: { Boolean: true },
+      uuid: { Boolean: true },
+      subtleAbsent: { Boolean: true },
+    } } }],
+    ['overridden Promise.prototype.then',
+      'Promise.prototype.then = () => {}; Promise.resolve(7)', { Ok: { Number: 7 } }],
+  ];
+  for (const [name, source, expected] of cases) {
+    await t.test(name, async () => {
+      assert.deepEqual(await runtime.evaluate(source, { maxDurationMs: 10_000 }), expected);
+    });
+  }
+
+  await t.test('rejections and exceptions become errors', async () => {
+    const rejected = await runtime.evaluate('Promise.reject(new Error("nope"))');
+    assert.equal(rejected.Err.EvaluationFailure.message, 'nope');
+    const thrown = await runtime.evaluate('throw new TypeError("bad")');
+    assert.ok('Err' in thrown);
+  });
+
+  await t.test('a promise that never settles times out and is canceled', async () => {
+    const startedAt = performance.now();
+    assert.deepEqual(await runtime.evaluate('new Promise(() => {})', { maxDurationMs: 500 }),
+      { Err: 'Timeout' });
+    assert.ok(performance.now() - startedAt < 5_000);
+    assert.doesNotThrow(() => runtime.beginInvocation());
+    assert.deepEqual(await runtime.evaluate('3'), { Ok: { Number: 3 } });
+  });
+
+  await t.test('a runaway evaluation is terminated by the script budget', async () => {
+    const result = await runtime.evaluate('for (;;) {}', { maxDurationMs: 20_000 });
+    assert.ok('Err' in result);
+    assert.deepEqual(await runtime.evaluate('4'), { Ok: { Number: 4 } });
+  });
+
+  await t.test('reset cancels a pending evaluation', async () => {
+    // A pending timer keeps the page busy, so only the reset can end the wait.
+    const pending = runtime.evaluate('new Promise((r) => setTimeout(r, 5000))',
+      { maxDurationMs: 10_000 });
+    setTimeout(() => runtime.reset(), 50);
+    assert.deepEqual(await pending, { Err: 'Canceled' });
+    await runtime.pumpUntilSettled({ maxDurationMs: 10_000 });
+  });
+
+  await t.test('evaluation and settling do not drive the pump concurrently', async () => {
+    const settling = runtime.pumpUntilSettled({ maxDurationMs: 10_000 });
+    await assert.rejects(runtime.evaluate('1'), /already running/);
+    await settling;
+  });
+});
+
+test('history traversal restores pushState entries, state and popstate', async () => {
+  const fetched = [];
+  const runtime = await createServoWorkerRuntime(wasm, {
+    log: () => {},
+    fetchImpl: async (input) => {
+      const url = new URL(typeof input === 'string' ? input : input.url);
+      fetched.push(url.pathname);
+      return new Response('<!doctype html><title>' + url.pathname + '</title><body><script>' +
+        'window.pops = []; addEventListener("popstate", (e) => pops.push(JSON.stringify(e.state)));' +
+        '</script>', { headers: { 'content-type': 'text/html' } });
+    },
+  });
+  const settle = async () =>
+    assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+  const page = async () => (await runtime.evaluate(
+    '[location.pathname, document.title, JSON.stringify(history.state), pops.join(",")]'))
+    .Ok.Array.map((value) => value.String);
+
+  assert.equal(runtime.loadPage('https://history.example/a'), true);
+  await settle();
+  assert.equal(runtime.loadPage('https://history.example/b'), true);
+  await settle();
+  assert.equal(runtime.goBack(), true);
+  await settle();
+  assert.deepEqual(await page(), ['/a', '/a', 'null', '']);
+  assert.equal(runtime.goForward(), true);
+  await settle();
+  assert.deepEqual(await page(), ['/b', '/b', 'null', '']);
+  const fetchesBeforeReload = fetched.length;
+  assert.equal(runtime.reload(), true);
+  await settle();
+  assert.equal(fetched.length, fetchesBeforeReload + 1);
+
+  // The constellation records each pushState between pumps; settle before
+  // traversing so the entries exist.
+  await runtime.evaluate('history.pushState({ n: 1 }, "", "/b1")');
+  await settle();
+  await runtime.evaluate('history.pushState({ n: 2 }, "", "/b2")');
+  await settle();
+  const fetchesBeforeTraversal = fetched.length;
+  // Returning to a pushState entry used to trap the instance: the Worker's
+  // resource handler dropped the history-state request.
+  assert.equal(runtime.goBack(), true);
+  await settle();
+  assert.deepEqual(await page(), ['/b1', '/b', '{"n":1}', '{"n":1}']);
+  assert.equal(runtime.goBack(), true);
+  await settle();
+  assert.deepEqual(await page(), ['/b', '/b', 'null', '{"n":1},null']);
+  assert.equal(runtime.goForward(), true);
+  await settle();
+  assert.deepEqual(await page(), ['/b1', '/b', '{"n":1}', '{"n":1},null,{"n":1}']);
+  assert.equal(fetched.length, fetchesBeforeTraversal, 'same-document traversal must not refetch');
+  assert.equal(runtime.trapped, null);
+});
+
+test('Blob, File and blob: URLs work in memory without trapping the instance', async (t) => {
+  const runtime = await createServoWorkerRuntime(wasm, { log: () => {} });
+  const load = async (origin) => {
+    runtime.loadHtml('<!doctype html><title>blob</title><body></body>', { url: `${origin}/` });
+    assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+  };
+  const value = async (source) => {
+    const result = await runtime.evaluate(source, { maxDurationMs: 10_000 });
+    assert.equal(runtime.trapped, null);
+    return result;
+  };
+  await load('https://blob-a.example');
+  const cases = [
+    ['Blob.text()', 'new Blob(["hi"]).text()', { String: 'hi' }],
+    ['Blob.slice().text()', 'new Blob(["abcdef"]).slice(1, 4).text()', { String: 'bcd' }],
+    ['structured clone of a Blob', 'structuredClone(new Blob(["c"])).text()', { String: 'c' }],
+    ['File metadata', '(() => { const f = new File(["z"], "z.txt", { type: "text/plain" });' +
+      ' return [f.name, f.size, f.type, Math.abs(f.lastModified - Date.now()) < 60000]; })()',
+    { Array: [{ String: 'z.txt' }, { Number: 1 }, { String: 'text/plain' }, { Boolean: true }] }],
+    ['FormData with a File', '(() => { const d = new FormData();' +
+      ' d.append("f", new File(["zz"], "z.txt")); return new Response(d).text()' +
+      '.then((t) => t.includes("filename=\\"z.txt\\"") && t.includes("zz")); })()',
+    { Boolean: true }],
+    ['fetch of a blob: URL', 'fetch(URL.createObjectURL(new Blob(["blobbody"], { type: "text/x-a" })))' +
+      '.then((r) => Promise.all([r.text(), r.headers.get("content-type")]))',
+    { Array: [{ String: 'blobbody' }, { String: 'text/x-a' }] }],
+    ['fetch of a sliced blob: URL',
+      'fetch(URL.createObjectURL(new Blob(["abcdef"]).slice(2, 5))).then((r) => r.text())',
+      { String: 'cde' }],
+    ['revoked blob: URL fails', '(() => { const u = URL.createObjectURL(new Blob(["x"]));' +
+      ' URL.revokeObjectURL(u); return fetch(u).then(() => "fetched", (e) => e.name); })()',
+    { String: 'TypeError' }],
+    ['non-GET blob: fetch fails', 'fetch(URL.createObjectURL(new Blob(["x"])), { method: "POST" })' +
+      '.then(() => "fetched", (e) => e.name)', { String: 'TypeError' }],
+    ['<img> from a blob: URL', 'new Promise((resolve) => { const i = new Image();' +
+      ' i.onload = () => resolve(i.naturalWidth); i.onerror = () => resolve("error");' +
+      ' i.src = URL.createObjectURL(new Blob([\'<svg xmlns="http://www.w3.org/2000/svg"' +
+      ' width="3" height="2"/>\'], { type: "image/svg+xml" })); })', { Number: 3 }],
+  ];
+  for (const [name, source, expected] of cases) {
+    await t.test(name, async () => assert.deepEqual(await value(source), { Ok: expected }));
+  }
+
+  await t.test('a blob: URL is not readable from another origin', async () => {
+    const url = (await value('URL.createObjectURL(new Blob(["secret"]))')).Ok.String;
+    await load('https://blob-b.example');
+    assert.deepEqual(await value(`fetch(${JSON.stringify(url)}).then((r) => r.text(), (e) => e.name)`),
+      { Ok: { String: 'TypeError' } });
+  });
+});
+
+test('privileged Worker fetch skips CORS preflight and browser checks', async (t) => {
+  const APP = 'https://app.example';
+  const API = 'https://api.example';
+  let received = [];
+  let respond = () => new Response('ok');
+  const makeRuntime = (options = {}) => createServoWorkerRuntime(wasm, {
+    log: () => {},
+    ...options,
+    fetchImpl: async (input, init = {}) => {
+      const url = String(typeof input === 'string' ? input : input.url);
+      const headers = Object.fromEntries(new Headers(init.headers));
+      const body = init.body === undefined || init.body === null ? null
+        : new TextDecoder().decode(init.body);
+      const request = { url, method: init.method ?? 'GET', headers, body };
+      received.push(request);
+      return respond(request);
+    },
+  });
+  const runtime = await makeRuntime();
+  runtime.loadHtml('<!doctype html><title>privileged</title><script>document.cookie = "sid=1"</script>',
+    { url: `${APP}/` });
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+  const attempt = async (init, rt = runtime, url = `${API}/data`) => {
+    received = [];
+    const result = await rt.evaluate(`fetch(${JSON.stringify(url)}, ${init})` +
+      '.then((r) => r.text()).then((t) => "ok:" + t, (e) => "err:" + e.name)',
+    { maxDurationMs: 10_000 });
+    assert.equal(rt.trapped, null);
+    return result.Ok.String;
+  };
+  const serve = (actual = {}) => {
+    respond = () => new Response('body', { headers: actual });
+  };
+  const methods = () => received.map(({ method }) => method);
+
+  await t.test('simple POST is sent without a preflight or Origin header', async () => {
+    serve();
+    assert.equal(await attempt('{ method: "POST", body: "hello" }'), 'ok:body');
+    assert.deepEqual(methods(), ['POST']);
+    assert.equal(received[0].body, 'hello');
+    assert.equal(received[0].headers.origin, undefined);
+    assert.equal(received[0].headers.cookie, undefined);
+  });
+
+  await t.test('non-simple method is sent without preflight', async () => {
+    serve();
+    assert.equal(await attempt('{ method: "PUT", body: "x" }'), 'ok:body');
+    assert.deepEqual(methods(), ['PUT']);
+    assert.equal(received[0].headers.cookie, undefined);
+  });
+
+  await t.test('custom headers are sent without preflight', async () => {
+    serve();
+    assert.equal(await attempt('{ headers: { "X-Token": "1" } }'), 'ok:body');
+    assert.deepEqual(methods(), ['GET']);
+    assert.equal(received[0].headers['x-token'], '1');
+  });
+
+  await t.test('Authorization is sent without special permission', async () => {
+    serve();
+    assert.equal(await attempt('{ headers: { Authorization: "Bearer x" } }'), 'ok:body');
+    assert.deepEqual(methods(), ['GET']);
+    assert.equal(received[0].headers.authorization, 'Bearer x');
+  });
+
+  await t.test('requests succeed without Access-Control-Allow-Origin', async () => {
+    serve({});
+    assert.equal(await attempt('{ method: "PUT" }'), 'ok:body');
+    assert.deepEqual(methods(), ['PUT']);
+  });
+
+  await t.test('a failed host fetch denies the request', async () => {
+    respond = () => { throw new TypeError('network down'); };
+    assert.equal(await attempt('{ method: "PUT" }', runtime, `${API}/denied-unreachable`), 'err:TypeError');
+    assert.deepEqual(methods(), ['PUT']);
+  });
+
+  await t.test('credentialed cross-origin requests succeed without response permission', async () => {
+    serve();
+    assert.equal(await attempt('{ credentials: "include" }'), 'ok:body');
+    assert.deepEqual(methods(), ['GET']);
+  });
+
+  await t.test('the actual request counts against the host subrequest budget', async () => {
+    const limited = await makeRuntime({ maxSubrequests: 1 });
+    limited.loadHtml('<!doctype html><title>privileged</title>', { url: `${APP}/` });
+    await limited.pumpUntilSettled({ maxDurationMs: 10_000 });
+    serve();
+    assert.equal(await attempt('{ method: "PUT" }', limited), 'ok:body');
+    assert.deepEqual(methods(), ['PUT']);
+  });
+});
+
+test('privileged fetches do not use preflight caching', async (t) => {
+  const APP = 'https://app.example';
+  const API = 'https://api.example';
+  let received = [];
+  let respond = () => new Response('ok');
+  const makeRuntime = (options = {}) => createServoWorkerRuntime(wasm, {
+    log: () => {},
+    ...options,
+    fetchImpl: async (input, init = {}) => {
+      const url = String(typeof input === 'string' ? input : input.url);
+      const headers = Object.fromEntries(new Headers(init.headers));
+      const request = { url, method: init.method ?? 'GET', headers };
+      received.push(request);
+      return respond(request);
+    },
+  });
+  const runtime = await makeRuntime();
+  runtime.loadHtml('<!doctype html><title>privileged-cache</title>', { url: `${APP}/` });
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+  const attempt = async (url, init) => {
+    received = [];
+    const result = await runtime.evaluate(`fetch(${JSON.stringify(url)}, ${init})` +
+      '.then((r) => r.text()).then((t) => "ok:" + t, (e) => "err:" + e.name)',
+    { maxDurationMs: 10_000 });
+    assert.equal(runtime.trapped, null);
+    return result.Ok.String;
+  };
+  const serve = () => {
+    respond = () => new Response('body');
+  };
+  const methods = () => received.map(({ method }) => method);
+
+  await t.test('identical requests are sent directly without OPTIONS', async () => {
+    serve();
+    assert.equal(await attempt(`${API}/data`, '{ method: "PUT" }'), 'ok:body');
+    assert.deepEqual(methods(), ['PUT']);
+    assert.equal(await attempt(`${API}/data`, '{ method: "PUT" }'), 'ok:body');
+    assert.deepEqual(methods(), ['PUT']);
+  });
+
+  await t.test('different URLs are sent independently', async () => {
+    serve();
+    assert.equal(await attempt(`${API}/other`, '{ method: "PUT" }'), 'ok:body');
+    assert.deepEqual(methods(), ['PUT']);
+  });
+});
+
+test('redirects are followed without a CORS preflight', async (t) => {
+  const APP = 'https://app.example';
+  const API = 'https://api.example';
+  let received = [];
+  const runtime = await createServoWorkerRuntime(wasm, {
+    log: () => {},
+    fetchImpl: async (input, init = {}) => {
+      const url = String(typeof input === 'string' ? input : input.url);
+      const headers = Object.fromEntries(new Headers(init.headers));
+      const request = { url, method: init.method ?? 'GET', headers };
+      received.push(request);
+      if (url === `${API}/redirect`) {
+        return new Response(null, { status: 307, headers: { location: `${API}/target` } });
+      }
+      return new Response('body');
+    },
+  });
+  runtime.loadHtml('<!doctype html><title>privileged-redirect</title>', { url: `${APP}/` });
+  assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
+  received = [];
+  const result = await runtime.evaluate(
+    `fetch(${JSON.stringify(`${API}/redirect`)}, { method: "PUT" })` +
+    '.then((r) => r.text()).then((t) => "ok:" + t, (e) => "err:" + e.name)',
+    { maxDurationMs: 10_000 });
+  assert.equal(runtime.trapped, null);
+  assert.equal(result.Ok.String, 'ok:body');
+  // Direct PUT and its same-origin 307 redirect target; no preflight.
+  assert.deepEqual(received.map(({ method }) => method), ['PUT', 'PUT']);
+  assert.equal(received[1].url, `${API}/target`);
+});
+
+test('APIs that would block or spawn threads fail explicitly instead of hanging or trapping', () => {
+  // A native hang cannot be interrupted from JavaScript, so these run in a
+  // child process under a hard deadline.
+  const adapter = new URL('../worker-adapter.mjs', import.meta.url).href;
+  const script = `
+    import { readFileSync } from 'node:fs';
+    import { createServoWorkerRuntime } from ${JSON.stringify(adapter)};
+    const wasm = new WebAssembly.Module(readFileSync(${JSON.stringify(
+      typeof wasmPath === 'string' ? wasmPath : fileURLToPath(wasmPath))}));
+    const runtime = await createServoWorkerRuntime(wasm, { log: () => {},
+      fetchImpl: async () => new Response('pong') });
+    runtime.loadHtml('<!doctype html><title>t</title>', { url: 'https://block.example/' });
+    await runtime.pumpUntilSettled();
+    const cases = {
+      syncXhr: '(() => { const x = new XMLHttpRequest(); x.open("GET", "/ping", false);' +
+        ' try { x.send(); return "sent"; } catch (e) { return e.name + ":" + x.readyState; } })()',
+      syncXhrData: '(() => { const x = new XMLHttpRequest();' +
+        ' x.open("GET", "data:text/plain,inline", false); x.send(); return x.responseText; })()',
+      asyncXhr: 'new Promise((r) => { const x = new XMLHttpRequest(); x.open("GET", "/ping");' +
+        ' x.onload = () => r(x.responseText); x.send(); })',
+      worker: '(() => { try { new Worker("/w.js"); return "created"; } catch (e) { return e.name; } })()',
+      audio: '(() => { try { new AudioContext(); return "created"; } catch (e) { return e.name; } })()',
+      offlineAudio: '(() => { try { new OfflineAudioContext(1, 1, 44100); return "created"; }' +
+        ' catch (e) { return e.name; } })()',
+    };
+    const out = {};
+    for (const [name, source] of Object.entries(cases)) {
+      const result = await runtime.evaluate(source, { maxDurationMs: 5000 });
+      out[name] = result.Ok?.String ?? JSON.stringify(result);
+    }
+    out.trapped = runtime.trapped !== null;
+    console.log(JSON.stringify(out));
+  `;
+  const child = spawnSync(process.execPath, ['--stack-size=2000', '--input-type=module', '-e', script],
+    { encoding: 'utf8', timeout: 120_000 });
+  assert.equal(child.signal, null, `child did not finish: ${child.stderr.slice(-400)}`);
+  assert.equal(child.status, 0, child.stderr.slice(-400));
+  const result = JSON.parse(child.stdout.trim().split('\n').pop());
+  assert.deepEqual(result, {
+    syncXhr: 'NetworkError:4',
+    syncXhrData: 'inline',
+    asyncXhr: 'pong',
+    worker: 'NotSupportedError',
+    audio: 'NotSupportedError',
+    offlineAudio: 'NotSupportedError',
+    trapped: false,
+  });
+});
+
