@@ -101,3 +101,7 @@ The Worker adapter runtime exposes `pageSummary()` and `documentHtml(maxChars)`.
 Both evaluate the active Servo document and validate results in Servo-WASM's
 JavaScript host. MCP wrappers should forward these calls and avoid duplicating
 browser DOM extraction expressions.
+
+The Worker runtime also exposes `captureResumeState()`, `restoreResumeState(snapshot)`,
+and `probeStorage(key, reset)`. Their DOM and IndexedDB scripts belong to the
+browser implementation; storage persistence backends can consume their results.
