@@ -1394,6 +1394,37 @@ class ServoWorkerRuntime {
   }
 
   /** Navigate to a supplied HTML document and await its readiness. */
+
+  /** Browser-scoped HTTP request, owned by Servo-WASM rather than an MCP tool. */
+  async requestHttp(input) {
+    const url = new URL(input.url);
+    if (!['http:', 'https:'].includes(url.protocol)) throw new TypeError('Only HTTP(S) requests are supported');
+    if (url.username || url.password) throw new TypeError('URL credentials are prohibited');
+    const method = input.method.toUpperCase();
+    if (/^(?:CONNECT|TRACE|TRACK)$/.test(method)) throw new TypeError(method + ' is forbidden by the Fetch API.');
+    if (input.body !== undefined && (method === 'GET' || method === 'HEAD')) throw new TypeError(method + ' cannot carry a body');
+    if (input.body !== undefined && new TextEncoder().encode(input.body).byteLength > 1048576) {
+      throw new RangeError('Request body exceeds 1 MiB');
+    }
+    const sensitiveHeader = Object.keys(input.headers ?? {}).find(name =>
+      /^(authorization|proxy-authorization|cookie|cookie2|x-api-key|x-auth-token|x-access-token)$/i.test(name));
+    if (sensitiveHeader) throw new TypeError('Page-script HTTP cannot carry ' + sensitiveHeader + ': page JavaScript could intercept it');
+    const current = await this.evaluate('location.href');
+    const pageUrl = typeof current?.Ok?.String === 'string' ? current.Ok.String : null;
+    if (pageUrl === null || new URL(pageUrl).origin !== url.origin) {
+      throw new Error('Servo HTTP origin mismatch. Navigate to the destination origin first.');
+    }
+    const request = JSON.stringify({ ...input, url: url.href, method });
+    const script = "(async () => {\n  const request = __REQUEST_DATA__;\n  const controller = new AbortController();\n  const timer = setTimeout(() => controller.abort(), request.maxDurationMs);\n  try {\n    const response = await fetch(request.url, {\n      method: request.method, headers: request.headers,\n      ...(request.body === undefined ? {} : { body: request.body }),\n      redirect: request.followRedirects ? 'follow' : 'manual',\n      signal: controller.signal,\n    });\n    const chunks = [];\n    let size = 0;\n    let truncated = false;\n    if (request.method !== 'HEAD' && response.body) {\n      const reader = response.body.getReader();\n      try {\n        while (true) {\n          const next = await reader.read();\n          if (next.done) break;\n          const remaining = request.maxResponseBytes - size;\n          if (next.value.byteLength > remaining) {\n            if (remaining > 0) chunks.push(next.value.subarray(0, remaining));\n            size += Math.max(0, remaining);\n            truncated = true;\n            await reader.cancel('Response body limit reached');\n            break;\n          }\n          chunks.push(next.value);\n          size += next.value.byteLength;\n        }\n      } finally {\n        reader.releaseLock();\n      }\n    }\n    let binary = '';\n    for (const chunk of chunks) {\n      for (let i = 0; i < chunk.byteLength; i += 0x8000) {\n        binary += String.fromCharCode(...chunk.subarray(i, i + 0x8000));\n      }\n    }\n    return JSON.stringify({\n      status: response.status, statusText: response.statusText,\n      url: response.url, redirected: response.redirected,\n      headers: Object.fromEntries(response.headers.entries()),\n      bodyBase64: btoa(binary), bodyBytes: size, truncated,\n    });\n  } finally {\n    clearTimeout(timer);\n  }\n})()".replace('__REQUEST_DATA__', () => request);
+    const result = decodePageEvaluation(await this.evaluate(script, {
+      maxDurationMs: Math.min(30000, input.maxDurationMs + 1000),
+    }));
+    if (!result || typeof result.status !== 'number' || typeof result.bodyBase64 !== 'string') {
+      throw new Error('Servo returned an invalid HTTP response: ' + JSON.stringify(result).slice(0, 1024));
+    }
+    return result;
+  }
+
   async navigateHtml(html, { url = 'https://servo-inline.invalid/', readiness = {} } = {}) {
     const before = await this.navigationIdentity();
     if (!this.loadHtml(html, { url })) throw new Error('Servo rejected supplied HTML');
