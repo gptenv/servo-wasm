@@ -6,6 +6,8 @@
  * of page readiness.
  */
 const isOpaqueHttpDocument = "globalThis.origin === 'null' && location.origin !== 'null'";
+const STORAGE_CAPTURE_CHUNK_CHARS = 32_768;
+const MAX_WEB_STORAGE_CAPTURE_CHARS = 512 * 1024;
 const MAX_INDEXEDDB_CAPTURE_BYTES = 2 * 1024 * 1024;
 const MAX_INDEXEDDB_CAPTURE_RECORDS = 5_000;
 
@@ -736,6 +738,37 @@ function createCloudflareTransport(env, onNetworkResult = () => {}) {
     return client;
   };
   return { fetchImpl, webSocketFactory };
+}
+
+
+/** Browser-side offline HTML preview. The MCP layer stores only the completed PNG. */
+export async function renderOfflineHtmlPreview(wasmModule, html) {
+  if (typeof html !== 'string' || new TextEncoder().encode(html).byteLength > 1048576) {
+    throw new RangeError('Offline preview HTML exceeds the 1 MiB limit.');
+  }
+  const url = 'https://servo-http-preview.invalid/';
+  const readiness = { strategy: 'load', maxDurationMs: 5000 };
+  let documentSent = false;
+  const runtime = await createServoWorkerRuntime(wasmModule, {
+    url, width: 800, height: 600, readiness, scriptBudget: 5_000_000,
+    fetchImpl: async (input) => {
+      if (documentSent || String(input) !== url) return new Response(null, { status: 403 });
+      documentSent = true;
+      return new Response(html, { headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'none'; base-uri 'none'",
+      } });
+    },
+    webSocketFactory: () => { throw new Error('HTTP previews are offline.'); },
+    maxSessionSubrequests: 32,
+  });
+  try {
+    const png = await runtime.screenshot({ readiness });
+    if (!documentSent || !png?.byteLength) throw new Error('Invalid HTTP preview.');
+    return png;
+  } finally {
+    runtime.reset();
+  }
 }
 
 /**
@@ -1563,6 +1596,53 @@ class ServoWorkerRuntime {
   }
 
   /** Navigate to a supplied HTML document and await its readiness. */
+
+  async captureWebStorage(storageName) {
+    const temporaryName = `__servoMcpStorageCapture_${crypto.randomUUID().replaceAll('-', '')}`;
+    const temporaryKey = JSON.stringify(temporaryName);
+    const setup = decodePageEvaluation(await this.evaluate(
+      `(()=>{if(location.origin==='null')return JSON.stringify({opaque:true,count:0});const store=globalThis[${JSON.stringify(storageName)}];const keys=[];let chars=0;for(let i=0;i<store.length;i++){const key=store.key(i);if(key!==null){const value=String(store.getItem(key)??'');chars+=key.length+value.length;if(chars>${MAX_WEB_STORAGE_CAPTURE_CHARS})throw new RangeError('${storageName} exceeds the ${MAX_WEB_STORAGE_CAPTURE_CHARS} character snapshot safety limit.');keys.push(key);}}globalThis[${temporaryKey}]=keys;return JSON.stringify({count:keys.length});})()`,
+
+    ));
+    if (typeof setup !== 'object' || setup === null || !('count' in setup) || typeof setup.count !== 'number') {
+      throw new Error(`Servo could not enumerate ${storageName}: ${JSON.stringify(setup).slice(0, 512)}`);
+    }
+    if ('opaque' in setup && setup.opaque === true) return [];
+
+    const entries = [];
+    try {
+      for (let index = 0; index < setup.count; index++) {
+        let key = '';
+        let value = '';
+        let keyLength;
+        let valueLength;
+        for (let offset = 0; keyLength === undefined || offset < Math.max(keyLength, valueLength ?? 0); offset += STORAGE_CAPTURE_CHUNK_CHARS) {
+          const piece = decodePageEvaluation(await this.evaluate(
+            `JSON.stringify((()=>{const key=globalThis[${temporaryKey}]?.[${index}];if(typeof key!=='string')throw new Error('Storage changed during snapshot capture.');const value=globalThis[${JSON.stringify(storageName)}].getItem(key);if(value===null)throw new Error('Storage changed during snapshot capture.');return {keyLength:key.length,valueLength:value.length,key:key.slice(${offset},${offset + STORAGE_CAPTURE_CHUNK_CHARS}),value:value.slice(${offset},${offset + STORAGE_CAPTURE_CHUNK_CHARS})}})())`,
+
+          ));
+          if (typeof piece !== 'object' || piece === null || !('key' in piece) || typeof piece.key !== 'string'
+            || !('value' in piece) || typeof piece.value !== 'string'
+            || !('keyLength' in piece) || typeof piece.keyLength !== 'number'
+            || !('valueLength' in piece) || typeof piece.valueLength !== 'number') {
+            throw new Error(`Servo could not read ${storageName} entry ${index}: ${JSON.stringify(piece).slice(0, 512)}`);
+          }
+          if (keyLength !== undefined && (keyLength !== piece.keyLength || valueLength !== piece.valueLength)) {
+            throw new Error(`${storageName} changed during snapshot capture.`);
+          }
+          keyLength = piece.keyLength;
+          valueLength = piece.valueLength;
+          key += piece.key;
+          value += piece.value;
+        }
+        entries.push([key, value]);
+      }
+    } finally {
+      await this.evaluate(`delete globalThis[${temporaryKey}]`).catch(() => undefined);
+    }
+    return entries;
+  }
+
 
   /** Capture browser page-realm state using Servo-WASM's own snapshot contract. */
   async captureResumeState({ captureIndexedDB = true } = {}) {

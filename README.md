@@ -105,3 +105,8 @@ browser DOM extraction expressions.
 The Worker runtime also exposes `captureResumeState()`, `restoreResumeState(snapshot)`,
 and `probeStorage(key, reset)`. Their DOM and IndexedDB scripts belong to the
 browser implementation; storage persistence backends can consume their results.
+
+The runtime owns bounded chunked web storage capture via
+`captureWebStorage('localStorage' | 'sessionStorage')`. Offline HTTP preview
+rendering is exported as `renderOfflineHtmlPreview(wasmModule, html)`, keeping
+its isolated browser and transport entirely inside Servo-WASM.
