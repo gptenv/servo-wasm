@@ -196,6 +196,15 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+      - name: Publish PR integration artifact
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: servo-worker-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/servo-worker-package/
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Retain Worker build evidence
         if: always()
         uses: actions/upload-artifact@v4
