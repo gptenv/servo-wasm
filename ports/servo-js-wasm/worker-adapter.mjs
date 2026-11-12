@@ -5,6 +5,177 @@
  * event loop and network queue; no arbitrary fixed sleep is treated as proof
  * of page readiness.
  */
+const isOpaqueHttpDocument = "globalThis.origin === 'null' && location.origin !== 'null'";
+const STORAGE_CAPTURE_CHUNK_CHARS = 32_768;
+const MAX_WEB_STORAGE_CAPTURE_CHARS = 512 * 1024;
+const MAX_INDEXEDDB_CAPTURE_BYTES = 2 * 1024 * 1024;
+const MAX_INDEXEDDB_CAPTURE_RECORDS = 5_000;
+
+const resumeStateExpression = (captureIndexedDB = true) => `(async()=>{
+  const nodePath=(node)=>{const path=[];for(let current=node;current&&current!==document.documentElement;current=current.parentElement){const parent=current.parentElement;if(!parent)return null;path.unshift(Array.prototype.indexOf.call(parent.children,current));}return path;};
+  if(${isOpaqueHttpDocument})return JSON.stringify({opaqueDocument:true});
+  const fields=[];
+  for(const element of Array.from(document.querySelectorAll('input,textarea,select,[contenteditable="true"]')).slice(0,200)){
+    const tag=element.tagName.toLowerCase();
+    if(tag==='input'&&['password','file'].includes((element.type||'').toLowerCase()))continue;
+    const path=nodePath(element);if(!path)continue;
+    if(tag==='input'&&['checkbox','radio'].includes((element.type||'').toLowerCase()))fields.push({path,kind:'checked',value:Boolean(element.checked)});
+    else if(tag==='select')fields.push({path,kind:'selected',value:Array.from(element.options).map((option)=>Boolean(option.selected))});
+    else if(element.isContentEditable)fields.push({path,kind:'html',value:element.innerHTML.slice(0,2048)});
+    else {let selectionStart=null,selectionEnd=null;try{selectionStart=element.selectionStart??null;selectionEnd=element.selectionEnd??null;}catch{}fields.push({path,kind:'value',value:String(element.value??'').slice(0,2048),selectionStart,selectionEnd});}
+  }
+  const bytesToBase64=(bytes)=>{let binary='';for(let offset=0;offset<bytes.length;offset+=0x8000)binary+=String.fromCharCode(...bytes.subarray(offset,offset+0x8000));return btoa(binary);};
+  const encodeGraph=async(root)=>{const nodes=[];const seen=new Map();const encode=async(value)=>{
+    if(value===null||typeof value==='string'||typeof value==='boolean')return value;
+    if(typeof value==='number')return Number.isFinite(value)?value:{t:'number',v:String(value)};
+    if(typeof value==='undefined')return {t:'undefined'};
+    if(typeof value==='bigint')return {t:'bigint',v:String(value)};
+    if(typeof value==='symbol'||typeof value==='function')throw new TypeError('IndexedDB value contains a non-cloneable value.');
+    if(seen.has(value))return {r:seen.get(value)};
+    const id=nodes.length;seen.set(value,id);nodes.push(null);
+    let node;
+    if(value instanceof Date){const time=value.getTime();node={t:'date',v:Number.isFinite(time)?time:{t:'number',v:'NaN'}};}
+    else if(value instanceof RegExp)node={t:'regexp',s:value.source,f:value.flags,l:value.lastIndex};
+    else if(value instanceof ArrayBuffer)node={t:'buffer',v:bytesToBase64(new Uint8Array(value))};
+    else if(ArrayBuffer.isView(value))node={t:'view',c:value.constructor.name,b:await encode(value.buffer),o:value.byteOffset,l:value instanceof DataView?value.byteLength:value.length};
+    else if(typeof Blob!=='undefined'&&value instanceof Blob){const common={type:value.type,bytes:bytesToBase64(new Uint8Array(await value.arrayBuffer()))};node=typeof File!=='undefined'&&value instanceof File?{t:'file',...common,name:value.name,lastModified:value.lastModified}:{t:'blob',...common};}
+    else if(value instanceof Map){const entries=[];for(const [key,item] of value)entries.push([await encode(key),await encode(item)]);node={t:'map',e:entries};}
+    else if(value instanceof Set){const entries=[];for(const item of value)entries.push(await encode(item));node={t:'set',e:entries};}
+    else if(Array.isArray(value)){const entries=[];for(let i=0;i<value.length;i++)entries.push(i in value?await encode(value[i]):{t:'hole'});node={t:'array',l:value.length,e:entries};}
+    else if(value&&Object.getPrototypeOf(value)===Object.prototype||value&&Object.getPrototypeOf(value)===null){const entries=[];for(const [key,item] of Object.entries(value))entries.push([key,await encode(item)]);node={t:Object.getPrototypeOf(value)===null?'null-object':'object',e:entries};}
+    else throw new TypeError('IndexedDB contains an unsupported structured-clone value: '+Object.prototype.toString.call(value));
+    nodes[id]=node;return {r:id};
+  };return {root:await encode(root),nodes};};
+  const databases=[];
+  let estimatedIndexedDBBytes=0;
+  let indexedDBRecordCount=0;
+  let estimateNodes=0;
+  const estimateValueBytes=(value,seen=new Set())=>{
+    if(++estimateNodes>50000)return ${MAX_INDEXEDDB_CAPTURE_BYTES+1};
+    if(value===null||typeof value==='boolean'||typeof value==='number'||typeof value==='bigint')return 8;
+    if(typeof value==='string')return value.length*2;
+    if(value instanceof ArrayBuffer)return value.byteLength;
+    if(ArrayBuffer.isView(value))return value.byteLength;
+    if(typeof Blob!=='undefined'&&value instanceof Blob)return value.size;
+    if(typeof value!=='object'||seen.has(value))return 0;
+    seen.add(value);
+    let bytes=16;
+    if(value instanceof Map){for(const [key,item] of value){bytes+=estimateValueBytes(key,seen)+estimateValueBytes(item,seen);if(bytes>${MAX_INDEXEDDB_CAPTURE_BYTES})break;}}
+    else if(value instanceof Set){for(const item of value){bytes+=estimateValueBytes(item,seen);if(bytes>${MAX_INDEXEDDB_CAPTURE_BYTES})break;}}
+    else if(value instanceof Date||value instanceof RegExp)bytes+=128;
+    else {for(const key in value){if(Object.prototype.hasOwnProperty.call(value,key)){bytes+=key.length*2+estimateValueBytes(value[key],seen);if(bytes>${MAX_INDEXEDDB_CAPTURE_BYTES})break;}}}
+    return bytes;
+  };
+  if(${captureIndexedDB}&&location.origin!=='null'&&typeof indexedDB!=='undefined'&&typeof indexedDB.databases==='function'){
+    let infos;try{infos=await indexedDB.databases();}catch(error){throw new Error('IndexedDB snapshot could not list databases: '+String(error));}
+    for(const info of infos){if(typeof info.name!=='string')continue;let db;try{db=await new Promise((resolve,reject)=>{const request=indexedDB.open(info.name);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);request.onblocked=()=>reject(new Error('IndexedDB database enumeration was blocked.'));});}catch(error){throw new Error('IndexedDB snapshot could not open '+info.name+': '+String(error));}
+      let stage='reading schema';try{
+        const stores=[];const names=Array.from(db.objectStoreNames);
+        if(names.length){
+          const tx=db.transaction(names,'readonly');const pending=[];
+          for(const name of names){
+            stage='reading records from '+name;const store=tx.objectStore(name);
+            const indexes=Array.from(store.indexNames,(indexName)=>{const index=store.index(indexName);return {name:index.name,keyPath:index.keyPath,unique:index.unique,multiEntry:index.multiEntry};});
+            const storeData={name:store.name,keyPath:store.keyPath,autoIncrement:store.autoIncrement,indexes,records:[]};stores.push(storeData);
+            pending.push(new Promise((resolve,reject)=>{
+              const request=store.openCursor();
+              request.onerror=()=>reject(request.error);
+              request.onsuccess=()=>{const cursor=request.result;if(!cursor){resolve();return;}try{if(++indexedDBRecordCount>${MAX_INDEXEDDB_CAPTURE_RECORDS})throw new RangeError('IndexedDB snapshot exceeds the ${MAX_INDEXEDDB_CAPTURE_RECORDS} record limit.');estimateNodes=0;estimatedIndexedDBBytes+=estimateValueBytes(cursor.primaryKey)+estimateValueBytes(cursor.value);if(estimatedIndexedDBBytes>${MAX_INDEXEDDB_CAPTURE_BYTES})throw new RangeError('IndexedDB snapshot exceeds the ${MAX_INDEXEDDB_CAPTURE_BYTES} byte safety limit.');storeData.records.push({primaryKey:cursor.primaryKey,value:cursor.value});cursor.continue();}catch(error){reject(error);try{tx.abort();}catch{}}};
+            }));
+          }
+          await new Promise((resolve,reject)=>{tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error||new Error('IndexedDB snapshot transaction aborted.'));});
+          await Promise.all(pending);
+          stage='serializing records';
+          for(const store of stores){for(const record of store.records){record.primaryKey=await encodeGraph(record.primaryKey);record.value=await encodeGraph(record.value);}}
+        }
+        databases.push({name:db.name,version:db.version,stores});
+      }catch(error){throw new Error('IndexedDB snapshot failed while '+stage+' in '+info.name+': '+String(error));}finally{db.close();}
+    }
+  }
+  return JSON.stringify({version:1,url:location.href,origin:location.origin,scrollX:scrollX||0,scrollY:scrollY||0,fields,localStorage:[],sessionStorage:[],cookies:'',indexedDB:databases});
+})()`;
+
+function storageProbeExpression(key, reset) {
+  return `(function(){
+    const key=${JSON.stringify(key)};
+    let state=globalThis[key];
+    const fresh=!state;
+    if(fresh){state=Object.create(null);Object.defineProperty(globalThis,key,{value:state,configurable:false});}
+    let supported=true;
+    for(const name of ['localStorage','sessionStorage','indexedDB']){
+      let owner=globalThis;
+      while(owner&&!Object.getOwnPropertyDescriptor(owner,name))owner=Object.getPrototypeOf(owner);
+      const descriptor=owner&&Object.getOwnPropertyDescriptor(owner,name);
+      if(!descriptor||typeof descriptor.get!=='function'){supported=false;continue;}
+      if(state[name+'Getter']!==descriptor.get){
+        const original=descriptor.get;
+        const getter=function(){state[name]=(state[name]||0)+1;return Reflect.apply(original,this,[]);};
+        try{Object.defineProperty(owner,name,{...descriptor,get:getter});state[name+'Getter']=getter;}
+        catch{supported=false;}
+      }
+    }
+    const result={supported,fresh,localStorage:(state.localStorage||0)>0,sessionStorage:(state.sessionStorage||0)>0,indexedDB:(state.indexedDB||0)>0};
+    if(${reset})state.localStorage=state.sessionStorage=state.indexedDB=0;
+    return JSON.stringify(result);
+  })()`;
+}
+
+const applyResumeState = (snapshot) => `(async()=>{
+  const s=${JSON.stringify(snapshot)};
+  if(${isOpaqueHttpDocument})return JSON.stringify({restored:false});
+  const restoreStorage=(getStore,entries)=>{const store=getStore();store.clear();for(const [key,value] of entries)store.setItem(key,value);};
+  const origin=new URL(s.url).origin;
+  const localEntries=s.localStorageByOrigin?.[origin]??s.localStorage;
+  const sessionEntries=s.sessionStorageByOrigin?.[origin]??s.sessionStorage;
+  restoreStorage(()=>localStorage,localEntries);restoreStorage(()=>sessionStorage,sessionEntries);
+  if(s.cookies){for(const cookie of s.cookies.split(/;\\s*/)){if(cookie)try{document.cookie=cookie;}catch{}}}
+  const decodeGraph=(graph)=>{const nodes=graph.nodes;const values=new Array(nodes.length);for(let i=0;i<nodes.length;i++){const node=nodes[i];switch(node.t){case'object':values[i]={};break;case'null-object':values[i]=Object.create(null);break;case'array':values[i]=[];break;case'map':values[i]=new Map();break;case'set':values[i]=new Set();break;case'date':values[i]=new Date(node.v&&node.v.t==='number'?NaN:node.v);break;case'regexp':values[i]=new RegExp(node.s,node.f);values[i].lastIndex=node.l;break;case'buffer':{const raw=atob(node.v);const bytes=Uint8Array.from(raw,(c)=>c.charCodeAt(0));values[i]=bytes.buffer;break;}case'blob':case'file':{const raw=atob(node.bytes);const bytes=Uint8Array.from(raw,(c)=>c.charCodeAt(0));values[i]=node.t==='file'?new File([bytes],node.name,{type:node.type,lastModified:node.lastModified}):new Blob([bytes],{type:node.type});break;}case'view':values[i]=null;break;}}
+    const valueOf=(v)=>{if(v&&typeof v==='object'&&'r'in v)return values[v.r];if(v&&v.t==='undefined')return undefined;if(v&&v.t==='bigint')return BigInt(v.v);if(v&&v.t==='number')return v.v==='NaN'?NaN:v.v==='Infinity'?Infinity:v.v==='-Infinity'?-Infinity:-0;return v;};
+    for(let i=0;i<nodes.length;i++){const node=nodes[i];if(node.t==='view'){const buffer=valueOf(node.b);const ctor=node.c==='DataView'?DataView:globalThis[node.c];if(typeof ctor!=='function')throw new TypeError('Unsupported IndexedDB typed array: '+node.c);values[i]=node.c==='DataView'?new DataView(buffer,node.o,node.l):new ctor(buffer,node.o,node.l);}}
+    for(let i=0;i<nodes.length;i++){const node=nodes[i],target=values[i];if(node.t==='object'||node.t==='null-object')for(const [key,value] of node.e)Object.defineProperty(target,key,{value:valueOf(value),writable:true,enumerable:true,configurable:true});else if(node.t==='array'){target.length=node.l;for(let index=0;index<node.e.length;index++)if(!(node.e[index]&&node.e[index].t==='hole'))target[index]=valueOf(node.e[index]);}else if(node.t==='map')for(const [key,value] of node.e)target.set(valueOf(key),valueOf(value));else if(node.t==='set')for(const value of node.e)target.add(valueOf(value));}
+    return valueOf(graph.root);};
+  const restoreIndexedDB=async(databases,present)=>{if(!present||typeof indexedDB==='undefined')return;const expected=new Set(databases.map((database)=>database.name));for(const info of await indexedDB.databases())if(info.name&&!expected.has(info.name))await new Promise((resolve,reject)=>{const request=indexedDB.deleteDatabase(info.name);request.onsuccess=resolve;request.onerror=()=>reject(request.error);request.onblocked=()=>reject(new Error('IndexedDB database deletion was blocked.'));});for(const saved of databases){const db=await new Promise((resolve,reject)=>{const request=indexedDB.open(saved.name);request.onerror=()=>reject(request.error);request.onblocked=()=>reject(new Error('IndexedDB restore was blocked.'));request.onsuccess=()=>resolve(request.result);});
+      const same=(left,right)=>JSON.stringify(left)===JSON.stringify(right);const schemaDiffers=db.objectStoreNames.length!==saved.stores.length||saved.stores.some((store)=>{if(!db.objectStoreNames.contains(store.name))return true;const existing=db.transaction(store.name,'readonly').objectStore(store.name);return !same(existing.keyPath,store.keyPath)||existing.autoIncrement!==store.autoIncrement||existing.indexNames.length!==store.indexes.length||store.indexes.some((index)=>{if(!existing.indexNames.contains(index.name))return true;const current=existing.index(index.name);return !same(current.keyPath,index.keyPath)||current.unique!==index.unique||current.multiEntry!==index.multiEntry;});});let version=db.version;db.close();
+      const restored=await new Promise((resolve,reject)=>{const request=indexedDB.open(saved.name,schemaDiffers?Math.max(saved.version,version+1):version);request.onerror=()=>reject(request.error);request.onblocked=()=>reject(new Error('IndexedDB schema restore was blocked.'));request.onupgradeneeded=()=>{const target=request.result;for(const existingName of Array.from(target.objectStoreNames))if(!saved.stores.some((store)=>store.name===existingName))target.deleteObjectStore(existingName);for(const store of saved.stores){let objectStore;if(target.objectStoreNames.contains(store.name)){objectStore=request.transaction.objectStore(store.name);if(!same(objectStore.keyPath,store.keyPath)||objectStore.autoIncrement!==store.autoIncrement){target.deleteObjectStore(store.name);objectStore=target.createObjectStore(store.name,{keyPath:store.keyPath,autoIncrement:store.autoIncrement});}}else objectStore=target.createObjectStore(store.name,{keyPath:store.keyPath,autoIncrement:store.autoIncrement});for(const existingName of Array.from(objectStore.indexNames))if(!store.indexes.some((index)=>index.name===existingName))objectStore.deleteIndex(existingName);for(const index of store.indexes){if(objectStore.indexNames.contains(index.name)){const current=objectStore.index(index.name);if(!same(current.keyPath,index.keyPath)||current.unique!==index.unique||current.multiEntry!==index.multiEntry)objectStore.deleteIndex(index.name);}if(!objectStore.indexNames.contains(index.name))objectStore.createIndex(index.name,index.keyPath,{unique:index.unique,multiEntry:index.multiEntry});}}};request.onsuccess=()=>resolve(request.result);});
+      try{for(const store of saved.stores){const objectStore=restored.transaction(store.name,'readwrite').objectStore(store.name);const tx=objectStore.transaction;objectStore.clear();for(const record of store.records){const value=decodeGraph(record.value);const key=decodeGraph(record.primaryKey);if(objectStore.keyPath===null)objectStore.put(value,key);else objectStore.put(value);}await new Promise((resolve,reject)=>{tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error||new Error('IndexedDB restore transaction aborted.'));});}}finally{restored.close();}
+    }};
+  const databases=s.indexedDBByOrigin?.[origin]??s.indexedDB??[];
+  await restoreIndexedDB(databases,s.indexedDBStatePresent??true);
+  const nodeAt=(path)=>{let node=document.documentElement;for(const index of path){node=node?.children?.[index];if(!node)return null;}return node;};
+  for(const field of s.fields){const node=nodeAt(field.path);if(!node)continue;try{if(field.kind==='checked')node.checked=field.value;else if(field.kind==='selected')Array.from(node.options).forEach((option,index)=>option.selected=Boolean(field.value[index]));else if(field.kind==='html')node.innerHTML=field.value;else{node.value=field.value;if(field.selectionStart!==null&&field.selectionStart!==undefined&&typeof node.setSelectionRange==='function')node.setSelectionRange(field.selectionStart,field.selectionEnd);}}catch{}}
+  try{scrollTo(s.scrollX,s.scrollY);}catch{}
+  return JSON.stringify({restored:true,hasStorage:localEntries.length+sessionEntries.length>0,hasCookies:Boolean(s.cookies),hasIndexedDBState:s.indexedDBStatePresent??databases.length>0,indexedDatabases:databases.length});
+})()`;
+
+
+const pageSummaryExpression = `JSON.stringify({url: location.href, title: document.title, text: (()=>{
+  const contents=[], visited=new Set();
+  const nodes=(root)=>{try{return root.querySelectorAll('*')}catch{return []}};
+  const shadowText=(root)=>{
+    let text='';
+    const visit=(node)=>{
+      if(node.nodeType===3){text+=node.nodeValue||'';return;}
+      if(node.nodeType===1&&['script','style','template'].includes(node.localName))return;
+      for(const child of node.childNodes||[])visit(child);
+    };
+    for(const child of root.childNodes||[])visit(child);
+    return text;
+  };
+  const traverse=(root)=>{
+    if(!root||visited.has(root))return;
+    visited.add(root);
+    let text=root.body?.innerText;
+    if(typeof text!=='string')text=shadowText(root);
+    if(text?.trim())contents.push(text);
+    for(const element of nodes(root)){
+      if(element.shadowRoot)traverse(element.shadowRoot);
+      if(element.localName==='iframe')try{traverse(element.contentDocument)}catch{}
+    }
+  };
+  traverse(document);
+  return contents.join('\\n').slice(0, 20000);
+})()})`;
+
 const DEFAULT_READINESS = Object.freeze({
   strategy: 'domquiet',
   quietMs: 400,
@@ -502,6 +673,181 @@ function requestMethod(request) {
  * instance and Servo browser; do not share the returned runtime between
  * unrelated incoming requests.
  */
+
+/** Cloudflare Worker browser egress is an implementation detail of Servo-WASM. */
+function createCloudflareTransport(env, onNetworkResult = () => {}) {
+  if (!env?.MESH || typeof env.MESH.fetch !== 'function') {
+    throw new Error('Servo-WASM requires a Cloudflare MESH binding for browser egress.');
+  }
+  const mesh = env.MESH;
+  const ensureAllowed = (value, socket = false) => {
+    const url = new URL(value);
+    if (!(socket ? ['ws:', 'wss:'].includes(url.protocol) : ['http:', 'https:'].includes(url.protocol))) {
+      throw new TypeError('Unsupported browser network URL protocol');
+    }
+    if (url.username || url.password) throw new TypeError('Credentials in URLs are prohibited');
+    const h = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (h === 'localhost' || /\.(?:localhost|local|internal|test|invalid)$/.test(h) ||
+        h === 'metadata.google.internal' || h === '::' || h === '::1' ||
+        /^::ffff:/i.test(h) || /^[fc][0-9a-f]/i.test(h) || /^fe[89ab]/i.test(h) ||
+        /^(?:0|10|127|169\.254|192\.168|224|240)\./.test(h) ||
+        /^172\.(?:1[6-9]|2\d|3[01])\./.test(h) ||
+        /^100\.(?:6[4-9]|[78]\d|9\d|1[01]\d|12[0-7])\./.test(h) ||
+        /^198\.(?:18|19)\./.test(h) || /^192\.0\.0\./.test(h)) {
+      throw new TypeError('Private, local or metadata network destination blocked');
+    }
+    return url;
+  };
+  const fetchImpl = async (input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    ensureAllowed(url);
+    try {
+      const response = await mesh.fetch(new Request(input, { ...init, redirect: 'manual' }));
+      onNetworkResult(url, response.status, null);
+      return response;
+    } catch (error) {
+      onNetworkResult(url, null, error);
+      throw error;
+    }
+  };
+  const webSocketFactory = (url, protocols) => {
+    const verified = ensureAllowed(url, true);
+    const pair = new WebSocketPair();
+    const [client, bridge] = Object.values(pair);
+    client.accept();
+    bridge.accept();
+    const closeBoth = (code = 1011, reason = 'Mesh WebSocket bridge closed') => {
+      for (const socket of [client, bridge]) {
+        try { socket.close(code, reason.slice(0, 100)); } catch {}
+      }
+    };
+    void (async () => {
+      const target = verified.href.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
+      const headers = new Headers({ Upgrade: 'websocket' });
+      if (protocols) headers.set('Sec-WebSocket-Protocol', Array.isArray(protocols) ? protocols.join(', ') : protocols);
+      const response = await mesh.fetch(target, { headers });
+      const remote = response.webSocket;
+      if (response.status !== 101 || !remote) throw new Error('Mesh refused WebSocket upgrade');
+      remote.accept();
+      bridge.addEventListener('message', event => { try { remote.send(event.data); } catch { closeBoth(); } });
+      remote.addEventListener('message', event => { try { bridge.send(event.data); } catch { closeBoth(); } });
+      bridge.addEventListener('close', event => { try { remote.close(event.code || 1000, event.reason); } catch {} });
+      remote.addEventListener('close', event => closeBoth(event.code || 1000, event.reason));
+      remote.addEventListener('error', () => closeBoth());
+    })().catch(error => { onNetworkResult(verified.href, null, error); closeBoth(); });
+    return client;
+  };
+  return { fetchImpl, webSocketFactory };
+}
+
+
+/** Browser-side offline HTML preview. The MCP layer stores only the completed PNG. */
+export async function renderOfflineHtmlPreview(wasmModule, html) {
+  if (typeof html !== 'string' || new TextEncoder().encode(html).byteLength > 1048576) {
+    throw new RangeError('Offline preview HTML exceeds the 1 MiB limit.');
+  }
+  const url = 'https://servo-http-preview.invalid/';
+  const readiness = { strategy: 'load', maxDurationMs: 5000 };
+  let documentSent = false;
+  const runtime = await createServoWorkerRuntime(wasmModule, {
+    url, width: 800, height: 600, readiness, scriptBudget: 5_000_000,
+    fetchImpl: async (input) => {
+      if (documentSent || String(input) !== url) return new Response(null, { status: 403 });
+      documentSent = true;
+      return new Response(html, { headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'none'; base-uri 'none'",
+      } });
+    },
+    webSocketFactory: () => { throw new Error('HTTP previews are offline.'); },
+    maxSessionSubrequests: 32,
+  });
+  try {
+    const png = await runtime.screenshot({ readiness });
+    if (!documentSent || !png?.byteLength) throw new Error('Invalid HTTP preview.');
+    return png;
+  } finally {
+    runtime.reset();
+  }
+}
+
+/**
+ * Public Cloudflare browser factory. Servo-MCP invokes this method only;
+ * browser instantiation and transport configuration remain in Servo-WASM.
+ */
+/**
+ * Select page-owned state for a single origin. MCP must not interpret cookie,
+ * IndexedDB, DOM or storage snapshot semantics.
+ */
+/** Report whether the snapshot contains state belonging to the given origin. */
+/**
+ * Browser-side recording timeline calculation. The host retains Durable Object
+ * storage and alarms, but frame slots and target duration are engine policy.
+ */
+export function planServoRecordingCapture(recording, now, initial = false, lastSlot = null) {
+  if (!recording || recording.status !== 'recording') return { action: 'skip' };
+  const deadline = recording.started_at + recording.max_duration_ms;
+  if (!initial && now >= deadline) return { action: 'finish', stoppedAt: deadline };
+  const slot = initial ? 0 : Math.min(
+    recording.max_frames - 1,
+    Math.floor((now - recording.started_at) * recording.fps / 1000),
+  );
+  if (lastSlot !== null && slot <= lastSlot) return { action: 'skip' };
+  return { action: 'capture', slot, deadline };
+}
+
+export function planServoRecordingFinalization(recording, stoppedAt, lastSlot = null) {
+  if (!recording || recording.status !== 'recording') return null;
+  const end = Math.min(stoppedAt, recording.started_at + recording.max_duration_ms);
+  const elapsed = Math.max(1, end - recording.started_at);
+  const targetFrames = Math.min(recording.max_frames, Math.max(
+    1, Math.ceil(elapsed * recording.fps / 1000),
+    typeof lastSlot === 'number' ? lastSlot + 1 : 0,
+  ));
+  return { end, targetFrames };
+}
+
+export function browserSnapshotHasOrigin(snapshot, url) {
+  const origin = new URL(url).origin;
+  return Object.hasOwn(snapshot.localStorageByOrigin ?? {}, origin) ||
+    Object.hasOwn(snapshot.sessionStorageByOrigin ?? {}, origin) ||
+    Object.hasOwn(snapshot.indexedDBByOrigin ?? {}, origin) ||
+    (snapshot.origin ?? new URL(snapshot.url).origin) === origin;
+}
+
+export function selectResumeStateForOrigin(snapshot, url) {
+  if (!snapshot || typeof snapshot !== 'object' || typeof snapshot.url !== 'string') {
+    throw new TypeError('Invalid browser restore snapshot');
+  }
+  const origin = new URL(url).origin;
+  const snapshotOrigin = snapshot.origin ?? new URL(snapshot.url).origin;
+  const hasOriginMaps = snapshot.localStorageByOrigin !== undefined ||
+    snapshot.sessionStorageByOrigin !== undefined || snapshot.indexedDBByOrigin !== undefined;
+  return {
+    ...snapshot, url,
+    fields: snapshot.url === url ? snapshot.fields : [],
+    scrollX: snapshot.url === url ? snapshot.scrollX : 0,
+    scrollY: snapshot.url === url ? snapshot.scrollY : 0,
+    localStorage: hasOriginMaps ? snapshot.localStorageByOrigin?.[origin] ?? [] : origin === snapshotOrigin ? snapshot.localStorage : [],
+    sessionStorage: hasOriginMaps ? snapshot.sessionStorageByOrigin?.[origin] ?? [] : origin === snapshotOrigin ? snapshot.sessionStorage : [],
+    cookies: snapshot.url === url ? snapshot.cookies : '',
+    indexedDB: hasOriginMaps ? snapshot.indexedDBByOrigin?.[origin] ?? [] : origin === snapshotOrigin ? snapshot.indexedDB ?? [] : [],
+    indexedDBStatePresent: snapshot.indexedDBByOrigin !== undefined
+      ? Object.hasOwn(snapshot.indexedDBByOrigin, origin)
+      : origin === snapshotOrigin && snapshot.indexedDB !== undefined,
+    localStorageByOrigin: undefined,
+    sessionStorageByOrigin: undefined,
+    indexedDBByOrigin: undefined,
+    originAssets: undefined,
+  };
+}
+
+export async function createCloudflareServoBrowser(wasmModule, env, options = {}) {
+  const { onNetworkResult, ...browserOptions } = options;
+  const transport = createCloudflareTransport(env, onNetworkResult);
+  return createServoWorkerRuntime(wasmModule, { ...browserOptions, ...transport });
+}
+
 export async function createServoWorkerRuntime(wasmModule, {
   fetchImpl = globalThis.fetch,
   webSocketFactory = (url, protocols) => new WebSocket(url, protocols),
@@ -1317,6 +1663,178 @@ class ServoWorkerRuntime {
   }
 
   /** Navigate to a supplied HTML document and await its readiness. */
+
+  async captureWebStorage(storageName) {
+    const temporaryName = `__servoMcpStorageCapture_${crypto.randomUUID().replaceAll('-', '')}`;
+    const temporaryKey = JSON.stringify(temporaryName);
+    const setup = decodePageEvaluation(await this.evaluate(
+      `(()=>{if(location.origin==='null')return JSON.stringify({opaque:true,count:0});const store=globalThis[${JSON.stringify(storageName)}];const keys=[];let chars=0;for(let i=0;i<store.length;i++){const key=store.key(i);if(key!==null){const value=String(store.getItem(key)??'');chars+=key.length+value.length;if(chars>${MAX_WEB_STORAGE_CAPTURE_CHARS})throw new RangeError('${storageName} exceeds the ${MAX_WEB_STORAGE_CAPTURE_CHARS} character snapshot safety limit.');keys.push(key);}}globalThis[${temporaryKey}]=keys;return JSON.stringify({count:keys.length});})()`,
+
+    ));
+    if (typeof setup !== 'object' || setup === null || !('count' in setup) || typeof setup.count !== 'number') {
+      throw new Error(`Servo could not enumerate ${storageName}: ${JSON.stringify(setup).slice(0, 512)}`);
+    }
+    if ('opaque' in setup && setup.opaque === true) return [];
+
+    const entries = [];
+    try {
+      for (let index = 0; index < setup.count; index++) {
+        let key = '';
+        let value = '';
+        let keyLength;
+        let valueLength;
+        for (let offset = 0; keyLength === undefined || offset < Math.max(keyLength, valueLength ?? 0); offset += STORAGE_CAPTURE_CHUNK_CHARS) {
+          const piece = decodePageEvaluation(await this.evaluate(
+            `JSON.stringify((()=>{const key=globalThis[${temporaryKey}]?.[${index}];if(typeof key!=='string')throw new Error('Storage changed during snapshot capture.');const value=globalThis[${JSON.stringify(storageName)}].getItem(key);if(value===null)throw new Error('Storage changed during snapshot capture.');return {keyLength:key.length,valueLength:value.length,key:key.slice(${offset},${offset + STORAGE_CAPTURE_CHUNK_CHARS}),value:value.slice(${offset},${offset + STORAGE_CAPTURE_CHUNK_CHARS})}})())`,
+
+          ));
+          if (typeof piece !== 'object' || piece === null || !('key' in piece) || typeof piece.key !== 'string'
+            || !('value' in piece) || typeof piece.value !== 'string'
+            || !('keyLength' in piece) || typeof piece.keyLength !== 'number'
+            || !('valueLength' in piece) || typeof piece.valueLength !== 'number') {
+            throw new Error(`Servo could not read ${storageName} entry ${index}: ${JSON.stringify(piece).slice(0, 512)}`);
+          }
+          if (keyLength !== undefined && (keyLength !== piece.keyLength || valueLength !== piece.valueLength)) {
+            throw new Error(`${storageName} changed during snapshot capture.`);
+          }
+          keyLength = piece.keyLength;
+          valueLength = piece.valueLength;
+          key += piece.key;
+          value += piece.value;
+        }
+        entries.push([key, value]);
+      }
+    } finally {
+      await this.evaluate(`delete globalThis[${temporaryKey}]`).catch(() => undefined);
+    }
+    return entries;
+  }
+
+
+  /** Capture browser page-realm state using Servo-WASM's own snapshot contract. */
+  async captureResumeState({ captureIndexedDB = true } = {}) {
+    return decodePageEvaluation(await this.evaluate(resumeStateExpression(captureIndexedDB)));
+  }
+
+  /** Apply a previously captured page-realm state to the current document. */
+  async restoreResumeState(snapshot, url = snapshot.url) {
+    return decodePageEvaluation(await this.evaluate(
+      applyResumeState(selectResumeStateForOrigin(snapshot, url)),
+    ));
+  }
+
+  /** Observe which page storage APIs were used since the last checkpoint. */
+  async probeStorage(key, reset = false) {
+    return decodePageEvaluation(await this.evaluate(storageProbeExpression(key, reset)));
+  }
+
+  /**
+   * Reopen a suspended browser tab and restore its page realm. Persistence
+   * supplies the snapshot, but Servo-WASM owns navigation and replay ordering.
+   */
+  async restoreBrowserTab({ snapshot, url = snapshot.url, inlineHtml } = {}) {
+    if (!snapshot || typeof snapshot.url !== 'string') throw new TypeError('Invalid browser snapshot');
+    const blank = url === 'about:blank';
+    const inline = inlineHtml !== undefined;
+    const loaded = blank || (inline
+      ? this.loadHtml(inlineHtml, { url })
+      : this.loadPage(url));
+    if (!loaded) throw new Error('Servo could not reopen the saved tab URL.');
+    let restored;
+    if (!blank) {
+      const commit = await this.waitForNavigationCommit({ url: 'about:blank', timeOrigin: null });
+      if (!commit.committed) throw new Error('Saved document navigation did not commit.');
+      const ready = await this.waitForPageReady({});
+      if (!ready.ready) throw new Error('Saved browser document did not become ready.');
+      restored = await this.restoreResumeState(snapshot, url);
+      if (!restored || typeof restored !== 'object' || restored.restored !== true) {
+        throw new Error('Servo returned an invalid restored browser state.');
+      }
+      await this.pumpCooperatively({ maxTurns: 250 });
+    }
+    if (!inline && !blank && (restored?.hasStorage || restored?.hasCookies ||
+        restored?.hasIndexedDBState || restored?.indexedDatabases)) {
+      if (!this.reload()) throw new Error('Servo could not reload the restored tab.');
+      await this.pumpCooperatively({ maxTurns: 250 });
+      const reapplied = await this.restoreResumeState(snapshot, url);
+      if (!reapplied || typeof reapplied !== 'object' || reapplied.restored !== true) {
+        throw new Error('Servo could not reapply the restored browser state.');
+      }
+      await this.pumpCooperatively({ maxTurns: 250 });
+    }
+    return { restored: true, url };
+  }
+
+  /** Browser engine decides whether a tab snapshot contains this origin. */
+  hasSavedOrigin(snapshot, url) {
+    return browserSnapshotHasOrigin(snapshot, url);
+  }
+
+  /** Reload this document through the browser runtime, not the MCP transport. */
+  async reloadDocument({ readiness = {}, inlineHtml, rejectionMessage = 'Servo rejected document reload.' } = {}) {
+    const before = await this.navigationIdentity();
+    if (inlineHtml !== undefined && before.url) {
+      await this.navigateHtml(inlineHtml, { url: before.url, readiness });
+      return;
+    }
+    if (!this.reload()) throw new Error(rejectionMessage);
+    const committed = await this.waitForNavigationCommit(before);
+    if (!committed.committed) throw new Error('Servo reload did not commit a document.');
+    const ready = await this.waitForPageReady(readiness);
+    if (!ready.ready) throw new Error('Servo document readiness timed out after reload.');
+  }
+
+  /** Browser-owned DOM summary, including open shadow roots and accessible frames. */
+  async pageSummary() {
+    const page = decodePageEvaluation(await this.evaluate(pageSummaryExpression));
+    if (!page || typeof page.url !== 'string' || typeof page.title !== 'string' || typeof page.text !== 'string') {
+      throw new Error('Servo returned an invalid page summary.');
+    }
+    return page;
+  }
+
+  /** Read the browser's current document rather than interpreting DOM in MCP. */
+  async documentHtml(maxChars = 512000) {
+    if (!Number.isInteger(maxChars) || maxChars < 1 || maxChars > 512000) {
+      throw new RangeError('Document HTML limit must be between 1 and 512000 characters.');
+    }
+    const html = decodePageEvaluation(await this.evaluate(
+      "JSON.stringify((document.documentElement?.outerHTML ?? '').slice(0, " + maxChars + "))",
+    ));
+    if (typeof html !== 'string') throw new Error('Servo did not return the document HTML.');
+    return html;
+  }
+
+  /** Browser-scoped HTTP request, owned by Servo-WASM rather than an MCP tool. */
+  async requestHttp(input) {
+    const url = new URL(input.url);
+    if (!['http:', 'https:'].includes(url.protocol)) throw new TypeError('Only HTTP(S) requests are supported');
+    if (url.username || url.password) throw new TypeError('URL credentials are prohibited');
+    const method = input.method.toUpperCase();
+    if (/^(?:CONNECT|TRACE|TRACK)$/.test(method)) throw new TypeError(method + ' is forbidden by the Fetch API.');
+    if (input.body !== undefined && (method === 'GET' || method === 'HEAD')) throw new TypeError(method + ' cannot carry a body');
+    if (input.body !== undefined && new TextEncoder().encode(input.body).byteLength > 1048576) {
+      throw new RangeError('Request body exceeds 1 MiB');
+    }
+    const sensitiveHeader = Object.keys(input.headers ?? {}).find(name =>
+      /^(authorization|proxy-authorization|cookie|cookie2|x-api-key|x-auth-token|x-access-token)$/i.test(name));
+    if (sensitiveHeader) throw new TypeError('Page-script HTTP cannot carry ' + sensitiveHeader + ': page JavaScript could intercept it');
+    const current = await this.evaluate('location.href');
+    const pageUrl = typeof current?.Ok?.String === 'string' ? current.Ok.String : null;
+    if (pageUrl === null || new URL(pageUrl).origin !== url.origin) {
+      throw new Error('Servo HTTP origin mismatch. Navigate to the destination origin first.');
+    }
+    const request = JSON.stringify({ ...input, url: url.href, method });
+    const script = "(async () => {\n  const request = __REQUEST_DATA__;\n  const controller = new AbortController();\n  const timer = setTimeout(() => controller.abort(), request.maxDurationMs);\n  try {\n    const response = await fetch(request.url, {\n      method: request.method, headers: request.headers,\n      ...(request.body === undefined ? {} : { body: request.body }),\n      redirect: request.followRedirects ? 'follow' : 'manual',\n      signal: controller.signal,\n    });\n    const chunks = [];\n    let size = 0;\n    let truncated = false;\n    if (request.method !== 'HEAD' && response.body) {\n      const reader = response.body.getReader();\n      try {\n        while (true) {\n          const next = await reader.read();\n          if (next.done) break;\n          const remaining = request.maxResponseBytes - size;\n          if (next.value.byteLength > remaining) {\n            if (remaining > 0) chunks.push(next.value.subarray(0, remaining));\n            size += Math.max(0, remaining);\n            truncated = true;\n            await reader.cancel('Response body limit reached');\n            break;\n          }\n          chunks.push(next.value);\n          size += next.value.byteLength;\n        }\n      } finally {\n        reader.releaseLock();\n      }\n    }\n    let binary = '';\n    for (const chunk of chunks) {\n      for (let i = 0; i < chunk.byteLength; i += 0x8000) {\n        binary += String.fromCharCode(...chunk.subarray(i, i + 0x8000));\n      }\n    }\n    return JSON.stringify({\n      status: response.status, statusText: response.statusText,\n      url: response.url, redirected: response.redirected,\n      headers: Object.fromEntries(response.headers.entries()),\n      bodyBase64: btoa(binary), bodyBytes: size, truncated,\n    });\n  } finally {\n    clearTimeout(timer);\n  }\n})()".replace('__REQUEST_DATA__', () => request);
+    const result = decodePageEvaluation(await this.evaluate(script, {
+      maxDurationMs: Math.min(30000, input.maxDurationMs + 1000),
+    }));
+    if (!result || typeof result.status !== 'number' || typeof result.bodyBase64 !== 'string') {
+      throw new Error('Servo returned an invalid HTTP response: ' + JSON.stringify(result).slice(0, 1024));
+    }
+    return result;
+  }
+
   async navigateHtml(html, { url = 'https://servo-inline.invalid/', readiness = {} } = {}) {
     const before = await this.navigationIdentity();
     if (!this.loadHtml(html, { url })) throw new Error('Servo rejected supplied HTML');

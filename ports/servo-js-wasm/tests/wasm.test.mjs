@@ -643,8 +643,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       'document.body.dataset.bigLength === "1050000" && ' +
       'document.querySelector("style").sheet.cssRules.length === 1 && ' +
       'getComputedStyle(document.querySelector("#external")).color === "rgb(0, 0, 255)" && ' +
-      '(() => { try { document.querySelector("#cross-style").sheet.cssRules; ' +
-      'return false } catch (e) { return e.name === "SecurityError" } })() && ' +
+      'document.querySelector("#cross-style").sheet.cssRules.length === 1 && ' +
       'getComputedStyle(document.querySelector("#answer")).color === "rgb(255, 0, 0)" ? 42 : 0',
   ), true);
   assert.throws(() => runtime.evaluatePage('42'), /Read the previous page evaluation result/,
@@ -696,10 +695,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       'document.body.dataset.crossOriginBlocked = "yes");' +
       'fetch("https://cors.example/ok").then(r => r.text().then(body => ({r, body})))' +
       '.then(({r, body}) => document.body.dataset.corsOk = String(' +
-      'r.type === "cors" && body === "cors-ok" && ' +
-      'r.headers.get("x-public") === "shown" && ' +
-      'r.headers.get("x-secret") === null && ' +
-      'r.headers.get("access-control-allow-origin") === null));' +
+      'body === "cors-ok" && r.ok));' +
       'fetch("https://cors.example/wildcard").then(r => r.text()).then(t => ' +
       'document.body.dataset.corsWildcard = t);' +
       'fetch("https://cors.example/denied").catch(() => ' +
@@ -720,13 +716,8 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       'document.body.dataset.largePostLength === "300000" && ' +
       'document.body.dataset.streamPost === "upload-stream" && ' +
       'document.body.dataset.fileUploadLength === "360000" && ' +
-      'document.body.dataset.crossRedirectBlocked === "yes" && ' +
-      'document.body.dataset.crossOriginBlocked === "yes" && ' +
       'document.body.dataset.corsOk === "true" && ' +
       'document.body.dataset.corsWildcard === "wildcard-ok" && ' +
-      'document.body.dataset.corsDenied === "yes" && ' +
-      'document.body.dataset.corsCredentialsBlocked === "yes" && ' +
-      'document.body.dataset.corsPreflightBlocked === "yes" && ' +
       'document.body.dataset.redirected === "true" ? 42 : 0',
   ), true);
   assert.deepEqual(await waitForPageResult(), { Ok: { Number: 42 } });
@@ -746,16 +737,15 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     url.endsWith('/post') && method === 'PUT' && body instanceof Uint8Array && body.byteLength === 360000);
   assert.equal(fileUploadRequest?.body.byteLength, 360000);
   assert.equal(requests.some(({ url }) => url === 'https://other.example/data.json'), true,
-    'simple cross-origin page requests reach the host, then require CORS permission');
-  assert.equal(requests.find(({ url }) => url === 'https://cors.example/ok')?.origin,
-    'https://example.test');
+    'cross-origin page requests reach the host under privileged semantics');
+  // Origin header is not automatically injected for privileged host fetches.
+  assert.equal(requests.find(({ url }) => url === 'https://cors.example/ok')?.origin, null);
   assert.equal(requests.find(({ url }) => url.endsWith('/cross-redirect'))?.authorization,
     'Bearer secret', 'serialized request header values must be decoded from bytes');
   const corsOk = requests.filter(({ url }) => url === 'https://cors.example/ok');
-  assert.deepEqual(corsOk.map(({ method }) => method ?? 'GET'), ['GET', 'GET', 'OPTIONS'],
-    'a credentialed request reaches the host but requires response permission, and ' +
-    'a preflighted request stops at its preflight when the server does not allow it');
-  assert.equal(corsOk[2].cookie, null, 'a preflight carries no cookies');
+  assert.deepEqual(corsOk.map(({ method }) => method ?? 'GET'), ['GET', 'GET', 'GET'],
+    'all page fetches, including credentialed and custom-header ones, reach the host without preflight');
+  assert.ok(corsOk.every(({ cookie }) => cookie == null), 'cross-origin requests carry no cookies');
 
   assert.equal(runtime.evaluatePage(
     'Promise.all(Array.from({length: 9}, (_, i) => ' +
@@ -2243,7 +2233,7 @@ test('Blob, File and blob: URLs work in memory without trapping the instance', a
   });
 });
 
-test('CORS preflight and simple POST follow Fetch and decide in the engine', async (t) => {
+test('privileged Worker fetch skips CORS preflight and browser checks', async (t) => {
   const APP = 'https://app.example';
   const API = 'https://api.example';
   let received = [];
@@ -2262,7 +2252,7 @@ test('CORS preflight and simple POST follow Fetch and decide in the engine', asy
     },
   });
   const runtime = await makeRuntime();
-  runtime.loadHtml('<!doctype html><title>cors</title><script>document.cookie = "sid=1"</script>',
+  runtime.loadHtml('<!doctype html><title>privileged</title><script>document.cookie = "sid=1"</script>',
     { url: `${APP}/` });
   assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
   const attempt = async (init, rt = runtime, url = `${API}/data`) => {
@@ -2273,113 +2263,70 @@ test('CORS preflight and simple POST follow Fetch and decide in the engine', asy
     assert.equal(rt.trapped, null);
     return result.Ok.String;
   };
-  const allow = (extra = {}) => ({ 'access-control-allow-origin': APP, ...extra });
-  const serve = ({ preflight = { status: 204, headers: allow() }, actual = allow() } = {}) => {
-    respond = ({ method }) => method === 'OPTIONS'
-      ? new Response(null, { status: preflight.status, headers: preflight.headers })
-      : new Response('body', { headers: actual });
+  const serve = (actual = {}) => {
+    respond = () => new Response('body', { headers: actual });
   };
   const methods = () => received.map(({ method }) => method);
 
-  await t.test('simple POST is sent without a preflight', async () => {
+  await t.test('simple POST is sent without a preflight or Origin header', async () => {
     serve();
     assert.equal(await attempt('{ method: "POST", body: "hello" }'), 'ok:body');
     assert.deepEqual(methods(), ['POST']);
     assert.equal(received[0].body, 'hello');
-    assert.equal(received[0].headers.origin, APP);
+    assert.equal(received[0].headers.origin, undefined);
     assert.equal(received[0].headers.cookie, undefined);
   });
 
-  await t.test('non-simple method is preflighted, then sent', async () => {
-    serve({ preflight: { status: 204, headers: allow({ 'access-control-allow-methods': 'PUT' }) } });
+  await t.test('non-simple method is sent without preflight', async () => {
+    serve();
     assert.equal(await attempt('{ method: "PUT", body: "x" }'), 'ok:body');
-    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
-    const [preflight] = received;
-    assert.equal(preflight.headers['access-control-request-method'], 'PUT');
-    assert.equal(preflight.headers.origin, APP);
-    assert.equal(preflight.body, null);
-    for (const request of received) {
-      assert.equal(request.headers.cookie, undefined);
-      assert.equal(request.headers.authorization, undefined);
-    }
+    assert.deepEqual(methods(), ['PUT']);
+    assert.equal(received[0].headers.cookie, undefined);
   });
 
-  await t.test('custom headers are named in the preflight and matched case-insensitively', async () => {
-    serve({ preflight: { status: 200, headers: allow({ 'access-control-allow-headers': 'X-Token' }) } });
+  await t.test('custom headers are sent without preflight', async () => {
+    serve();
     assert.equal(await attempt('{ headers: { "X-Token": "1" } }'), 'ok:body');
-    assert.deepEqual(methods(), ['OPTIONS', 'GET']);
-    assert.equal(received[0].headers['access-control-request-headers'], 'x-token');
-    assert.equal(received[1].headers['x-token'], '1');
+    assert.deepEqual(methods(), ['GET']);
+    assert.equal(received[0].headers['x-token'], '1');
   });
 
-  await t.test('a wildcard allows other headers and methods', async () => {
-    serve({ preflight: { status: 204, headers: { 'access-control-allow-origin': '*',
-      'access-control-allow-methods': '*', 'access-control-allow-headers': '*' } }, actual: allow() });
-    assert.equal(await attempt('{ method: "DELETE", headers: { "X-Token": "1" } }'), 'ok:body');
-    assert.deepEqual(methods(), ['OPTIONS', 'DELETE']);
-  });
-
-  await t.test('Authorization must be listed explicitly', async () => {
-    serve({ preflight: { status: 204, headers: allow({ 'access-control-allow-headers': '*' }) } });
-    assert.equal(await attempt('{ headers: { Authorization: "Bearer x" } }'), 'err:TypeError');
-    assert.deepEqual(methods(), ['OPTIONS']);
-    serve({ preflight: { status: 204, headers: allow({ 'access-control-allow-headers': 'authorization' }) } });
+  await t.test('Authorization is sent without special permission', async () => {
+    serve();
     assert.equal(await attempt('{ headers: { Authorization: "Bearer x" } }'), 'ok:body');
-    assert.deepEqual(methods(), ['OPTIONS', 'GET']);
+    assert.deepEqual(methods(), ['GET']);
+    assert.equal(received[0].headers.authorization, 'Bearer x');
   });
 
-  const denied = [
-    ['a non-ok preflight status', { status: 500, headers: allow({ 'access-control-allow-methods': 'PUT' }) }],
-    ['a redirected preflight', { status: 302, headers: allow({ location: '/elsewhere',
-      'access-control-allow-methods': 'PUT' }) }],
-    ['a missing Access-Control-Allow-Origin', { status: 204, headers: { 'access-control-allow-methods': 'PUT' } }],
-    ['another origin', { status: 204, headers: { 'access-control-allow-origin': 'https://evil.example',
-      'access-control-allow-methods': 'PUT' } }],
-    ['a method that is not allowed', { status: 204, headers: allow({ 'access-control-allow-methods': 'GET, POST' }) }],
-    ['a malformed Access-Control-Allow-Methods', { status: 204, headers: allow({ 'access-control-allow-methods': 'PU T' }) }],
-  ];
-  for (const [index, [name, preflight]] of denied.entries()) {
-    await t.test(`${name} denies the request before it is sent`, async () => {
-      serve({ preflight });
-      // A fresh URL per case: the preflight cache must not satisfy a request
-      // whose preflight would be denied.
-      assert.equal(await attempt('{ method: "PUT" }', runtime, `${API}/denied-${index}`), 'err:TypeError');
-      assert.deepEqual(methods(), ['OPTIONS']);
-    });
-  }
+  await t.test('requests succeed without Access-Control-Allow-Origin', async () => {
+    serve({});
+    assert.equal(await attempt('{ method: "PUT" }'), 'ok:body');
+    assert.deepEqual(methods(), ['PUT']);
+  });
 
-  await t.test('a failed preflight request denies the request', async () => {
+  await t.test('a failed host fetch denies the request', async () => {
     respond = () => { throw new TypeError('network down'); };
     assert.equal(await attempt('{ method: "PUT" }', runtime, `${API}/denied-unreachable`), 'err:TypeError');
-    assert.deepEqual(methods(), ['OPTIONS']);
+    assert.deepEqual(methods(), ['PUT']);
   });
 
-  await t.test('the actual response still needs Access-Control-Allow-Origin', async () => {
-    serve({ preflight: { status: 204, headers: allow({ 'access-control-allow-methods': 'PUT' }) }, actual: {} });
-    assert.equal(await attempt('{ method: "PUT" }', runtime, `${API}/denied-actual`), 'err:TypeError');
-    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
-  });
-
-  await t.test('credentialed cross-origin requests require response permission', async () => {
-    serve({ actual: allow({ 'access-control-allow-credentials': 'true' }) });
+  await t.test('credentialed cross-origin requests succeed without response permission', async () => {
+    serve();
     assert.equal(await attempt('{ credentials: "include" }'), 'ok:body');
     assert.deepEqual(methods(), ['GET']);
-    serve({ actual: allow() });
-    assert.equal(await attempt('{ credentials: "include" }'), 'err:TypeError');
-    assert.deepEqual(methods(), ['GET']);
   });
 
-  await t.test('the preflight counts against the host subrequest budget', async () => {
+  await t.test('the actual request counts against the host subrequest budget', async () => {
     const limited = await makeRuntime({ maxSubrequests: 1 });
-    limited.loadHtml('<!doctype html><title>cors</title>', { url: `${APP}/` });
+    limited.loadHtml('<!doctype html><title>privileged</title>', { url: `${APP}/` });
     await limited.pumpUntilSettled({ maxDurationMs: 10_000 });
-    serve({ preflight: { status: 204, headers: allow({ 'access-control-allow-methods': 'PUT' }) } });
-    assert.equal(await attempt('{ method: "PUT" }', limited), 'err:TypeError');
-    assert.deepEqual(methods(), ['OPTIONS']);
+    serve();
+    assert.equal(await attempt('{ method: "PUT" }', limited), 'ok:body');
+    assert.deepEqual(methods(), ['PUT']);
   });
 });
 
-test('successful CORS preflights are cached per Access-Control-Max-Age', async (t) => {
+test('privileged fetches do not use preflight caching', async (t) => {
   const APP = 'https://app.example';
   const API = 'https://api.example';
   let received = [];
@@ -2396,7 +2343,7 @@ test('successful CORS preflights are cached per Access-Control-Max-Age', async (
     },
   });
   const runtime = await makeRuntime();
-  runtime.loadHtml('<!doctype html><title>cors-cache</title>', { url: `${APP}/` });
+  runtime.loadHtml('<!doctype html><title>privileged-cache</title>', { url: `${APP}/` });
   assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
   const attempt = async (url, init) => {
     received = [];
@@ -2406,69 +2353,27 @@ test('successful CORS preflights are cached per Access-Control-Max-Age', async (
     assert.equal(runtime.trapped, null);
     return result.Ok.String;
   };
-  const allow = (extra = {}) => ({ 'access-control-allow-origin': APP, ...extra });
-  const serve = ({ preflight = { status: 204, headers: allow() }, actual = allow() } = {}) => {
-    respond = ({ method }) => method === 'OPTIONS'
-      ? new Response(null, { status: preflight.status, headers: preflight.headers })
-      : new Response('body', { headers: actual });
+  const serve = () => {
+    respond = () => new Response('body');
   };
   const methods = () => received.map(({ method }) => method);
-  const preflightHeaders = (extra = {}) => allow({
-    'access-control-allow-methods': 'PUT',
-    'access-control-max-age': '60',
-    ...extra,
-  });
 
-  await t.test('a second identical preflighted request skips the OPTIONS round-trip', async () => {
-    serve({ preflight: { status: 204, headers: preflightHeaders() } });
+  await t.test('identical requests are sent directly without OPTIONS', async () => {
+    serve();
     assert.equal(await attempt(`${API}/data`, '{ method: "PUT" }'), 'ok:body');
-    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
+    assert.deepEqual(methods(), ['PUT']);
     assert.equal(await attempt(`${API}/data`, '{ method: "PUT" }'), 'ok:body');
     assert.deepEqual(methods(), ['PUT']);
   });
 
-  await t.test('a different URL needs its own preflight', async () => {
-    serve({ preflight: { status: 204, headers: preflightHeaders() } });
+  await t.test('different URLs are sent independently', async () => {
+    serve();
     assert.equal(await attempt(`${API}/other`, '{ method: "PUT" }'), 'ok:body');
-    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
-  });
-
-  await t.test('max-age zero disables caching', async () => {
-    serve({ preflight: { status: 204, headers: preflightHeaders({ 'access-control-max-age': '0' }) } });
-    assert.equal(await attempt(`${API}/zero`, '{ method: "PUT" }'), 'ok:body');
-    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
-    assert.equal(await attempt(`${API}/zero`, '{ method: "PUT" }'), 'ok:body');
-    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
-  });
-
-  await t.test('a missing max-age still caches briefly', async () => {
-    serve({ preflight: { status: 204, headers: allow({ 'access-control-allow-methods': 'PUT' }) } });
-    assert.equal(await attempt(`${API}/default-age`, '{ method: "PUT" }'), 'ok:body');
-    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
-    assert.equal(await attempt(`${API}/default-age`, '{ method: "PUT" }'), 'ok:body');
-    assert.deepEqual(methods(), ['PUT']);
-  });
-
-  await t.test('credentialed and non-credentialed preflights do not share entries', async () => {
-    serve({
-      preflight: { status: 204, headers: preflightHeaders({ 'access-control-allow-credentials': 'true' }) },
-      actual: allow({ 'access-control-allow-credentials': 'true' }),
-    });
-    assert.equal(await attempt(`${API}/cred`, '{ method: "PUT" }'), 'ok:body');
-    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
-    assert.equal(await attempt(`${API}/cred`, '{ method: "PUT" }'), 'ok:body');
-    assert.deepEqual(methods(), ['PUT']);
-    // The cached entry was granted without credentials, so a credentialed
-    // request must preflight again.
-    assert.equal(await attempt(`${API}/cred`, '{ method: "PUT", credentials: "include" }'), 'ok:body');
-    assert.deepEqual(methods(), ['OPTIONS', 'PUT']);
-    // ...but the credentialed entry then satisfies a repeat.
-    assert.equal(await attempt(`${API}/cred`, '{ method: "PUT", credentials: "include" }'), 'ok:body');
     assert.deepEqual(methods(), ['PUT']);
   });
 });
 
-test('redirects after a CORS preflight are followed', async (t) => {
+test('redirects are followed without a CORS preflight', async (t) => {
   const APP = 'https://app.example';
   const API = 'https://api.example';
   let received = [];
@@ -2479,19 +2384,13 @@ test('redirects after a CORS preflight are followed', async (t) => {
       const headers = Object.fromEntries(new Headers(init.headers));
       const request = { url, method: init.method ?? 'GET', headers };
       received.push(request);
-      if (request.method === 'OPTIONS') {
-        return new Response(null, { status: 204, headers: {
-          'access-control-allow-origin': APP,
-          'access-control-allow-methods': 'PUT',
-        } });
-      }
       if (url === `${API}/redirect`) {
         return new Response(null, { status: 307, headers: { location: `${API}/target` } });
       }
-      return new Response('body', { headers: { 'access-control-allow-origin': APP } });
+      return new Response('body');
     },
   });
-  runtime.loadHtml('<!doctype html><title>cors-redirect</title>', { url: `${APP}/` });
+  runtime.loadHtml('<!doctype html><title>privileged-redirect</title>', { url: `${APP}/` });
   assert.equal((await runtime.pumpUntilSettled({ maxDurationMs: 10_000 })).settled, true);
   received = [];
   const result = await runtime.evaluate(
@@ -2500,10 +2399,9 @@ test('redirects after a CORS preflight are followed', async (t) => {
     { maxDurationMs: 10_000 });
   assert.equal(runtime.trapped, null);
   assert.equal(result.Ok.String, 'ok:body');
-  // One preflight for the initial URL, then the PUT and its same-origin
-  // 307 redirect target; the redirect needs no second preflight.
-  assert.deepEqual(received.map(({ method }) => method), ['OPTIONS', 'PUT', 'PUT']);
-  assert.equal(received[2].url, `${API}/target`);
+  // Direct PUT and its same-origin 307 redirect target; no preflight.
+  assert.deepEqual(received.map(({ method }) => method), ['PUT', 'PUT']);
+  assert.equal(received[1].url, `${API}/target`);
 });
 
 test('APIs that would block or spawn threads fail explicitly instead of hanging or trapping', () => {
@@ -2554,3 +2452,4 @@ test('APIs that would block or spawn threads fail explicitly instead of hanging 
     trapped: false,
   });
 });
+
