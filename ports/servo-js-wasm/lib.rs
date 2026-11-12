@@ -1449,113 +1449,33 @@ fn apply_worker_redirect(request: &mut RequestBuilder, redirect: Option<Response
 fn worker_response_visibility(
     request: &mut RequestBuilder,
 ) -> Result<WorkerResponseVisibility, NetworkError> {
-    // This bridge bypasses Servo's native HTTP fetch algorithm, so it applies
-    // the CORS request rules itself, including credentialed requests. The
-    // host adapter dispatches credentials from Servo's cookie jar only; the
-    // response still must pass the exact-origin and allow-credentials checks.
-    let script_fetch = request.destination == Destination::None;
-    // `use_url_credentials` is a request policy flag, not an indication that
-    // the URL actually contains userinfo. HTML sets it for ordinary
-    // cross-origin subresources (including no-cors requests), so rejecting
-    // the flag itself incorrectly blocks requests such as image beacons.
-    // The host fetch bridge never forwards URL credentials, so reject only
-    // URLs that really contain them.
-    let url = request.url.url();
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(NetworkError::CorsGeneral);
-    }
-    let origin = match &request.origin {
-        Origin::Origin(origin) => Some(origin),
-        Origin::Client => request
-            .client
-            .as_ref()
-            .and_then(|client| match &client.origin {
-                Origin::Origin(origin) => Some(origin),
-                Origin::Client => None,
-            }),
-    };
-    let same_origin = origin.is_some_and(|origin| *origin == request.url.origin());
-    if same_origin {
-        return Ok(if script_fetch {
+    // Servo-WASM runs inside a trusted Cloudflare Worker and delegates its
+    // network operations to the host's server-side fetch transport.
+    //
+    // Unlike a conventional browser, this automation-oriented build treats
+    // *all* HTTP(S) fetches as privileged host requests, including page
+    // fetch(), XMLHttpRequest, dynamically injected/evaluated scripts and
+    // resource loads. Do not perform browser CORS preflights, reject
+    // cross-origin RequestMode::SameOrigin, or hide no-cors responses here.
+    //
+    // Keep the Basic response filter for page-script fetches so Set-Cookie
+    // and other forbidden response headers are not exposed to JavaScript.
+    // Cookies remain managed by the Servo cookie jar.
+    //
+    // This grants webpages additional cross-origin privileges. Hosts must
+    // enforce their own destination/SSRF and authorization policies before
+    // making any outbound request. Do not enable this behavior for untrusted
+    // multi-tenant browser sessions without an appropriate host-side policy.
+    if matches!(request.url.url().scheme(), "http" | "https") {
+        return Ok(if request.destination == Destination::None {
             WorkerResponseVisibility::Basic
         } else {
             WorkerResponseVisibility::Unfiltered
         });
     }
-    if request.mode == RequestMode::SameOrigin {
-        return Err(NetworkError::CorsGeneral);
-    }
-    if request.mode == RequestMode::NoCors {
-        // No-CORS requests still go to the host. Their response is opaque to
-        // page script, while parser-owned subresources can consume the
-        // internal response. Cross-origin no-CORS requests remain anonymous.
-        return Ok(WorkerResponseVisibility::Opaque);
-    }
-    if request.mode != RequestMode::CorsMode {
-        return Ok(WorkerResponseVisibility::Unfiltered);
-    }
-    let Some(origin) = origin else {
-        return Err(NetworkError::CorsGeneral);
-    };
-    let origin = origin.ascii_serialization().into_owned();
-    if origin == "null" {
-        return Err(NetworkError::CorsGeneral);
-    }
-    // Fetch's main fetch: a CORS request needs a preflight if its
-    // use-CORS-preflight flag is set, or if it is an unsafe (script) request
-    // with a method or a header that is not CORS-safelisted.
-    // The CORS-unsafe header list also applies Fetch's 1024-byte limit on the
-    // combined safelisted values, which a per-header check misses.
-    let unsafe_headers: Vec<String> = get_cors_unsafe_header_names(&request.headers)
-        .iter()
-        .map(|name| name.as_str().to_owned())
-        .collect();
-    let credentials = request.credentials_mode == CredentialsMode::Include;
-    let needs_preflight = request.use_cors_preflight ||
-        request.unsafe_request &&
-            (!is_cors_safelisted_method(&request.method) || !unsafe_headers.is_empty());
-    // A cached preflight result skips the OPTIONS round-trip: the adapter
-    // simply omits `cors_preflight` from the host command. The actual
-    // response is still CORS-checked, so a hit can never widen access.
-    let cached_preflight = needs_preflight &&
-        PREFLIGHT_CACHE.with(|cache| {
-            // SAFETY: `worker_monotonic_now_ns` is one of the nine required
-            // `env` imports; the adapter always provides it.
-            let now_ns = unsafe { host_monotonic_now_ns() };
-            cache.borrow_mut().allows(
-                &origin,
-                request.url.url().as_str(),
-                credentials,
-                request.method.as_str(),
-                &unsafe_headers,
-                now_ns,
-            )
-        });
-    let preflight = (needs_preflight && !cached_preflight).then(|| WorkerCorsPreflight {
-        method: request.method.as_str().to_owned(),
-        unsafe_headers,
-        non_wildcard_headers: request
-            .headers
-            .keys()
-            .filter(|name| is_cors_non_wildcard_request_header_name(name))
-            .map(|name| name.as_str().to_owned())
-            .collect(),
-        credentials,
-    });
-    if !needs_preflight &&
-        request.method != Method::GET &&
-        request.method != Method::HEAD &&
-        request.method != Method::POST
-    {
-        return Err(NetworkError::CorsGeneral);
-    }
-    let value = HeaderValue::from_str(&origin).map_err(|_| NetworkError::CorsGeneral)?;
-    request.headers.insert(header::ORIGIN, value);
-    Ok(WorkerResponseVisibility::Cors {
-        origin,
-        credentials: request.credentials_mode == CredentialsMode::Include,
-        preflight,
-    })
+
+    // Non-network schemes are handled by the Worker resource handlers.
+    Ok(WorkerResponseVisibility::Unfiltered)
 }
 
 #[cfg(target_arch = "wasm32")]
