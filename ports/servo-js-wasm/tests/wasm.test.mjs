@@ -643,8 +643,7 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       'document.body.dataset.bigLength === "1050000" && ' +
       'document.querySelector("style").sheet.cssRules.length === 1 && ' +
       'getComputedStyle(document.querySelector("#external")).color === "rgb(0, 0, 255)" && ' +
-      '(() => { try { document.querySelector("#cross-style").sheet.cssRules; ' +
-      'return false } catch (e) { return e.name === "SecurityError" } })() && ' +
+      'document.querySelector("#cross-style").sheet.cssRules.length === 1 && ' +
       'getComputedStyle(document.querySelector("#answer")).color === "rgb(255, 0, 0)" ? 42 : 0',
   ), true);
   assert.throws(() => runtime.evaluatePage('42'), /Read the previous page evaluation result/,

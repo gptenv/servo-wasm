@@ -6,8 +6,9 @@ import { test } from 'node:test';
 // This exercises the exact production validation code, not a copied validator.
 const source = readFileSync(new URL('../worker-adapter.mjs', import.meta.url), 'utf8');
 const from = source.indexOf('function createCloudflareTransport(');
-const to = source.indexOf('/**\n * Public Cloudflare browser factory', from);
-assert.ok(from >= 0 && to > from, 'Cloudflare transport implementation must be present');
+const returnIdx = source.indexOf('return { fetchImpl, webSocketFactory };', from);
+const to = source.indexOf('\n}', returnIdx) + 2;
+assert.ok(from >= 0 && returnIdx > from && to > returnIdx, 'Cloudflare transport implementation must be present');
 const makeTransport = new Function(source.slice(from, to) + '\nreturn createCloudflareTransport;')();
 
 test('Cloudflare browser egress blocks private/local and metadata destinations before calling Mesh', async () => {
