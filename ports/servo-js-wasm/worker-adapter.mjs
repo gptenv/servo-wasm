@@ -775,6 +775,37 @@ export async function renderOfflineHtmlPreview(wasmModule, html) {
  * Public Cloudflare browser factory. Servo-MCP invokes this method only;
  * browser instantiation and transport configuration remain in Servo-WASM.
  */
+/**
+ * Select page-owned state for a single origin. MCP must not interpret cookie,
+ * IndexedDB, DOM or storage snapshot semantics.
+ */
+export function selectResumeStateForOrigin(snapshot, url) {
+  if (!snapshot || typeof snapshot !== 'object' || typeof snapshot.url !== 'string') {
+    throw new TypeError('Invalid browser restore snapshot');
+  }
+  const origin = new URL(url).origin;
+  const snapshotOrigin = snapshot.origin ?? new URL(snapshot.url).origin;
+  const hasOriginMaps = snapshot.localStorageByOrigin !== undefined ||
+    snapshot.sessionStorageByOrigin !== undefined || snapshot.indexedDBByOrigin !== undefined;
+  return {
+    ...snapshot, url,
+    fields: snapshot.url === url ? snapshot.fields : [],
+    scrollX: snapshot.url === url ? snapshot.scrollX : 0,
+    scrollY: snapshot.url === url ? snapshot.scrollY : 0,
+    localStorage: hasOriginMaps ? snapshot.localStorageByOrigin?.[origin] ?? [] : origin === snapshotOrigin ? snapshot.localStorage : [],
+    sessionStorage: hasOriginMaps ? snapshot.sessionStorageByOrigin?.[origin] ?? [] : origin === snapshotOrigin ? snapshot.sessionStorage : [],
+    cookies: snapshot.url === url ? snapshot.cookies : '',
+    indexedDB: hasOriginMaps ? snapshot.indexedDBByOrigin?.[origin] ?? [] : origin === snapshotOrigin ? snapshot.indexedDB ?? [] : [],
+    indexedDBStatePresent: snapshot.indexedDBByOrigin !== undefined
+      ? Object.hasOwn(snapshot.indexedDBByOrigin, origin)
+      : origin === snapshotOrigin && snapshot.indexedDB !== undefined,
+    localStorageByOrigin: undefined,
+    sessionStorageByOrigin: undefined,
+    indexedDBByOrigin: undefined,
+    originAssets: undefined,
+  };
+}
+
 export async function createCloudflareServoBrowser(wasmModule, env, options = {}) {
   const { onNetworkResult, ...browserOptions } = options;
   const transport = createCloudflareTransport(env, onNetworkResult);
@@ -1650,8 +1681,10 @@ class ServoWorkerRuntime {
   }
 
   /** Apply a previously captured page-realm state to the current document. */
-  async restoreResumeState(snapshot) {
-    return decodePageEvaluation(await this.evaluate(applyResumeState(snapshot)));
+  async restoreResumeState(snapshot, url = snapshot.url) {
+    return decodePageEvaluation(await this.evaluate(
+      applyResumeState(selectResumeStateForOrigin(snapshot, url)),
+    ));
   }
 
   /** Observe which page storage APIs were used since the last checkpoint. */
