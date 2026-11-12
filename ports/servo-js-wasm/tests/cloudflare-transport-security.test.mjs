@@ -4,7 +4,7 @@ import { test } from 'node:test';
 
 // Evaluate only the transport closure to avoid booting the WebAssembly engine.
 // This exercises the exact production validation code, not a copied validator.
-const source = readFileSync(new URL('../ports/servo-js-wasm/worker-adapter.mjs', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../worker-adapter.mjs', import.meta.url), 'utf8');
 const from = source.indexOf('function createCloudflareTransport(');
 const to = source.indexOf('/**\n * Public Cloudflare browser factory', from);
 assert.ok(from >= 0 && to > from, 'Cloudflare transport implementation must be present');
