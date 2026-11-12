@@ -1747,7 +1747,7 @@ class ServoWorkerRuntime {
       const ready = await this.waitForPageReady({});
       if (!ready.ready) throw new Error('Saved browser document did not become ready.');
       restored = await this.restoreResumeState(snapshot, url);
-      if (!restored || typeof restored !== 'object' || !('restored' in restored)) {
+      if (!restored || typeof restored !== 'object' || restored.restored !== true) {
         throw new Error('Servo returned an invalid restored browser state.');
       }
       await this.pumpCooperatively({ maxTurns: 250 });
@@ -1757,7 +1757,7 @@ class ServoWorkerRuntime {
       if (!this.reload()) throw new Error('Servo could not reload the restored tab.');
       await this.pumpCooperatively({ maxTurns: 250 });
       const reapplied = await this.restoreResumeState(snapshot, url);
-      if (!reapplied || typeof reapplied !== 'object' || !('restored' in reapplied)) {
+      if (!reapplied || typeof reapplied !== 'object' || reapplied.restored !== true) {
         throw new Error('Servo could not reapply the restored browser state.');
       }
       await this.pumpCooperatively({ maxTurns: 250 });
