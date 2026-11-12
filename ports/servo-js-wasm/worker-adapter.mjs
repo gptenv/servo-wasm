@@ -779,6 +779,15 @@ export async function renderOfflineHtmlPreview(wasmModule, html) {
  * Select page-owned state for a single origin. MCP must not interpret cookie,
  * IndexedDB, DOM or storage snapshot semantics.
  */
+/** Report whether the snapshot contains state belonging to the given origin. */
+export function browserSnapshotHasOrigin(snapshot, url) {
+  const origin = new URL(url).origin;
+  return Object.hasOwn(snapshot.localStorageByOrigin ?? {}, origin) ||
+    Object.hasOwn(snapshot.sessionStorageByOrigin ?? {}, origin) ||
+    Object.hasOwn(snapshot.indexedDBByOrigin ?? {}, origin) ||
+    (snapshot.origin ?? new URL(snapshot.url).origin) === origin;
+}
+
 export function selectResumeStateForOrigin(snapshot, url) {
   if (!snapshot || typeof snapshot !== 'object' || typeof snapshot.url !== 'string') {
     throw new TypeError('Invalid browser restore snapshot');
@@ -1690,6 +1699,25 @@ class ServoWorkerRuntime {
   /** Observe which page storage APIs were used since the last checkpoint. */
   async probeStorage(key, reset = false) {
     return decodePageEvaluation(await this.evaluate(storageProbeExpression(key, reset)));
+  }
+
+  /** Browser engine decides whether a tab snapshot contains this origin. */
+  hasSavedOrigin(snapshot, url) {
+    return browserSnapshotHasOrigin(snapshot, url);
+  }
+
+  /** Reload this document through the browser runtime, not the MCP transport. */
+  async reloadDocument({ readiness = {}, inlineHtml, rejectionMessage = 'Servo rejected document reload.' } = {}) {
+    const before = await this.navigationIdentity();
+    if (inlineHtml !== undefined && before.url) {
+      await this.navigateHtml(inlineHtml, { url: before.url, readiness });
+      return;
+    }
+    if (!this.reload()) throw new Error(rejectionMessage);
+    const committed = await this.waitForNavigationCommit(before);
+    if (!committed.committed) throw new Error('Servo reload did not commit a document.');
+    const ready = await this.waitForPageReady(readiness);
+    if (!ready.ready) throw new Error('Servo document readiness timed out after reload.');
   }
 
   /** Browser-owned DOM summary, including open shadow roots and accessible frames. */

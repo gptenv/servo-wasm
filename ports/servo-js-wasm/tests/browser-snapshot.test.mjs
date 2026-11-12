@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { selectResumeStateForOrigin } from '../worker-adapter.mjs';
+import { selectResumeStateForOrigin, browserSnapshotHasOrigin } from '../worker-adapter.mjs';
 
 const first = 'https://a.example/app';
 const other = 'https://b.example/dashboard';
@@ -54,4 +54,10 @@ test('unrecorded origin receives no stored state', () => {
 test('invalid snapshot rejects before evaluating in the browser', () => {
   assert.throws(() => selectResumeStateForOrigin(null, first), TypeError);
   assert.throws(() => selectResumeStateForOrigin({}, first), TypeError);
+});
+
+test('origin membership uses stored origin maps without leaking cross-origin state', () => {
+  assert.equal(browserSnapshotHasOrigin(original, 'https://a.example/new'), true);
+  assert.equal(browserSnapshotHasOrigin(original, other), true);
+  assert.equal(browserSnapshotHasOrigin(original, 'https://c.example/'), false);
 });
