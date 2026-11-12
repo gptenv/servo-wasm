@@ -26,11 +26,7 @@ use js::rust::{
 };
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::http_status::HttpStatus;
-use net_traits::request::{
-    CredentialsMode, Destination, Origin, RequestBuilder, RequestId, RequestMode,
-    get_cors_unsafe_header_names, is_cors_non_wildcard_request_header_name,
-    is_cors_safelisted_method,
-};
+use net_traits::request::{Destination, RequestBuilder, RequestId, RequestMode};
 use net_traits::response::ResponseInit;
 use net_traits::{
     FetchMetadata, FetchResponseMsg, FilteredMetadata, Metadata, NetworkError, ResourceFetchTiming,
