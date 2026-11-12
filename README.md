@@ -89,3 +89,8 @@ For more detailed build instructions, see the Servo Book under [Getting the Code
   - `SERVO_OHOS_SIGNING_CONFIG`: Path to json file containing a valid signing configuration for the demo app.
 - Review the detailed instructions at [Building for OpenHarmony].
 - The target distribution can be modified by passing `--flavor=<default|harmonyos>` to `mach <build|package|install>`.
+
+
+### Browser-owned request execution
+
+The Worker adapter provides `createCloudflareServoBrowser(wasmModule, env, options)` and the resulting browser implements `requestHttp(input)`. Cloudflare Mesh transport setup, browser-origin checks, request validation and page realm execution belong to Servo-WASM. MCP consumers should invoke these APIs rather than generate or interpret browser fetch scripts. The page-realm transport deliberately refuses sensitive authorization headers because webpage scripts can intercept them.
