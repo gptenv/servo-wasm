@@ -515,14 +515,14 @@ function createCloudflareTransport(env, onNetworkResult = () => {}) {
       throw new TypeError('Unsupported browser network URL protocol');
     }
     if (url.username || url.password) throw new TypeError('Credentials in URLs are prohibited');
-    const h = url.hostname.toLowerCase().replace(/^\\[|\\]$/g, '');
-    if (h === 'localhost' || /\\.(?:localhost|local|internal|test|invalid)$/.test(h) ||
+    const h = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (h === 'localhost' || /\.(?:localhost|local|internal|test|invalid)$/.test(h) ||
         h === 'metadata.google.internal' || h === '::' || h === '::1' ||
         /^::ffff:/i.test(h) || /^[fc][0-9a-f]/i.test(h) || /^fe[89ab]/i.test(h) ||
-        /^(?:0|10|127|169\\.254|192\\.168|224|240)\\./.test(h) ||
-        /^172\\.(?:1[6-9]|2\\d|3[01])\\./.test(h) ||
-        /^100\\.(?:6[4-9]|[78]\\d|9\\d|1[01]\\d|12[0-7])\\./.test(h) ||
-        /^198\\.(?:18|19)\\./.test(h) || /^192\\.0\\.0\\./.test(h)) {
+        /^(?:0|10|127|169\.254|192\.168|224|240)\./.test(h) ||
+        /^172\.(?:1[6-9]|2\d|3[01])\./.test(h) ||
+        /^100\.(?:6[4-9]|[78]\d|9\d|1[01]\d|12[0-7])\./.test(h) ||
+        /^198\.(?:18|19)\./.test(h) || /^192\.0\.0\./.test(h)) {
       throw new TypeError('Private, local or metadata network destination blocked');
     }
     return url;
