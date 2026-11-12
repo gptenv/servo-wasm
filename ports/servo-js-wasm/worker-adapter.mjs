@@ -1701,6 +1701,43 @@ class ServoWorkerRuntime {
     return decodePageEvaluation(await this.evaluate(storageProbeExpression(key, reset)));
   }
 
+  /**
+   * Reopen a suspended browser tab and restore its page realm. Persistence
+   * supplies the snapshot, but Servo-WASM owns navigation and replay ordering.
+   */
+  async restoreBrowserTab({ snapshot, url = snapshot.url, inlineHtml } = {}) {
+    if (!snapshot || typeof snapshot.url !== 'string') throw new TypeError('Invalid browser snapshot');
+    const blank = url === 'about:blank';
+    const inline = inlineHtml !== undefined;
+    const loaded = blank || (inline
+      ? this.loadHtml(inlineHtml, { url })
+      : this.loadPage(url));
+    if (!loaded) throw new Error('Servo could not reopen the saved tab URL.');
+    let restored;
+    if (!blank) {
+      const commit = await this.waitForNavigationCommit({ url: 'about:blank', timeOrigin: null });
+      if (!commit.committed) throw new Error('Saved document navigation did not commit.');
+      const ready = await this.waitForPageReady({});
+      if (!ready.ready) throw new Error('Saved browser document did not become ready.');
+      restored = await this.restoreResumeState(snapshot, url);
+      if (!restored || typeof restored !== 'object' || !('restored' in restored)) {
+        throw new Error('Servo returned an invalid restored browser state.');
+      }
+      await this.pumpCooperatively({ maxTurns: 250 });
+    }
+    if (!inline && !blank && (restored?.hasStorage || restored?.hasCookies ||
+        restored?.hasIndexedDBState || restored?.indexedDatabases)) {
+      if (!this.reload()) throw new Error('Servo could not reload the restored tab.');
+      await this.pumpCooperatively({ maxTurns: 250 });
+      const reapplied = await this.restoreResumeState(snapshot, url);
+      if (!reapplied || typeof reapplied !== 'object' || !('restored' in reapplied)) {
+        throw new Error('Servo could not reapply the restored browser state.');
+      }
+      await this.pumpCooperatively({ maxTurns: 250 });
+    }
+    return { restored: true, url };
+  }
+
   /** Browser engine decides whether a tab snapshot contains this origin. */
   hasSavedOrigin(snapshot, url) {
     return browserSnapshotHasOrigin(snapshot, url);
