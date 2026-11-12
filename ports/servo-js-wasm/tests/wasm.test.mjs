@@ -1,1 +1,1 @@
-$(cat /tmp/wasm.test.mjs)
+PLACEHOLDER_TO_BE_REPLACED
