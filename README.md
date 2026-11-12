@@ -94,3 +94,10 @@ For more detailed build instructions, see the Servo Book under [Getting the Code
 ### Browser-owned request execution
 
 The Worker adapter provides `createCloudflareServoBrowser(wasmModule, env, options)` and the resulting browser implements `requestHttp(input)`. Cloudflare Mesh transport setup, browser-origin checks, request validation and page realm execution belong to Servo-WASM. MCP consumers should invoke these APIs rather than generate or interpret browser fetch scripts. The page-realm transport deliberately refuses sensitive authorization headers because webpage scripts can intercept them.
+
+### Browser-owned DOM APIs
+
+The Worker adapter runtime exposes `pageSummary()` and `documentHtml(maxChars)`.
+Both evaluate the active Servo document and validate results in Servo-WASM's
+JavaScript host. MCP wrappers should forward these calls and avoid duplicating
+browser DOM extraction expressions.

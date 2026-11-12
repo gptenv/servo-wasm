@@ -5,6 +5,34 @@
  * event loop and network queue; no arbitrary fixed sleep is treated as proof
  * of page readiness.
  */
+const pageSummaryExpression = `JSON.stringify({url: location.href, title: document.title, text: (()=>{
+  const contents=[], visited=new Set();
+  const nodes=(root)=>{try{return root.querySelectorAll('*')}catch{return []}};
+  const shadowText=(root)=>{
+    let text='';
+    const visit=(node)=>{
+      if(node.nodeType===3){text+=node.nodeValue||'';return;}
+      if(node.nodeType===1&&['script','style','template'].includes(node.localName))return;
+      for(const child of node.childNodes||[])visit(child);
+    };
+    for(const child of root.childNodes||[])visit(child);
+    return text;
+  };
+  const traverse=(root)=>{
+    if(!root||visited.has(root))return;
+    visited.add(root);
+    let text=root.body?.innerText;
+    if(typeof text!=='string')text=shadowText(root);
+    if(text?.trim())contents.push(text);
+    for(const element of nodes(root)){
+      if(element.shadowRoot)traverse(element.shadowRoot);
+      if(element.localName==='iframe')try{traverse(element.contentDocument)}catch{}
+    }
+  };
+  traverse(document);
+  return contents.join('\\n').slice(0, 20000);
+})()})`;
+
 const DEFAULT_READINESS = Object.freeze({
   strategy: 'domquiet',
   quietMs: 400,
@@ -1394,6 +1422,27 @@ class ServoWorkerRuntime {
   }
 
   /** Navigate to a supplied HTML document and await its readiness. */
+
+  /** Browser-owned DOM summary, including open shadow roots and accessible frames. */
+  async pageSummary() {
+    const page = decodePageEvaluation(await this.evaluate(pageSummaryExpression));
+    if (!page || typeof page.url !== 'string' || typeof page.title !== 'string' || typeof page.text !== 'string') {
+      throw new Error('Servo returned an invalid page summary.');
+    }
+    return page;
+  }
+
+  /** Read the browser's current document rather than interpreting DOM in MCP. */
+  async documentHtml(maxChars = 512000) {
+    if (!Number.isInteger(maxChars) || maxChars < 1 || maxChars > 512000) {
+      throw new RangeError('Document HTML limit must be between 1 and 512000 characters.');
+    }
+    const html = decodePageEvaluation(await this.evaluate(
+      "JSON.stringify((document.documentElement?.outerHTML ?? '').slice(0, " + maxChars + "))",
+    ));
+    if (typeof html !== 'string') throw new Error('Servo did not return the document HTML.');
+    return html;
+  }
 
   /** Browser-scoped HTTP request, owned by Servo-WASM rather than an MCP tool. */
   async requestHttp(input) {
