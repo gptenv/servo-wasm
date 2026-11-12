@@ -780,6 +780,33 @@ export async function renderOfflineHtmlPreview(wasmModule, html) {
  * IndexedDB, DOM or storage snapshot semantics.
  */
 /** Report whether the snapshot contains state belonging to the given origin. */
+/**
+ * Browser-side recording timeline calculation. The host retains Durable Object
+ * storage and alarms, but frame slots and target duration are engine policy.
+ */
+export function planServoRecordingCapture(recording, now, initial = false, lastSlot = null) {
+  if (!recording || recording.status !== 'recording') return { action: 'skip' };
+  const deadline = recording.started_at + recording.max_duration_ms;
+  if (!initial && now >= deadline) return { action: 'finish', stoppedAt: deadline };
+  const slot = initial ? 0 : Math.min(
+    recording.max_frames - 1,
+    Math.floor((now - recording.started_at) * recording.fps / 1000),
+  );
+  if (lastSlot !== null && slot <= lastSlot) return { action: 'skip' };
+  return { action: 'capture', slot, deadline };
+}
+
+export function planServoRecordingFinalization(recording, stoppedAt, lastSlot = null) {
+  if (!recording || recording.status !== 'recording') return null;
+  const end = Math.min(stoppedAt, recording.started_at + recording.max_duration_ms);
+  const elapsed = Math.max(1, end - recording.started_at);
+  const targetFrames = Math.min(recording.max_frames, Math.max(
+    1, Math.ceil(elapsed * recording.fps / 1000),
+    typeof lastSlot === 'number' ? lastSlot + 1 : 0,
+  ));
+  return { end, targetFrames };
+}
+
 export function browserSnapshotHasOrigin(snapshot, url) {
   const origin = new URL(url).origin;
   return Object.hasOwn(snapshot.localStorageByOrigin ?? {}, origin) ||
