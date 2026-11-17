@@ -938,7 +938,7 @@ class ServoWorkerRuntime {
     this.#reserveSubrequest();
     const response = await this.#fetchImpl(url, {
       method: 'OPTIONS', headers: preflightHeaders, redirect: 'manual', signal,
-    });
+    }, { destination: 'None', preflight: true });
     await response.body?.cancel().catch(() => {});
     const id = encoder.encode(request.id);
     const pairs = encoder.encode(JSON.stringify([...response.headers]));
@@ -974,7 +974,7 @@ class ServoWorkerRuntime {
       const response = await this.#fetchImpl(url, {
         method, headers, body, redirect: 'manual', signal,
         ...(body instanceof ReadableStream ? { duplex: 'half' } : {}),
-      });
+      }, { destination: request.destination, preflight: false });
       const location = response.headers.get('location');
       if (![301, 302, 303, 307, 308].includes(response.status) || !location) {
         return { response, url: response.url || url, redirected };

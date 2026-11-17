@@ -349,11 +349,13 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
       fetchErrors.push(message);
       if (/panicked|fatal/i.test(message)) t.diagnostic(message);
     },
-    fetchImpl: async (url, init) => {
+    fetchImpl: async (url, init, requestContext) => {
       requests.push({ url, method: init.method, body: init.body,
         authorization: init.headers.get('authorization'),
         cookie: init.headers.get('cookie'),
-        origin: init.headers.get('origin') });
+        origin: init.headers.get('origin'),
+        destination: requestContext?.destination,
+        preflight: requestContext?.preflight });
       if (url.endsWith('/abort-before')) {
         return new Promise((_, reject) => {
           init.signal.addEventListener('abort', () => {
@@ -630,6 +632,8 @@ test('Worker adapter fetches a page and evaluates its DOM and inline script', as
     'https://cdn.example/external.css',
   ].sort());
   assert.ok(requests.every(({ method }) => method === 'GET'));
+  assert.equal(requests.find(({ url }) => url === 'https://example.test/')?.destination, 'Document');
+  assert.equal(requests.find(({ url }) => url === 'https://example.test/')?.preflight, false);
 
   assert.equal(runtime.evaluatePage(
     'document.title === "Worker fixture" && ' +
