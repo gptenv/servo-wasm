@@ -1,0 +1,24 @@
+{
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "name": "servo-wasm-worker",
+  "scripts": {
+    "engine:fetch": "node --env-file-if-exists=.env scripts/fetch-servo-wasm-artifact.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "deploy:dry-run": "wrangler deploy --dry-run",
+    "deploy": "node --env-file-if-exists=.env node_modules/wrangler/bin/wrangler.js deploy"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260925.1",
+    "@types/node": "^22.20.4",
+    "header-generator": "2.1.90",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0",
+    "wrangler": "4.150.0"
+  }
+}

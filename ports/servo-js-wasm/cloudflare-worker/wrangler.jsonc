@@ -1,0 +1,52 @@
+{
+  "$schema": "https://developers.cloudflare.com/workers/wrangler/configuration/schema.json",
+  "name": "servo-wasm",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-07",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "global_fetch_strictly_public"
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "rules": [
+    {
+      "type": "CompiledWasm",
+      "globs": [
+        "src/vendor/servo-worker/servo_js_wasm.wasm",
+        "src/vendor/h264-mp4-encoder.wasm"
+      ],
+      "fallthrough": true
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BROWSER_SESSIONS",
+        "class_name": "ServoBrowserSession"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-transfer-servo-browser-sessions",
+      "transferred_classes": [
+        {
+          "from": "ServoBrowserSession",
+          "from_script": "servo-mcp",
+          "to": "ServoBrowserSession"
+        }
+      ]
+    }
+  ],
+  "vpc_networks": [
+    {
+      "binding": "MESH",
+      "network_id": "cf1:network",
+      "remote": true
+    }
+  ],
+  "workers_dev": false,
+  "preview_urls": false
+}
