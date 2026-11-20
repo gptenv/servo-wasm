@@ -89,3 +89,24 @@ For more detailed build instructions, see the Servo Book under [Getting the Code
   - `SERVO_OHOS_SIGNING_CONFIG`: Path to json file containing a valid signing configuration for the demo app.
 - Review the detailed instructions at [Building for OpenHarmony].
 - The target distribution can be modified by passing `--flavor=<default|harmonyos>` to `mach <build|package|install>`.
+
+
+### Browser-owned request execution
+
+The Worker adapter provides `createCloudflareServoBrowser(wasmModule, env, options)` and the resulting browser implements `requestHttp(input)`. Cloudflare Mesh transport setup, browser-origin checks, request validation and page realm execution belong to Servo-WASM. MCP consumers should invoke these APIs rather than generate or interpret browser fetch scripts. The page-realm transport deliberately refuses sensitive authorization headers because webpage scripts can intercept them.
+
+### Browser-owned DOM APIs
+
+The Worker adapter runtime exposes `pageSummary()` and `documentHtml(maxChars)`.
+Both evaluate the active Servo document and validate results in Servo-WASM's
+JavaScript host. MCP wrappers should forward these calls and avoid duplicating
+browser DOM extraction expressions.
+
+The Worker runtime also exposes `captureResumeState()`, `restoreResumeState(snapshot)`,
+and `probeStorage(key, reset)`. Their DOM and IndexedDB scripts belong to the
+browser implementation; storage persistence backends can consume their results.
+
+The runtime owns bounded chunked web storage capture via
+`captureWebStorage('localStorage' | 'sessionStorage')`. Offline HTTP preview
+rendering is exported as `renderOfflineHtmlPreview(wasmModule, html)`, keeping
+its isolated browser and transport entirely inside Servo-WASM.
