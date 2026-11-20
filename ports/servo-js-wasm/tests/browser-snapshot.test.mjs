@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { selectResumeStateForOrigin, browserSnapshotHasOrigin } from '../worker-adapter.mjs';
+import { runInNewContext } from 'node:vm';
+import { selectResumeStateForOrigin, browserSnapshotHasOrigin, resumeStateExpression } from '../worker-adapter.mjs';
 
 const first = 'https://a.example/app';
 const other = 'https://b.example/dashboard';
@@ -18,6 +19,19 @@ const original = {
   indexedDBByOrigin: { 'https://b.example': [{ name: 'data', version: 1, stores: [] }] },
   originAssets: { 'https://a.example': 'asset-1' },
 };
+
+async function captureSnapshot(captureIndexedDB) {
+  const origin = new URL(first).origin;
+  const context = {
+    origin,
+    location: { href: first, origin },
+    document: { documentElement: {}, querySelectorAll: () => [] },
+    scrollX: 0,
+    scrollY: 0,
+    indexedDB: { databases: async () => [] },
+  };
+  return JSON.parse(await runInNewContext(resumeStateExpression(captureIndexedDB), context));
+}
 
 test('same document preserves fields, scroll, cookies, and origin storage', () => {
   const state = selectResumeStateForOrigin(original, first);
@@ -49,6 +63,16 @@ test('unrecorded origin receives no stored state', () => {
   assert.deepEqual(state.indexedDB, []);
   assert.equal(state.indexedDBStatePresent, false);
   assert.equal(state.cookies, '');
+});
+
+test('skipped IndexedDB capture is distinct from a captured empty database list', async () => {
+  const skipped = await captureSnapshot(false);
+  assert.equal(Object.hasOwn(skipped, 'indexedDB'), false);
+  assert.equal(selectResumeStateForOrigin(skipped, first).indexedDBStatePresent, false);
+
+  const capturedEmpty = await captureSnapshot(true);
+  assert.deepEqual(capturedEmpty.indexedDB, []);
+  assert.equal(selectResumeStateForOrigin(capturedEmpty, first).indexedDBStatePresent, true);
 });
 
 test('invalid snapshot rejects before evaluating in the browser', () => {

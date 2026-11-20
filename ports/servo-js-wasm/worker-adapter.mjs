@@ -11,7 +11,7 @@ const MAX_WEB_STORAGE_CAPTURE_CHARS = 512 * 1024;
 const MAX_INDEXEDDB_CAPTURE_BYTES = 2 * 1024 * 1024;
 const MAX_INDEXEDDB_CAPTURE_RECORDS = 5_000;
 
-const resumeStateExpression = (captureIndexedDB = true) => `(async()=>{
+export const resumeStateExpression = (captureIndexedDB = true) => `(async()=>{
   const nodePath=(node)=>{const path=[];for(let current=node;current&&current!==document.documentElement;current=current.parentElement){const parent=current.parentElement;if(!parent)return null;path.unshift(Array.prototype.indexOf.call(parent.children,current));}return path;};
   if(${isOpaqueHttpDocument})return JSON.stringify({opaqueDocument:true});
   const fields=[];
@@ -47,6 +47,7 @@ const resumeStateExpression = (captureIndexedDB = true) => `(async()=>{
     nodes[id]=node;return {r:id};
   };return {root:await encode(root),nodes};};
   const databases=[];
+  let indexedDBCaptured=false;
   let estimatedIndexedDBBytes=0;
   let indexedDBRecordCount=0;
   let estimateNodes=0;
@@ -67,6 +68,7 @@ const resumeStateExpression = (captureIndexedDB = true) => `(async()=>{
     return bytes;
   };
   if(${captureIndexedDB}&&location.origin!=='null'&&typeof indexedDB!=='undefined'&&typeof indexedDB.databases==='function'){
+    indexedDBCaptured=true;
     let infos;try{infos=await indexedDB.databases();}catch(error){throw new Error('IndexedDB snapshot could not list databases: '+String(error));}
     for(const info of infos){if(typeof info.name!=='string')continue;let db;try{db=await new Promise((resolve,reject)=>{const request=indexedDB.open(info.name);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);request.onblocked=()=>reject(new Error('IndexedDB database enumeration was blocked.'));});}catch(error){throw new Error('IndexedDB snapshot could not open '+info.name+': '+String(error));}
       let stage='reading schema';try{
@@ -92,7 +94,7 @@ const resumeStateExpression = (captureIndexedDB = true) => `(async()=>{
       }catch(error){throw new Error('IndexedDB snapshot failed while '+stage+' in '+info.name+': '+String(error));}finally{db.close();}
     }
   }
-  return JSON.stringify({version:1,url:location.href,origin:location.origin,scrollX:scrollX||0,scrollY:scrollY||0,fields,localStorage:[],sessionStorage:[],cookies:'',indexedDB:databases});
+  return JSON.stringify({version:1,url:location.href,origin:location.origin,scrollX:scrollX||0,scrollY:scrollY||0,fields,localStorage:[],sessionStorage:[],cookies:'',...(indexedDBCaptured?{indexedDB:databases}:{})});
 })()`;
 
 function storageProbeExpression(key, reset) {
